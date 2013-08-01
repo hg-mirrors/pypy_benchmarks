@@ -141,7 +141,7 @@ def test_parse_timer():
         ('database', 0.4)
         ]
 
-def BM_translate(base_python, changed_python, options):
+def BM_translate(python, options):
     """
     Run translate.py and returns a benchmark result for each of the phases.
     Note that we run it only with ``base_python`` (which corresponds to
@@ -151,7 +151,7 @@ def BM_translate(base_python, changed_python, options):
     translate_py = relative('lib/pypy/rpython/bin/rpython')
     target = relative('lib/pypy/pypy/goal/targetpypystandalone.py')
     #targetnop = relative('lib/pypy/pypy/translator/goal/targetnopstandalone.py')
-    args = base_python + [translate_py, '--source', '--dont-write-c-files', '-O2', target]
+    args = python + [translate_py, '--source', '--dont-write-c-files', '-O2', target]
     logging.info('Running %s', ' '.join(args))
     environ = os.environ.copy()
     environ['PYTHONPATH'] = relative('lib/pypy')

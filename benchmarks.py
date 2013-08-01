@@ -177,34 +177,32 @@ def BM_translate(base_python, changed_python, options):
     return result
 BM_translate.benchmark_name = 'trans2'
 
-def BM_cpython_doc(base_python, changed_python, options):
+def BM_cpython_doc(python, options):
     from unladen_swallow.perf import RawResult
     import subprocess, shutil
-    t = []
 
-    for python in [base_python, changed_python]:
-        maindir = relative('lib/cpython-doc')
-        builddir = os.path.join(os.path.join(maindir, 'tools'), 'build')
-        try:
-            shutil.rmtree(builddir)
-        except OSError:
-            pass
-        build = relative('lib/cpython-doc/tools/sphinx-build.py')
-        os.mkdir(builddir)
-        docdir = os.path.join(builddir, 'doctrees')
-        os.mkdir(docdir)
-        htmldir = os.path.join(builddir, 'html')
-        os.mkdir(htmldir)
-        args = base_python + [build, '-b', 'html', '-d', docdir, maindir, htmldir]
-        proc = subprocess.Popen(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        out, err = proc.communicate()
-        retcode = proc.poll()
-        if retcode != 0:
-            print out
-            print err
-            raise Exception("sphinx-build.py failed")
-        t.append(float(out.splitlines()[-1]))
-    return RawResult([t[0]], [t[1]])
+    maindir = relative('lib/cpython-doc')
+    builddir = os.path.join(os.path.join(maindir, 'tools'), 'build')
+    try:
+        shutil.rmtree(builddir)
+    except OSError:
+        pass
+    build = relative('lib/cpython-doc/tools/sphinx-build.py')
+    os.mkdir(builddir)
+    docdir = os.path.join(builddir, 'doctrees')
+    os.mkdir(docdir)
+    htmldir = os.path.join(builddir, 'html')
+    os.mkdir(htmldir)
+    args = python + [build, '-b', 'html', '-d', docdir, maindir, htmldir]
+    proc = subprocess.Popen(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    out, err = proc.communicate()
+    retcode = proc.poll()
+    if retcode != 0:
+        print out
+        print err
+        raise Exception("sphinx-build.py failed")
+    res = float(out.splitlines()[-1])
+    return RawResult(res)
 
 BM_cpython_doc.benchmark_name = 'sphinx'
 

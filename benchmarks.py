@@ -1,7 +1,7 @@
 import os
 import logging
 from unladen_swallow.perf import SimpleBenchmark, MeasureGeneric
-from unladen_swallow.perf import RawResult, SimpleComparisonResult, avg, ResultError
+from unladen_swallow.perf import RawResult, SimpleResult, avg, ResultError
 import subprocess
 
 def relative(*args):
@@ -50,7 +50,7 @@ def _register_new_bm_base_only(name, bm_name, d, **opts):
                                            *args, **kwargs)
         except subprocess.CalledProcessError, e:
             return ResultError(e)
-        return SimpleComparisonResult(avg(base_data[0]), -1, -1)
+        return SimpleResult(avg(base_data[0]))
     BM.func_name = 'BM_' + bm_name
 
     d[BM.func_name] = BM

@@ -30,7 +30,7 @@ import urllib2
 
 
 def save(project, revision, results, executeable, host, url, testing=False,
-         changed=True, branch='default'):
+         branch='default'):
     testparams = []
     #Parse data
     data = {}
@@ -41,21 +41,12 @@ def save(project, revision, results, executeable, host, url, testing=False,
         res_type = b[1]
         results = b[2]
         value = 0
-        if res_type == "SimpleComparisonResult":
-            if changed:
-                value = results['changed_time']
-            else:
-                value = results['base_time']
-        elif res_type == "ComparisonResult":
-            if changed:
-                value = results['avg_changed']
-            else:
-                value = results['avg_base']
+        if res_type == "SimpleResult":
+            value = results['time']
+        elif res_type == "Result":
+            value = results['avg_time']
         elif res_type == "RawResult":
-            if changed:
-                value = results["changed_times"]
-            else:
-                value = results["base_times"]
+            value = results["times"]
             if value:
                 assert len(value) == 1
                 value = value[0]
@@ -74,11 +65,6 @@ def save(project, revision, results, executeable, host, url, testing=False,
         if value is None:
             print "Ignoring skipped result", data
             continue
-        if res_type == "ComparisonResult":
-            if changed:
-                data['std_dev'] = results['std_changed']
-            else:
-                data['std_dev'] = results['std_base']
         if testing:
             testparams.append(data)
         else:

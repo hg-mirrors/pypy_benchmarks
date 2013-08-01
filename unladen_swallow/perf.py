@@ -340,38 +340,18 @@ class MemoryUsageFuture(threading.Thread):
         self._done.wait()
         return self._usage
 
-class ComparisonResult(object):
+class Result(object):
     """ An object representing a result of run. Can be converted to
     a string by calling string_representation
     """
-    def __init__(self, min_base, min_changed, delta_min, avg_base,
-                 avg_changed, delta_avg, t_msg, std_base, std_changed,
-                 delta_std, timeline_link):
-        self.min_base      = min_base
-        self.min_changed   = min_changed
-        self.delta_min     = delta_min
-        self.avg_base      = avg_base
-        self.avg_changed   = avg_changed
-        self.delta_avg     = delta_avg
-        self.t_msg         = t_msg
-        self.std_base      = std_base
-        self.std_changed   = std_changed
-        self.delta_std     = delta_std
-        self.timeline_link = timeline_link
-
-    def get_timeline(self):
-        if self.timeline_link is None:
-            return ""
-        return "Timeline: %(timeline_link)s"
+    def __init__(self, times, min_time, avg_time, std_time):
+        self.times = times
+        self.min_time = min_time
+        self.avg_time = avg_time
+        self.std_time = std_time
 
     def string_representation(self):
-        return (("Min: %(min_base)f -> %(min_changed)f:" +
-                 " %(delta_min)s\n" +
-                 "Avg: %(avg_base)f -> %(avg_changed)f:" +
-                 " %(delta_avg)s\n" + self.t_msg +
-                 "Stddev: %(std_base).5f -> %(std_changed).5f:" +
-                 " %(delta_std)s\n" + self.get_timeline())
-                 % self.__dict__)
+        return "Time: %(min_time)f +- %(std_time)f" % self.__dict__
 
 class ResultError(object):
     def __init__(self, e):
@@ -397,14 +377,12 @@ class MemoryUsageResult(object):
                  " %(delta_max)s\n" + self.get_usage_over_time())
                  % self.__dict__)
 
-class SimpleComparisonResult(object):
-    def __init__(self, base_time, changed_time, time_delta):
-        self.base_time    = base_time
-        self.changed_time = changed_time
-        self.time_delta   = time_delta
+class SimpleResult(object):
+    def __init__(self, time):
+        self.time = time
 
     def string_representation(self):
-        return ("%(base_time)f -> %(changed_time)f: %(time_delta)s"
+        return ("%(time)f"
                 % self.__dict__)
 
 class RawResult(object):
@@ -420,15 +398,11 @@ def CompareMemoryUsage(base_usage, changed_usage, options):
     max_base, max_changed = max(base_usage), max(changed_usage)
     delta_max = QuantityDelta(max_base, max_changed)
 
-    chart_link = GetChart(SummarizeData(base_usage),
-                          SummarizeData(changed_usage),
-                          options)
-
-    return MemoryUsageResult(max_base, max_changed, delta_max, chart_link)
+    return MemoryUsageResult(max_base, max_changed, delta_max, "")
 
 ### Utility functions
 
-def SimpleBenchmark(benchmark_function, base_python, changed_python, options,
+def SimpleBenchmark(benchmark_function, python, options,
                     *args, **kwargs):
     """Abstract out the body for most simple benchmarks.
 
@@ -442,8 +416,6 @@ def SimpleBenchmark(benchmark_function, base_python, changed_python, options,
     Args:
         benchmark_function: callback that takes (python_path, options) and
             returns a (times, memory_usage) 2-tuple.
-        base_python: path to the reference Python binary.
-        changed_python: path to the experimental Python binary.
         options: optparse.Values instance.
         *args, **kwargs: will be passed through to benchmark_function.
 
@@ -452,65 +424,12 @@ def SimpleBenchmark(benchmark_function, base_python, changed_python, options,
         Comes with string_representation method.
     """
     try:
-        changed_data = benchmark_function(changed_python, options,
-                                          *args, **kwargs)
-        base_data = benchmark_function(base_python, options,
-                                       *args, **kwargs)
+        data = benchmark_function(python, options,
+                                  *args, **kwargs)
     except subprocess.CalledProcessError, e:
         return ResultError(e)
 
-    return CompareBenchmarkData(base_data, changed_data, options)
-
-
-def GetChart(base_data, changed_data, options, chart_margin=100):
-    """Build a Google Chart API URL for the given data.
-
-    Args:
-        base_data: data points for the base binary.
-        changed_data: data points for the changed binary.
-        options: optparse.Values instance.
-        chart_margin: optional integer margin to add/sub from the max/min.
-
-    Returns:
-        Google Chart API URL as a string.
-    """
-    if options.no_charts:
-        return None
-    # We use these to scale the graph.
-    min_data = min(min(base_data), min(changed_data)) - chart_margin
-    max_data = max(max(base_data), max(changed_data)) + chart_margin
-    # Google-bound data, formatted as desired by the Chart API.
-    data_for_google = (",".join(map(str, base_data)) + "|" +
-                       ",".join(map(str, changed_data)))
-
-    # Come up with labels for the X axis; not too many, though, or they'll be
-    # unreadable.
-    max_len = max(len(base_data), len(changed_data))
-    points = SummarizeData(range(1, max_len + 1), points=5)
-    if points[0] != 1:
-        points.insert(0, 1)
-    x_axis_labels = "".join("|%d" % i for i in points)
-
-    # Parameters for the Google Chart API. See
-    # http://code.google.com/apis/chart/ for more details.
-    # cht=lc: line graph with visible axes.
-    # chs: dimensions of the graph, in pixels.
-    # chdl: labels for the graph lines.
-    # chco: colors for the graph lines.
-    # chds: minimum and maximum values for the vertical axis.
-    # chxr: minimum and maximum values for the vertical axis labels.
-    # chd=t: the data sets, |-separated.
-    # chxt: which axes to draw.
-    # chxl: labels for the axes.
-    base_binary = options.base_binary
-    changed_binary = options.changed_binary
-    raw_url = ("http://chart.apis.google.com/chart?cht=lc&chs=700x400&chxt=x,y&"
-               "chxr=1,%(min_data)s,%(max_data)s&chco=FF0000,0000FF&"
-               "chdl=%(base_binary)s|%(changed_binary)s&"
-               "chds=%(min_data)s,%(max_data)s&chd=t:%(data_for_google)s&"
-               "chxl=0:%(x_axis_labels)s"
-               % locals())
-    return ShortenUrl(raw_url)
+    return CompareBenchmarkData(data, options)
 
 
 def ShortenUrl(url):
@@ -656,7 +575,7 @@ def BuildEnv(env=None, inherit_env=[]):
     return fixed_env
 
 
-def CompareMultipleRuns(base_times, changed_times, options):
+def CompareMultipleRuns(times, options):
     """Compare multiple control vs experiment runs of the same benchmark.
 
     Args:
@@ -668,54 +587,26 @@ def CompareMultipleRuns(base_times, changed_times, options):
         A string summarizing the difference between the runs, suitable for
         human consumption.
     """
-    if len(base_times) != len(changed_times):
-        print "Base:"
-        print base_times
-        print "Changed:"
-        print changed_times
-        raise Exception("length did not match")
     if options.no_statistics:
-        return RawResult(base_times, changed_times)
-    if len(base_times) == 1:
+        return RawResult(times)
+    if len(times) == 1:
         # With only one data point, we can't do any of the interesting stats
         # below.
-        base_time, changed_time = base_times[0], changed_times[0]
-        time_delta = TimeDelta(base_time, changed_time)
-        return SimpleComparisonResult(base_time, changed_time, time_delta)
+        return SimpleResult(times[0])
 
-    # Create a chart showing iteration times over time. We round the times so
-    # as not to exceed the GET limit for Google's chart server.
-    timeline_link = GetChart([round(t, 2) for t in base_times],
-                             [round(t, 2) for t in changed_times],
-                             options, chart_margin=1)
+    times = sorted(times)
 
-    base_times = sorted(base_times)
-    changed_times = sorted(changed_times)
+    min_time = times[0]
+    avg_time = avg(times)
+    std_time = SampleStdDev(times)
 
-    min_base, min_changed = base_times[0], changed_times[0]
-    avg_base, avg_changed = avg(base_times), avg(changed_times)
-    std_base = SampleStdDev(base_times)
-    std_changed = SampleStdDev(changed_times)
-    delta_min = TimeDelta(min_base, min_changed)
-    delta_avg = TimeDelta(avg_base, avg_changed)
-    delta_std = QuantityDelta(std_base, std_changed)
+    return Result(times, min_time, avg_time, std_time)
 
-    t_msg = "Not significant\n"
-    significant, t_score = IsSignificant(base_times, changed_times)
-    if significant:
-        t_msg = "Significant (t=%f, a=0.95)\n" % t_score
-
-    return ComparisonResult(min_base, min_changed, delta_min, avg_base,
-                            avg_changed, delta_avg, t_msg, std_base,
-                            std_changed, delta_std, timeline_link)
-
-def CompareBenchmarkData(base_data, changed_data, options):
+def CompareBenchmarkData(data, options):
     """Compare performance and memory usage.
 
     Args:
-        base_data: 2-tuple of (times, mem_usage) where times is an iterable
-            of floats; mem_usage is a list of memory usage samples.
-        changed_data: 2-tuple of (times, mem_usage) where times is an iterable
+        data: 2-tuple of (times, mem_usage) where times is an iterable
             of floats; mem_usage is a list of memory usage samples.
         options: optparse.Values instance.
 
@@ -723,17 +614,16 @@ def CompareBenchmarkData(base_data, changed_data, options):
         Human-readable summary of the difference between the base and changed
         binaries.
     """
-    base_times, base_mem = base_data
-    changed_times, changed_mem = changed_data
+    times, mem = data
 
     # We suppress performance data when running with --track_memory.
     if options.track_memory:
-        if base_mem is not None:
-            assert changed_mem is not None
+        if mem is not None:
+            XXX # we don't track memory
             return CompareMemoryUsage(base_mem, changed_mem, options)
         return "Benchmark does not report memory usage yet"
 
-    return CompareMultipleRuns(base_times, changed_times, options)
+    return CompareMultipleRuns(times, options)
 
 
 def CallAndCaptureOutput(command, env=None, track_memory=False, inherit_env=[]):
@@ -1516,25 +1406,6 @@ def ParseBenchmarksOption(benchmarks_opt, bench_groups):
             should_run.remove(bm)
     return should_run
 
-def ParsePythonArgsOption(python_args_opt):
-    """Parses the --args option.
-
-    Args:
-        python_args_opt: the string passed to the -a option on the command line.
-
-    Returns:
-        A pair of lists: (base_python_args, changed_python_args).
-    """
-    args_pair = python_args_opt.split(",")
-    base_args = args_pair[0].split()  # On whitespace.
-    changed_args = base_args
-    if len(args_pair) == 2:
-        changed_args = args_pair[1].split()
-    elif len(args_pair) > 2:
-        logging.warning("Didn't expect two or more commas in --args flag: %s",
-                        python_args_opt)
-    return base_args, changed_args
-
 def ParseEnvVars(option, opt_str, value, parser):
     """Parser callback to --inherit_env var names"""
     parser.values.inherit_env = [v for v in value.split(",") if v]
@@ -1586,15 +1457,16 @@ def main(argv, bench_funcs=BENCH_FUNCS, bench_groups=BENCH_GROUPS):
                       help=("Don't perform statistics - return raw data"))
 
     options, args = parser.parse_args(argv)
-    if len(args) != 2:
+    if len(args) != 1:
         parser.error("incorrect number of arguments")
-    base, changed = args
+    base, = args
     options.base_binary = base
-    options.changed_binary = changed
 
-    base_args, changed_args = ParsePythonArgsOption(options.args)
-    base_cmd_prefix = [base] + base_args
-    changed_cmd_prefix = [changed] + changed_args
+    base_args = options.args
+    if base_args:
+        base_cmd_prefix = [base] + base_args.split(" ")
+    else:
+        base_cmd_prefix = [base]
 
     logging.basicConfig(level=logging.INFO)
 
@@ -1614,7 +1486,7 @@ def main(argv, bench_funcs=BENCH_FUNCS, bench_groups=BENCH_GROUPS):
         print "Running %s..." % name
         # PyPy specific modification: let the func to return a list of results
         # for sub-benchmarks
-        bench_result = func(base_cmd_prefix, changed_cmd_prefix, options)
+        bench_result = func(base_cmd_prefix, options)
         name = getattr(func, 'benchmark_name', name)
         if isinstance(bench_result, list):
             for subname, subresult in bench_result:

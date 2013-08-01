@@ -15,6 +15,11 @@ BENCHMARK_SET = ['richards', 'slowspitfire', 'django', 'spambayes',
                  'rietveld', 'html5lib', 'ai']
 BENCHMARK_SET += perf._FindAllBenchmarks(benchmarks.__dict__).keys()
 
+BENCHMARK_SET_FAST = []
+for bench in BENCHMARK_SET:
+    if not bench.startswith('scrimark') and not bench.startswith('translate'):
+        BENCHMARK_SET_FAST.append(bench)
+del bench
 
 class WrongBenchmark(Exception):
     pass
@@ -140,6 +145,8 @@ def main(argv):
 
     if options.niceness is not None:
         os.nice(options.niceness - os.nice(0))
+    if benchmarks == 'fast':
+        benchmarks = ", ".join(sorted(BENCHMARK_SET_FAST))
 
     results = run_and_store(benchmarks, output_filename, path,
                             revision, args=args, fast=fast,

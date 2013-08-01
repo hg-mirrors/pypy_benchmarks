@@ -44,13 +44,13 @@ def _register_new_bm_base_only(name, bm_name, d, **opts):
         bm_path = relative('own', name + '.py')
         return MeasureGeneric(python, options, bm_path, **opts)
 
-    def BM(base_python, changed_python, options, *args, **kwargs):
+    def BM(python, options, *args, **kwargs):
         try:
-            base_data = benchmark_function(base_python, options,
-                                           *args, **kwargs)
+            data = benchmark_function(python, options,
+                                      *args, **kwargs)
         except subprocess.CalledProcessError, e:
             return ResultError(e)
-        return SimpleResult(avg(base_data[0]))
+        return SimpleResult(avg(data))
     BM.func_name = 'BM_' + bm_name
 
     d[BM.func_name] = BM

@@ -386,12 +386,11 @@ class SimpleResult(object):
                 % self.__dict__)
 
 class RawResult(object):
-    def __init__(self, base_times, changed_times):
-        self.base_times = base_times
-        self.changed_times = changed_times
+    def __init__(self, times):
+        self.times = times
 
     def string_representation(self):
-        return "Raw results: %s %s" % (self.base_times, self.changed_times)
+        return "Raw results: %s" % (self.times,)
 
 def CompareMemoryUsage(base_usage, changed_usage, options):
     """Like CompareMultipleRuns, but for memory usage."""

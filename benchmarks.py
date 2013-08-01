@@ -172,7 +172,7 @@ def BM_translate(base_python, changed_python, options):
 
     result = []
     for name, time in timings:
-        data = RawResult([time], None)
+        data = RawResult([time])
         result.append((name, data))
     return result
 BM_translate.benchmark_name = 'trans2'
@@ -202,7 +202,7 @@ def BM_cpython_doc(python, options):
         print err
         raise Exception("sphinx-build.py failed")
     res = float(out.splitlines()[-1])
-    return RawResult(res)
+    return RawResult([res])
 
 BM_cpython_doc.benchmark_name = 'sphinx'
 

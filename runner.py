@@ -131,7 +131,6 @@ def main(argv):
 
     options, args = parser.parse_args(argv)
 
-    benchmarks = options.benchmarks.split(',')
     if options.benchmarks is not None:
         if options.benchmarks_file is not None:
             parser.error(

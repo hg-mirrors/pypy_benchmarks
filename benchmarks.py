@@ -50,7 +50,7 @@ def _register_new_bm_base_only(name, bm_name, d, **opts):
                                       *args, **kwargs)
         except subprocess.CalledProcessError, e:
             return ResultError(e)
-        return RawResult(data)
+        return RawResult(data[0])
     BM.func_name = 'BM_' + bm_name
 
     d[BM.func_name] = BM

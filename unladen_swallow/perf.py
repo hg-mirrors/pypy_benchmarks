@@ -964,19 +964,17 @@ def BM_Spitfire(*args, **kwargs):
     return SimpleBenchmark(MeasureSpitfireWithPsyco, *args, **kwargs)
 
 
-def BM_SlowSpitfire(base_python, changed_python, options):
+def BM_SlowSpitfire(python, options):
     extra_args = ["--disable_psyco"]
     spitfire_env = {"PYTHONPATH": Relative("lib/spitfire")}
 
     try:
-        changed_data = MeasureSpitfire(changed_python, options,
-                                       spitfire_env, extra_args)
-        base_data = MeasureSpitfire(base_python, options,
-                                    spitfire_env, extra_args)
+        data = MeasureSpitfire(python, options,
+                               spitfire_env, extra_args)
     except subprocess.CalledProcessError, e:
         return str(e)
 
-    return CompareBenchmarkData(base_data, changed_data, options)
+    return CompareBenchmarkData(data, options)
 
 
 def MeasurePickle(python, options, extra_args):

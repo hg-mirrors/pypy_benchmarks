@@ -167,7 +167,10 @@ def TScore(sample1, sample2):
     """
     assert len(sample1) == len(sample2)
     error = PooledSampleVariance(sample1, sample2) / len(sample1)
-    return (avg(sample1) - avg(sample2)) / math.sqrt(error * 2)
+    try:
+        return (avg(sample1) - avg(sample2)) / math.sqrt(error * 2)
+    except ZeroDivisionError:
+        return 0.0
 
 
 def IsSignificant(sample1, sample2):

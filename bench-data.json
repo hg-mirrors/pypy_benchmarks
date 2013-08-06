@@ -1,0 +1,149 @@
+{
+ "ai": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Brute force n-queens solver."
+ },
+ "bm_chameleon": {
+ },
+ "bm_mako": {
+ },
+ "chaos": {
+   "description": "Creates chaosgame-like fractals"
+ },
+ "cpython_doc": {
+   "description": "Run sphinx over cpython documentation"
+ },
+ "crypto_pyaes": {
+   "description": "A pure python implementation of AES"
+ },
+ "django": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Uses the Django template system to build a 150x150-cell HTML table."
+ },
+ "eparse": {
+ },
+ "fannkuch": {
+   "description": "Indexed-access to tiny integer-sequence. The fannkuch benchmark is defined by programs in Performing Lisp Analysis of the FANNKUCH Benchmark, Kenneth R. Anderson and Duane Rettig."
+ },
+ "float": {
+   "description": "Creates an array of points using circular projection and then normalizes and maximizes them. Floating-point heavy."
+ },
+ "genshi_text": {
+   "description": "Genshi template rendering using text, generator heavy"
+ },
+ "genshi_xml": {
+   "description": "Genshi template rendering using XML, generator heavy"
+ },
+ "go": {
+   "description": "A go game computer player AI."
+ },
+ "hexiom2": {
+ },
+ "html5lib": {
+   "warmup": 0,
+   "total_runs": 50,
+   "description": "Parses the HTML 5 spec using html5lib."
+ },
+ "json_bench": {
+   "description": "Tests the speed of json encoding"
+ },
+ "meteor-contest": {
+   "description": "Searchs for solutions to shape packing puzzle."
+ },
+ "nbody_modified": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Double-precision N-body simulation. It models the orbits of Jovian planets, using a simple symplectic-integrator."
+ },
+ "pidigits": {
+   "description": "Computes the digits of PI. Long heavy"
+ },
+ "pyflate-fast": {
+   "description": "Stand-alone pure-Python DEFLATE (gzip) and bzip2 decoder/decompressor."
+ },
+ "raytrace-simple": {
+   "description": "A raytracer renderer"
+ },
+ "richards": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Medium-sized language benchmark that simulates the task dispatcher in the kernel of an operating system."
+ },
+ "rietveld": {
+   "warmup": 2,
+   "total_runs": 1500,
+   "description": "A Django application benchmark.",
+   "legacy_multiplier": 30
+ },
+ "scimark_fft": {
+ },
+ "scimark_lu": {
+ },
+ "scimark_montecarlo": {
+ },
+ "scimark_sor": {
+ },
+ "scimark_sparsematmult": {
+ },
+ "slowspitfire": {
+   "description": "Uses the Spitfire template system to build a 1000x1000-cell HTML table; it differs from spitfire in that it uses .join(list) instead of cStringIO."
+ },
+ "spambayes": {
+   "description": "Spambayes spam classification filter"
+ },
+ "spectral-norm": {
+ },
+ "spitfire": {
+   "description": "Uses the Spitfire template system to build a 100x100-cell HTML table; it differs from spitfire in that it uses .join(list) instead of cStringIO."
+ },
+ "spitfire_cstringio": {
+   "description": "ses the Spitfire template system to build a 1000x1000-cell HTML table, using the cStringIO module."
+ },
+ "sympy_expand": {
+   "description": "Use sympy (pure python symbolic math lib) do to expansion"
+ },
+ "sympy_integrate": {
+   "description": "Use sympy (pure python symbolic math lib) do to integration"
+ },
+ "sympy_str": {
+   "description": "Use sympy (pure python symbolic math lib) do to str() operation"
+ },
+ "sympy_sum": {
+   "description": "Use sympy (pure python symbolic math lib) do to summation"
+ },
+ "telco": {
+   "description": "A small program which is intended to capture the essence of a telephone company billing application, with a realistic balance between Input/Output activity and application calculations."
+ },
+ "trans2_annotate": {
+   "description": "PyPy translation -O2 - annotation"
+ },
+ "trans2_backendopt": {
+   "description": "PyPy translation -O2 - backendopt"
+ },
+ "trans2_database": {
+   "description": "PyPy translation -O2 - C database"
+ },
+ "trans2_rtype": {
+   "description": "PyPy translation -O2 - rtype"
+ },
+ "trans2_source": {
+   "description": "PyPy translation -O2 - C source"
+ },
+ "twisted_iteration" : {
+   "description": "Iterates a Twisted reactor as quickly as possible without doing any work."
+ },
+ "twisted_names": {
+   "description": "Runs a DNS server with Twisted Names and then issues requests to it over loopback UDP."
+ },
+ "twisted_pb": {
+   "description": "Runs a Perspective Broker server with a no-op method and invokes that method over loopback TCP with some strings, dictionaries, and tuples as arguments."
+ },
+ "twisted_tcp": {
+   "description": "Connects one Twised client to one Twisted server over TCP (on the loopback interface) and then writes bytes as fast as it can."
+ },
+ "twisted_web": {
+   "description": "Runs twisted web server and connects through twisted HTTP client"
+ }
+}

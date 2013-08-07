@@ -8,9 +8,9 @@ def relative(*args):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), *args)
 
 def _register_new_bm(name, bm_name, d, **opts):
-    def Measure(python, options):
+    def Measure(python, options, bench_data):
         bm_path = relative('own', name + '.py')
-        return MeasureGeneric(python, options, bm_path, **opts)
+        return MeasureGeneric(python, options, bench_data, bm_path, **opts)
     Measure.func_name = 'Measure' + name.capitalize()
 
     def BM(*args, **kwds):
@@ -20,7 +20,7 @@ def _register_new_bm(name, bm_name, d, **opts):
     d[BM.func_name] = BM
 
 def _register_new_bm_twisted(name, bm_name, d, **opts):
-    def Measure(python, options):
+    def Measure(python, options, bench_data):
         def parser(line):
             number = float(line.split(" ")[0])
             if name == 'tcp':
@@ -30,7 +30,8 @@ def _register_new_bm_twisted(name, bm_name, d, **opts):
             else:
                 return 100/number
         bm_path = relative('own', 'twisted', name + '.py')
-        return MeasureGeneric(python, options, bm_path, parser=parser, **opts)
+        return MeasureGeneric(python, options, bench_data, bm_path,
+                              parser=parser, **opts)
     Measure.func_name = 'Measure' + name.capitalize()
 
     def BM(*args, **kwds):
@@ -40,9 +41,9 @@ def _register_new_bm_twisted(name, bm_name, d, **opts):
     d[BM.func_name] = BM
 
 def _register_new_bm_base_only(name, bm_name, d, **opts):
-    def benchmark_function(python, options):
+    def benchmark_function(python, options, bench_data):
         bm_path = relative('own', name + '.py')
-        return MeasureGeneric(python, options, bm_path, **opts)
+        return MeasureGeneric(python, options, bench_data, bm_path, **opts)
 
     def BM(python, options, *args, **kwargs):
         try:
@@ -58,19 +59,15 @@ def _register_new_bm_base_only(name, bm_name, d, **opts):
 TWISTED = [relative('lib/twisted-trunk'), relative('lib/zope.interface-3.5.3/src'), relative('own/twisted')]
 
 opts = {
-    'gcbench' : {'iteration_scaling' : .10},
-    'pidigits': {'iteration_scaling' : .10},
     'eparse'  : {'bm_env': {'PYTHONPATH': relative('lib/monte')}},
     'bm_mako' : {'bm_env': {'PYTHONPATH': relative('lib/mako')}},
-    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')},
-                     'iteration_scaling': 3},
+    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')}},
 }
 
 for name in ['expand', 'integrate', 'sum', 'str']:
     _register_new_bm('bm_sympy', 'sympy_' + name,
                      globals(), bm_env={'PYTHONPATH': relative('lib/sympy')},
-                     extra_args=['--benchmark=' + name],
-                     iteration_scaling=.1)
+                     extra_args=['--benchmark=' + name])
 
 for name in ['xml', 'text']:
     _register_new_bm('bm_genshi', 'genshi_' + name,
@@ -84,13 +81,8 @@ for name in ['float', 'nbody_modified', 'meteor-contest', 'fannkuch',
     _register_new_bm(name, name, globals(), **opts.get(name, {}))
 
 for name in ['names', 'iteration', 'tcp', 'pb', ]:#'web']:#, 'accepts']:
-    if name == 'web':
-        iteration_scaling = 0.2
-    else:
-        iteration_scaling = 1.0
     _register_new_bm_twisted(name, 'twisted_' + name,
-                     globals(), bm_env={'PYTHONPATH': ':'.join(TWISTED)},
-                                 iteration_scaling=iteration_scaling)
+                     globals(), bm_env={'PYTHONPATH': ':'.join(TWISTED)})
 
 _register_new_bm('spitfire', 'spitfire', globals(),
     extra_args=['--benchmark=spitfire_o4'])
@@ -141,7 +133,7 @@ def test_parse_timer():
         ('database', 0.4)
         ]
 
-def BM_translate(python, options):
+def BM_translate(python, options, bench_data):
     """
     Run translate.py and returns a benchmark result for each of the phases.
     Note that we run it only with ``base_python`` (which corresponds to
@@ -177,7 +169,7 @@ def BM_translate(python, options):
     return result
 BM_translate.benchmark_name = 'trans2'
 
-def BM_cpython_doc(python, options):
+def BM_cpython_doc(python, options, bench_data):
     from unladen_swallow.perf import RawResult
     import subprocess, shutil
 

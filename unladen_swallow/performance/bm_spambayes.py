@@ -22,10 +22,6 @@ import util
 
 
 def test_spambayes(iterations, messages, ham_classifier):
-    # Prime the pump. This still leaves some hot functions uncompiled; these
-    # will be noticed as hot during the timed loops below.
-    for msg in messages:
-        ham_classifier.score(msg)
 
     times = []
     for _ in xrange(iterations):

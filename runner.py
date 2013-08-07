@@ -22,8 +22,12 @@ class WrongBenchmark(Exception):
 def run_and_store(benchmark_set, result_filename, path, revision=0,
                   options='', branch='default', args='', upload=False,
                   fast=False, full_store=False):
-    funcs = perf.BENCH_FUNCS.copy()
-    funcs.update(perf._FindAllBenchmarks(benchmarks.__dict__))
+    _funcs = perf.BENCH_FUNCS.copy()
+    _funcs.update(perf._FindAllBenchmarks(benchmarks.__dict__))
+    bench_data = json.load(open('bench-data.json'))
+    funcs = {}
+    for key, value in _funcs.iteritems():
+        funcs[key] = (value, bench_data[key])
     opts = ['-b', ','.join(benchmark_set),
             '--inherit_env=PATH',
             '--no_charts']
@@ -146,7 +150,7 @@ def main(argv):
             benchmarks = list(BENCHMARK_SET)
 
     for benchmark in benchmarks:
-        if benchmark not in BENCHMARK_SET:
+        if benchmark not in BENCHMARK_SET and not benchmark.startswith('-'):
             raise WrongBenchmark(benchmark)
 
     path = options.python

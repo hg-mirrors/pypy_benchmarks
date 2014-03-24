@@ -7,6 +7,10 @@
 #  Translation from C++, Mario Wolczko
 #  Outer loop added by Alex Jacoby
 
+import thread, os
+#from __pypy__.thread import atomic
+
+
 # Task IDs
 I_IDLE = 1
 I_WORK = 2
@@ -151,12 +155,11 @@ class TaskWorkArea(object):
         self.holdCount = 0
         self.qpktCount = 0
 
-taskWorkArea = TaskWorkArea()
-
 class Task(TaskState):
 
 
-    def __init__(self,i,p,w,initialState,r):
+    def __init__(self,i,p,w,initialState,r, taskWorkArea):
+        self.taskWorkArea = taskWorkArea
         self.link = taskWorkArea.taskList
         self.ident = i
         self.priority = p
@@ -206,7 +209,7 @@ class Task(TaskState):
 
 
     def hold(self):
-        taskWorkArea.holdCount += 1
+        self.taskWorkArea.holdCount += 1
         self.task_holding = True
         return self.link
 
@@ -222,14 +225,14 @@ class Task(TaskState):
 
     def qpkt(self,pkt):
         t = self.findtcb(pkt.ident)
-        taskWorkArea.qpktCount += 1
+        self.taskWorkArea.qpktCount += 1
         pkt.link = None
         pkt.ident = self.ident
         return t.addPacket(pkt,self)
 
 
     def findtcb(self,id):
-        t = taskWorkArea.taskTab[id]
+        t = self.taskWorkArea.taskTab[id]
         if t is None:
             raise Exception("Bad task id %d" % id)
         return t
@@ -239,8 +242,8 @@ class Task(TaskState):
 
 
 class DeviceTask(Task):
-    def __init__(self,i,p,w,s,r):
-        Task.__init__(self,i,p,w,s,r)
+    def __init__(self,i,p,w,s,r, taskWorkArea):
+        Task.__init__(self,i,p,w,s,r, taskWorkArea)
 
     def fn(self,pkt,r):
         d = r
@@ -260,8 +263,8 @@ class DeviceTask(Task):
 
 
 class HandlerTask(Task):
-    def __init__(self,i,p,w,s,r):
-        Task.__init__(self,i,p,w,s,r)
+    def __init__(self,i,p,w,s,r, taskWorkArea):
+        Task.__init__(self,i,p,w,s,r, taskWorkArea)
 
     def fn(self,pkt,r):
         h = r
@@ -292,8 +295,8 @@ class HandlerTask(Task):
 
 
 class IdleTask(Task):
-    def __init__(self,i,p,w,s,r):
-        Task.__init__(self,i,0,None,s,r)
+    def __init__(self,i,p,w,s,r, taskWorkArea):
+        Task.__init__(self,i,0,None,s,r, taskWorkArea)
 
     def fn(self,pkt,r):
         i = r
@@ -305,7 +308,7 @@ class IdleTask(Task):
             i.control /= 2
             return self.release(I_DEVA)
         else:
-            i.control = (i.control/2) ^ 0xd008
+            i.control = i.control/2 ^ 0xd008
             return self.release(I_DEVB)
             
 
@@ -315,8 +318,8 @@ class IdleTask(Task):
 A = ord('A')
 
 class WorkTask(Task):
-    def __init__(self,i,p,w,s,r):
-        Task.__init__(self,i,p,w,s,r)
+    def __init__(self,i,p,w,s,r, taskWorkArea):
+        Task.__init__(self,i,p,w,s,r, taskWorkArea)
 
     def fn(self,pkt,r):
         w = r
@@ -341,11 +344,14 @@ class WorkTask(Task):
 
         return self.qpkt(pkt)
 
-import time
+try:
+    from time import time
+except ImportError:
+    def time():
+        return 0
 
 
-
-def schedule():
+def schedule(taskWorkArea):
     t = taskWorkArea.taskList
     while t is not None:
         pkt = None
@@ -361,32 +367,58 @@ def schedule():
 
 class Richards(object):
 
-    def run(self, iterations):
-        for i in xrange(iterations):
+    def __init__(self):
+        self.finished_lock = thread.allocate_lock()
+        self.finished_lock.acquire()
+        self.taskWorkArea = TaskWorkArea()
+
+    def run_and_unlock(self, to_do):
+        os.write(1, 'running...\n')
+        iterations = 0
+        self.result = True
+        while 1:
+            try:
+                to_do.pop()
+            except IndexError:
+                break
+            iterations += 1
+            self.result = self.run(self.taskWorkArea)
+        os.write(1, 'done, iterations=%d, result=%r\n' % (iterations, self.result))
+        self.finished_lock.release()
+
+    def run(self, taskWorkArea):
+        #with atomic:
+        if 1:
             taskWorkArea.holdCount = 0
             taskWorkArea.qpktCount = 0
 
-            IdleTask(I_IDLE, 1, 10000, TaskState().running(), IdleTaskRec())
+            IdleTask(I_IDLE, 1, 10000, TaskState().running(), IdleTaskRec(),
+                     taskWorkArea)
 
             wkq = Packet(None, 0, K_WORK)
             wkq = Packet(wkq , 0, K_WORK)
-            WorkTask(I_WORK, 1000, wkq, TaskState().waitingWithPacket(), WorkerTaskRec())
+            WorkTask(I_WORK, 1000, wkq, TaskState().waitingWithPacket(), WorkerTaskRec(),
+                     taskWorkArea)
 
             wkq = Packet(None, I_DEVA, K_DEV)
             wkq = Packet(wkq , I_DEVA, K_DEV)
             wkq = Packet(wkq , I_DEVA, K_DEV)
-            HandlerTask(I_HANDLERA, 2000, wkq, TaskState().waitingWithPacket(), HandlerTaskRec())
+            HandlerTask(I_HANDLERA, 2000, wkq, TaskState().waitingWithPacket(), HandlerTaskRec(),
+                        taskWorkArea)
 
             wkq = Packet(None, I_DEVB, K_DEV)
             wkq = Packet(wkq , I_DEVB, K_DEV)
             wkq = Packet(wkq , I_DEVB, K_DEV)
-            HandlerTask(I_HANDLERB, 3000, wkq, TaskState().waitingWithPacket(), HandlerTaskRec())
+            HandlerTask(I_HANDLERB, 3000, wkq, TaskState().waitingWithPacket(), HandlerTaskRec(),
+                        taskWorkArea)
 
             wkq = None;
-            DeviceTask(I_DEVA, 4000, wkq, TaskState().waiting(), DeviceTaskRec());
-            DeviceTask(I_DEVB, 5000, wkq, TaskState().waiting(), DeviceTaskRec());
+            DeviceTask(I_DEVA, 4000, wkq, TaskState().waiting(), DeviceTaskRec(),
+                       taskWorkArea)
+            DeviceTask(I_DEVB, 5000, wkq, TaskState().waiting(), DeviceTaskRec(),
+                       taskWorkArea)
             
-            schedule()
+            schedule(taskWorkArea)
 
             if taskWorkArea.holdCount == 9297 and taskWorkArea.qpktCount == 23246:
                 pass
@@ -395,16 +427,22 @@ class Richards(object):
 
         return True
 
-def entry_point(iterations):
-    r = Richards()
-    startTime = time.time()
-    result = r.run(iterations)
-    endTime = time.time()
+def entry_point(iterations, NUM_THREADS):
+    rlist = [Richards() for i in range(NUM_THREADS)]
+    to_do = [None] * iterations
+    startTime = time()
+    for r in rlist:
+        thread.start_new_thread(r.run_and_unlock, (to_do,))
+    for r in rlist:
+        r.finished_lock.acquire()
+    endTime = time()
+    assert to_do == []
+    result = all(r.result for r in rlist)
     return result, startTime, endTime
 
-def main(entry_point = entry_point, iterations = 10):
+def main(entry_point = entry_point, iterations = 10, threads = 4):
     print "Richards benchmark (Python) starting... [%r]" % entry_point
-    result, startTime, endTime = entry_point(iterations)
+    result, startTime, endTime = entry_point(iterations, threads)
     if not result:
         print "Incorrect results!"
         return -1
@@ -414,10 +452,7 @@ def main(entry_point = entry_point, iterations = 10):
     print "Average time per iteration: %.2f ms" %(total_s*1000/iterations)
     return 42
 
-
 if __name__ == '__main__':
     import sys
-    if len(sys.argv) >= 2:
-        main(iterations = int(sys.argv[1]))
-    else:
-        main()
+    main(iterations = int(sys.argv[1]),
+         threads = int(sys.argv[2]))

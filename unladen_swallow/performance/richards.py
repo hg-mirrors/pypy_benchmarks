@@ -305,7 +305,7 @@ class IdleTask(Task):
             i.control /= 2
             return self.release(I_DEVA)
         else:
-            i.control = (i.control/2) ^ 0xd008
+            i.control = i.control/2 ^ 0xd008
             return self.release(I_DEVB)
             
 

@@ -86,7 +86,7 @@ def get_benchmark_data():
     tmpl = loader.get_template(templ_name)
     return tmpl, context
 
-INNER_ITERS = 46
+INNER_ITERS = 46 * 30
 
 def test_rietveld(count, tmpl, context):
     # Warm up Django.
@@ -98,36 +98,6 @@ def test_rietveld(count, tmpl, context):
         t0 = time.time()
 
         for i in xrange(INNER_ITERS):
-            # 30 calls to render, so that we don't measure loop overhead.
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
-            tmpl.render(context)
             tmpl.render(context)
 
         t1 = time.time()

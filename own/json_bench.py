@@ -11,14 +11,20 @@ HUGE = ([NESTED[0]] * 1000, 100)
 
 cases = ['EMPTY', 'SIMPLE', 'NESTED', 'HUGE']
 
+INNER_ITERS = 13
+
 def main(n):
     l = []
-    for i in range(n):
+    for i in xrange(n):
         t0 = time.time()
-        for case in cases:
-            data, count = globals()[case]
-            for i in range(count):
-                json.dumps(data)
+
+        for m in xrange(INNER_ITERS):
+
+            for case in cases:
+                data, count = globals()[case]
+                for i in range(count):
+                    json.dumps(data)
+
         l.append(time.time() - t0)
     return l
 

@@ -21,11 +21,17 @@ import bigtable
 # bummer, timeit module is stupid
 from bigtable import test_python_cstringio, test_spitfire_o4, test_spitfire
 
+INNER_ITERS_D = {
+    "python_cstringio" :  12000,
+    "spitfire_o4" : 4000,
+}
+
 def runtest(n, benchmark):
     times = []
+    inner_iters = INNER_ITERS_D.get(benchmark, 100)
     for i in range(n):
         sys.stdout = StringIO()
-        bigtable.run([benchmark], 100)
+        bigtable.run([benchmark], inner_iters)
         times.append(float(sys.stdout.getvalue().split(" ")[-2]))
         sys.stdout = sys.__stdout__
     return times

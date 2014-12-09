@@ -423,13 +423,18 @@ def versus_cpu():
     board = Board()
     pos = computer_move(board)
 
+INNER_ITERS = 89
+
 def main(n):
     times = []
-    for i in range(5):
+    for i in xrange(5):
         versus_cpu() # warmup
-    for i in range(n):
+    for i in xrange(n):
         t1 = time.time()
-        versus_cpu()
+
+        for j in xrange(INNER_ITERS):
+            versus_cpu()
+
         t2 = time.time()
         times.append(t2 - t1)
     return times

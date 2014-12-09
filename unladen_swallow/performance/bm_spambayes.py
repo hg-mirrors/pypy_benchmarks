@@ -20,6 +20,7 @@ from spambayes import hammie, mboxutils
 # Local imports
 import util
 
+INNER_ITERS = 150
 
 def test_spambayes(iterations, messages, ham_classifier):
     # Prime the pump. This still leaves some hot functions uncompiled; these
@@ -30,8 +31,9 @@ def test_spambayes(iterations, messages, ham_classifier):
     times = []
     for _ in xrange(iterations):
         t0 = time.time()
-        for msg in messages:
-            ham_classifier.score(msg)
+        for i in xrange(INNER_ITERS):
+            for msg in messages:
+                ham_classifier.score(msg)
         t1 = time.time()
         times.append(t1 - t0)
     return times

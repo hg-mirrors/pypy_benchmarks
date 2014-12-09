@@ -75,11 +75,16 @@ def run():
     end = time()
     return end - start
 
+INNER_ITERS = 450
+
 def main(n):
     run() # warmup
     times = []
     for i in range(n):
-        times.append(run())
+        all_inner_runs = 0.0
+        for j in xrange(INNER_ITERS):
+            all_inner_runs += run()
+        times.append(all_inner_runs)
     return times
 
 

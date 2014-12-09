@@ -13,15 +13,20 @@ tal:content="python: d" />
 </tr>
 </table>"""
 
+INNER_ITERS = 500
+
 def main(n):
     tmpl = PageTemplate(BIGTABLE_ZPT)
     options = {'table': [dict(a=1, b=2, c=3, d=4, e=5, f=6, g=7, h=8, i=9, j=10)
                          for x in range(1000)]}
     import time
     l = []
-    for k in range(n):
+    for k in xrange(n):
         t0 = time.time()
-        tmpl(options=options)
+
+        for i in xrange(INNER_ITERS):
+            tmpl(options=options)
+
         l.append(time.time() - t0)
     return l
 

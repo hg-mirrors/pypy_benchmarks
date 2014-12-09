@@ -18,6 +18,8 @@ import richards
 import util
 
 
+INNER_ITERS = 2750
+
 def test_richards(iterations):
     # Warm-up
     r = richards.Richards()
@@ -26,7 +28,7 @@ def test_richards(iterations):
     times = []
     for _ in xrange(iterations):
         t0 = time.time()
-        r.run(iterations=1)
+        r.run(iterations=INNER_ITERS)
         t1 = time.time()
         times.append(t1 - t0)
     return times

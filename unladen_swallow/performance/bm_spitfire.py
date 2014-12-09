@@ -40,6 +40,8 @@ SPITFIRE_SRC = """<table xmlns:py="http://spitfire/">
 </table>
 """
 
+INNER_ITERS = 31
+
 def test_spitfire(count):
     # Activate the most aggressive Spitfire optimizations. While it might
     # conceivably be interesting to stress Spitfire's lower optimization
@@ -60,7 +62,10 @@ def test_spitfire(count):
     times = []
     for _ in xrange(count):
         t0 = time.time()
-        data = spitfire_tmpl_o4(search_list=[{"table": table}]).main()
+
+        for i in xrange(INNER_ITERS):
+            data = spitfire_tmpl_o4(search_list=[{"table": table}]).main()
+
         t1 = time.time()
         times.append(t1 - t0)
     return times

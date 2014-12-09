@@ -135,21 +135,25 @@ def solve(n, i_min, free, curr_board, pieces_left, solutions,
 
 SOLVE_ARG = 60
 
+INNER_ITERS = 92
+
 def main(n):
     times = []
-    for i in range(n):
+    for i in xrange(n):
+
         t0 = time.time()
-        free = frozenset(xrange(len(board)))
-        curr_board = [-1] * len(board)
-        pieces_left = range(len(pieces))
-        solutions = []
-        solve(SOLVE_ARG, 0, free, curr_board, pieces_left, solutions)
-        #print len(solutions),  'solutions found\n'
-        #for i in (0, -1): print_board(solutions[i])
-        tk = time.time()
+        for j in xrange(INNER_ITERS):
+            free = frozenset(xrange(len(board)))
+            curr_board = [-1] * len(board)
+            pieces_left = range(len(pieces))
+            solutions = []
+            solve(SOLVE_ARG, 0, free, curr_board, pieces_left, solutions)
+            #print len(solutions),  'solutions found\n'
+            #for i in (0, -1): print_board(solutions[i])
+            tk = time.time()
         times.append(tk - t0)
     return times
-    
+
 if __name__ == "__main__":
     parser = optparse.OptionParser(
         usage="%prog [options]",

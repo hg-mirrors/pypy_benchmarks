@@ -69,6 +69,7 @@ def n_queens(queen_count):
             yield vec
 
 
+INNER_ITERS = 230
 def test_n_queens(iterations):
     # Warm-up runs.
     list(n_queens(8))
@@ -77,7 +78,10 @@ def test_n_queens(iterations):
     times = []
     for _ in xrange(iterations):
         t0 = time.time()
-        list(n_queens(8))
+
+        for i in xrange(INNER_ITERS):
+            list(n_queens(8))
+
         t1 = time.time()
         times.append(t1 - t0)
     return times

@@ -20,13 +20,25 @@ def bench_str():
     x, y, z = symbols('x y z')
     str(expand((x+2*y+3*z)**30))
 
+INNER_ITERS_D = {
+    'expand' : 650000,
+    'integrate' : 10,
+    'str' : 500,
+    'sum' : 500,
+}
+
 def main(n, bench):
+
+    inner_iters = INNER_ITERS_D.get(bench, 1)
     func = globals()['bench_' + bench]
     l = []
     for i in range(n):
         clear_cache()
         t0 = time.time()
-        func()
+
+        for j in xrange(inner_iters):
+            func()
+
         l.append(time.time() - t0)
     return l
 

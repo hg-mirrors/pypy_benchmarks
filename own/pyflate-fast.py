@@ -660,6 +660,8 @@ def _main():
     assert md5.md5(out).hexdigest() == "afa004a630fe072901b1d9628b960974"
     input.close()
 
+INNER_ITERS = 26
+
 def main(n):
     import time
     times = []
@@ -667,7 +669,10 @@ def main(n):
         _main() # warmup
     for i in range(n):
         t1 = time.time()
-        _main()
+
+        for j in xrange(INNER_ITERS):
+            _main()
+
         t2 = time.time()
         times.append(t2 - t1)
     return times

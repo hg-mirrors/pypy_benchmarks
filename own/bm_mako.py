@@ -120,6 +120,7 @@ ${fun5()}
 ${fun6()}
 """
 
+INNER_ITERS = 550
 
 def test_mako(count):
 
@@ -128,7 +129,7 @@ def test_mako(count):
     lookup.put_string('page.mako', PAGE_TEMPLATE)
 
     template = Template(CONTENT_TEMPLATE, lookup=lookup)
-    
+
     table = [xrange(150) for i in xrange(150)]
     paragraphs = xrange(50)
     title = 'Hello world!'
@@ -136,9 +137,11 @@ def test_mako(count):
     times = []
     for i in range(count):
         t0 = time.time()
-        data = template.render(table=table, paragraphs=paragraphs,
-                               lorem=LOREM_IPSUM, title=title,
-                               img_count=50)
+
+        for j in xrange(INNER_ITERS):
+            data = template.render(table=table, paragraphs=paragraphs,
+                                   lorem=LOREM_IPSUM, title=title,
+                                   img_count=50)
         t1 = time.time()
         times.append(t1-t0)
     return times

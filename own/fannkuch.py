@@ -52,15 +52,20 @@ def fannkuch(n):
 
 DEFAULT_ARG = 9
 
+INNER_ITERS = 60
+
 def main(n):
     times = []
-    for i in range(n):
+    for i in xrange(n):
         t0 = time.time()
-        fannkuch(DEFAULT_ARG)
+
+        for j in xrange(INNER_ITERS):
+            fannkuch(DEFAULT_ARG)
+
         tk = time.time()
         times.append(tk - t0)
     return times
-    
+
 if __name__ == "__main__":
     parser = optparse.OptionParser(
         usage="%prog [options]",

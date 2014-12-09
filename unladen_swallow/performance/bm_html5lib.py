@@ -23,6 +23,8 @@ import util
 import html5lib
 
 
+INNER_ITERS = 4
+
 def test_html5lib(count, spec_data):
     # No warm-up runs for this benchmark; in real life, the parser doesn't get
     # to warm up (this isn't a daemon process).
@@ -31,7 +33,10 @@ def test_html5lib(count, spec_data):
     for _ in xrange(count):
         spec_data.seek(0)
         t0 = time.time()
-        html5lib.parse(spec_data)
+
+        for i in xrange(INNER_ITERS):
+            html5lib.parse(spec_data)
+
         t1 = time.time()
         times.append(t1 - t0)
     return times

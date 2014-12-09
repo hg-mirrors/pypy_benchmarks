@@ -47,17 +47,22 @@ def benchmark(n):
 
 POINTS = 100000
 
+INNER_ITERS = 240
+
 def main(arg):
     # XXX warmup
-    
+
     times = []
     for i in xrange(arg):
         t0 = time.time()
-        o = benchmark(POINTS)
+
+        for j in xrange(INNER_ITERS):
+            o = benchmark(POINTS)
+
         tk = time.time()
         times.append(tk - t0)
     return times
-    
+
 if __name__ == "__main__":
     parser = optparse.OptionParser(
         usage="%prog [options]",

@@ -109,17 +109,22 @@ def offset_momentum(ref, bodies=SYSTEM, px=0.0, py=0.0, pz=0.0):
 
 NUMBER_OF_ITERATIONS = 20000
 
+INNER_ITERATIONS = 290
+
 def main(n, ref='sun'):
     # XXX warmup
-    
+
     times = []
-    for i in range(n):
+    for i in xrange(n):
         t0 = time.time()
-        offset_momentum(BODIES[ref])
-        report_energy()
-        advance(0.01, NUMBER_OF_ITERATIONS)
-        report_energy()
-        tk = time.time()
+
+        for j in xrange(INNER_ITERATIONS):
+            offset_momentum(BODIES[ref])
+            report_energy()
+            advance(0.01, NUMBER_OF_ITERATIONS)
+            report_energy()
+            tk = time.time()
+
         times.append(tk - t0)
     return times
 

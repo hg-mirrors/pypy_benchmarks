@@ -22,13 +22,18 @@ def benchmark():
 
     assert plaintext == cleartext
 
+INNER_ITERS = 197
+
 def main(arg):
     # XXX warmup
 
     times = []
     for i in xrange(arg):
         t0 = time.time()
-        o = benchmark()
+
+        for j in xrange(INNER_ITERS):
+            o = benchmark()
+
         tk = time.time()
         times.append(tk - t0)
     return times

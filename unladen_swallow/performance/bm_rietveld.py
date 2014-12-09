@@ -86,6 +86,7 @@ def get_benchmark_data():
     tmpl = loader.get_template(templ_name)
     return tmpl, context
 
+INNER_ITERS = 46
 
 def test_rietveld(count, tmpl, context):
     # Warm up Django.
@@ -95,37 +96,40 @@ def test_rietveld(count, tmpl, context):
     times = []
     for _ in xrange(count):
         t0 = time.time()
-        # 30 calls to render, so that we don't measure loop overhead.
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
+
+        for i in xrange(INNER_ITERS):
+            # 30 calls to render, so that we don't measure loop overhead.
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+            tmpl.render(context)
+
         t1 = time.time()
         times.append(t1 - t0)
     return times

@@ -809,7 +809,7 @@ def MeasureGeneric(python, options, bm_path, bm_env=None,
     if options.rigorous:
         trials = 100
     elif options.fast:
-        trials = 5
+        trials = 1 # XXX
     trials = max(1, int(trials * iteration_scaling))
 
     RemovePycs()

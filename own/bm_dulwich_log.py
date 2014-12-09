@@ -4,13 +4,18 @@ import util, os
 
 import dulwich.repo
 
+INNER_ITERS = 50
+
 def test_dulwich(n):
     l = []
     r = dulwich.repo.Repo(os.path.join(os.path.dirname(__file__), 'git-demo'))
     import time
-    for i in range(20):
+    for i in xrange(n):
         t0 = time.time()
-        r.revision_history(r.head())
+
+        for j in xrange(INNER_ITERS):
+            r.revision_history(r.head())
+
         l.append(time.time() - t0)
     return l
 

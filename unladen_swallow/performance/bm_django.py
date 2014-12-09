@@ -32,6 +32,7 @@ DJANGO_TMPL = Template("""<table>
 </table>
 """)
 
+INNER_ITERS = 300
 def test_django(count):
     table = [xrange(150) for _ in xrange(150)]
     context = Context({"table": table})
@@ -43,7 +44,10 @@ def test_django(count):
     times = []
     for _ in xrange(count):
         t0 = time.time()
-        data = DJANGO_TMPL.render(context)
+
+        for i in xrange(INNER_ITERS):
+            data = DJANGO_TMPL.render(context)
+
         t1 = time.time()
         times.append(t1 - t0)
     return times

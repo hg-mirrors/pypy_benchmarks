@@ -614,15 +614,19 @@ def delta_blue():
     chain_test(100)
     projection_test(100)
 
+INNER_ITERS = 17000
 
 # Specific to the PyPy implementation, to run within the main harnass.
 def main(n):
     import time
     times = []
 
-    for i in range(n):
+    for i in xrange(n):
         t1 = time.time()
-        delta_blue()
+
+        for j in xrange(INNER_ITERS):
+            delta_blue()
+
         t2 = time.time()
         times.append(t2 - t1)
 

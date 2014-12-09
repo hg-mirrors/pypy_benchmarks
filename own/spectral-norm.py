@@ -42,25 +42,30 @@ def part_At_times_u((i,u)):
 
 DEFAULT_N = 130
 
+INNER_ITERS = 600
+
 def main(n):
     times = []
-    for i in range(n):
+    for i in xrange(n):
         t0 = time.time()
-        u = [1] * DEFAULT_N
 
-        for dummy in xrange (10):
-            v = eval_AtA_times_u (u)
-            u = eval_AtA_times_u (v)
+        for j in xrange(INNER_ITERS):
+            u = [1] * DEFAULT_N
 
-        vBv = vv = 0
+            for dummy in xrange (10):
+                v = eval_AtA_times_u (u)
+                u = eval_AtA_times_u (v)
 
-        for ue, ve in izip (u, v):
-            vBv += ue * ve
-            vv  += ve * ve
+            vBv = vv = 0
+
+            for ue, ve in izip (u, v):
+                vBv += ue * ve
+                vv  += ve * ve
+
         tk = time.time()
         times.append(tk - t0)
     return times
-    
+
 if __name__ == "__main__":
     parser = optparse.OptionParser(
         usage="%prog [options]",

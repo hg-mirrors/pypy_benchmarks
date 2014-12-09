@@ -353,6 +353,8 @@ def _main():
     s.addObject(Halfspace(Point(0,0,0), Vector.UP), CheckerboardSurface())
     s.render(c)
 
+INNER_ITERS = 300
+
 def main(n):
     import time
     times = []
@@ -360,7 +362,10 @@ def main(n):
         _main() # warmup
     for i in range(n):
         t1 = time.time()
-        _main()
+
+        for j in xrange(INNER_ITERS):
+            _main()
+
         t2 = time.time()
         times.append(t2 - t1)
     return times

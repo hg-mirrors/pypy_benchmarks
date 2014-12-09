@@ -13,6 +13,8 @@ random.seed(1234)
 import sys
 import time
 
+INNER_ITERS = 5000 * 1300
+
 class GVector(object):
     def __init__(self, x = 0, y = 0, z = 0):
         self.x = x
@@ -219,9 +221,9 @@ class Chaosgame(object):
                         (self.maxy + self.miny) / 2, 0)
         colored = 0
         times = []
-        for _ in range(n):
+        for _ in xrange(n):
             t1 = time.time()
-            for i in xrange(5000):
+            for i in xrange(INNER_ITERS):
                 point = self.transform_point(point)
                 x = (point.x - self.minx) / self.width * w
                 y = (point.y - self.miny) / self.height * h

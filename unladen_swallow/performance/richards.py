@@ -363,10 +363,8 @@ class Richards(object):
 
     def run(self, iterations):
         for i in xrange(iterations):
-            global taskWorkArea
-            # Must reinitiliase the taskWorkArea or benchmark will run slower
-            # upon subsequent runs.
-            taskWorkArea = TaskWorkArea()
+            taskWorkArea.holdCount = 0
+            taskWorkArea.qpktCount = 0
 
             IdleTask(I_IDLE, 1, 10000, TaskState().running(), IdleTaskRec())
 

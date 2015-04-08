@@ -58,8 +58,8 @@ def run_and_store(benchmark_set, result_filename, path, revision=0,
     force_host = parser_options.force_host
     f.write(json.dumps({
         'revision': revision,
-        'results': convert_results(results),
-        "interpreter": parser_options.python,
+        'benchmarks': convert_results(results),
+        "interpreter": parser_options.interpreter_name or parser_options.python,
         "machine": force_host if force_host else socket.gethostname(),
         "protocol_version_no": "1",
         "start_timestamp": start_time,
@@ -109,6 +109,11 @@ def main(argv):
         help=("The branch the 'changed' interpreter was compiled from. This "
               'will be store in the result json and used for the upload. '
               "(default: 'default')"))
+    benchmark_group.add_option(
+        '--force-interpreter-name', default=None, action='store',
+        dest='interpreter_name',
+        help=("Force the interpreter name present",)
+    )
     benchmark_group.add_option(
         '-r', '--revision', action="store",
         dest='upload_revision',

@@ -6,6 +6,7 @@ import json
 import socket
 import sys
 import os
+import time
 
 import benchmarks
 from saveresults import save
@@ -18,10 +19,20 @@ BENCHMARK_SET += perf._FindAllBenchmarks(benchmarks.__dict__).keys()
 class WrongBenchmark(Exception):
     pass
 
+def convert_results(result_list):
+    r = []
+    for bench, cls, dict, t0 in result_list:
+        runs = []
+        cur_time = t0
+        for t in dict['times']:
+            runs.append({"start_timestamp": cur_time, "duration": t})
+            cur_time += t
+        r.append({"name": bench, "runs": runs, "events": {}})
+    return r
 
 def run_and_store(benchmark_set, result_filename, path, revision=0,
                   options='', branch='default', args='', upload=False,
-                  fast=False, full_store=False):
+                  fast=False, full_store=False, parser_options=None):
     _funcs = perf.BENCH_FUNCS.copy()
     _funcs.update(perf._FindAllBenchmarks(benchmarks.__dict__))
     bench_data = json.load(open('bench-data.json'))
@@ -38,16 +49,24 @@ def run_and_store(benchmark_set, result_filename, path, revision=0,
     if full_store:
         opts += ['--no_statistics']
     opts += [path]
+    start_time = time.time()
     results = perf.main(opts, funcs)
+    end_time = time.time()
     f = open(str(result_filename), "w")
-    results = [(name, result.__class__.__name__, result.__dict__)
-           for name, result in results]
+    results = [(name, result.__class__.__name__, result.__dict__, t0)
+           for name, result, t0 in results]
+    force_host = parser_options.force_host
     f.write(json.dumps({
         'revision': revision,
-        'results': results,
+        'results': convert_results(results),
+        "interpreter": parser_options.python,
+        "machine": force_host if force_host else socket.gethostname(),
+        "protocol_version_no": "1",
+        "start_timestamp": start_time,
+        "end_timestamp": end_time,
         'options': options,
         'branch': branch,
-        }))
+        }, indent=4))
     f.close()
     return results
 
@@ -168,7 +187,8 @@ def main(argv):
 
     results = run_and_store(benchmarks, output_filename, path,
                             revision, args=args, fast=fast,
-                            full_store=full_store, branch=branch)
+                            full_store=full_store, branch=branch,
+                            parser_options=options)
 
     if options.upload_url:
         branch = options.upload_branch or 'default'

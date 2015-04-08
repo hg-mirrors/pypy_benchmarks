@@ -9,6 +9,19 @@
  },
  "bm_mako": {
  },
+ "bm_dulwich_log": {
+ },
+ "bm_icbd": {
+ },
+ "bm_krakatau": {
+ },
+ "bm_mdp": {
+ },
+ "deltablue": {
+ },
+ "pypy_interp": {
+   "description": "interpreting py.py"
+ },
  "chaos": {
    "description": "Creates chaosgame-like fractals"
  },

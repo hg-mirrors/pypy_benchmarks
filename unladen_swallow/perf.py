@@ -779,13 +779,8 @@ def BM_Django(*args, **kwargs):
     return SimpleBenchmark(MeasureDjango, *args, **kwargs)
 
 
-<<<<<<< local
 def MeasureRietveld(python, options, bench_data):
-    PYTHONPATH = ":".join([DJANGO_DIR,
-=======
-def MeasureRietveld(python, options):
     PYTHONPATH = os.pathsep.join([DJANGO_DIR,
->>>>>>> other
                            # These paths are lifted from
                            # lib/google_appengine.appcfg.py.  Note that we use
                            # our own version of Django instead of Appengine's.
@@ -1133,6 +1128,7 @@ def main(argv, bench_funcs=BENCH_FUNCS, bench_groups=BENCH_GROUPS):
     for name in sorted(should_run):
         func, bench_data = bench_funcs[name]
         print "Running %s..." % name
+        t0 = time.time()
         # PyPy specific modification: let the func to return a list of results
         # for sub-benchmarks
         bench_result = func(base_cmd_prefix, options, bench_data)
@@ -1140,15 +1136,15 @@ def main(argv, bench_funcs=BENCH_FUNCS, bench_groups=BENCH_GROUPS):
         if isinstance(bench_result, list):
             for subname, subresult in bench_result:
                 fullname = '%s_%s' % (name, subname)
-                results.append((fullname, subresult))
+                results.append((fullname, subresult, t0))
         else:
-            results.append((name, bench_result))
+            results.append((name, bench_result, t0))
 
     print
     print "Report on %s" % " ".join(platform.uname())
     if multiprocessing:
         print "Total CPU cores:", multiprocessing.cpu_count()
-    for name, result in results:
+    for name, result, start_time in results:
         print
         print "###", name, "###"
         print result.string_representation()

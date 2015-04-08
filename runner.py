@@ -27,7 +27,7 @@ def convert_results(result_list):
         for t in dict['times']:
             runs.append({"start_timestamp": cur_time, "duration": t})
             cur_time += t
-        r.append({"name": bench, "runs": runs, "events": {}})
+        r.append({"name": bench, "runs": runs, "events": []})
     return r
 
 def run_and_store(benchmark_set, result_filename, path, revision=0,

@@ -1,4 +1,5 @@
 
+import sys
 from sympy import expand, symbols, integrate, tan, summation
 from sympy.core.cache import clear_cache
 import time
@@ -27,6 +28,7 @@ def main(n, bench):
         clear_cache()
         t0 = time.time()
         func()
+        print >>sys.stderr, time.time() - t0
         l.append(time.time() - t0)
     return l
 

@@ -36,10 +36,6 @@ def test_django(count):
     table = [xrange(150) for _ in xrange(150)]
     context = Context({"table": table})
 
-    # Warm up Django.
-    DJANGO_TMPL.render(context)
-    DJANGO_TMPL.render(context)
-
     times = []
     for _ in xrange(count):
         t0 = time.time()

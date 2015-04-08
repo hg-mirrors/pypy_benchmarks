@@ -53,10 +53,6 @@ def test_spitfire(count):
 
     table = [xrange(1000) for _ in xrange(1000)]
 
-    # Warm up Spitfire.
-    spitfire_tmpl_o4(search_list=[{"table": table}]).main()
-    spitfire_tmpl_o4(search_list=[{"table": table}]).main()
-
     times = []
     for _ in xrange(count):
         t0 = time.time()

@@ -70,10 +70,6 @@ def n_queens(queen_count):
 
 
 def test_n_queens(iterations):
-    # Warm-up runs.
-    list(n_queens(8))
-    list(n_queens(8))
-
     times = []
     for _ in xrange(iterations):
         t0 = time.time()

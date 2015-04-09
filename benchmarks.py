@@ -62,8 +62,7 @@ opts = {
     'eparse'  : {'bm_env': {'PYTHONPATH': relative('lib/monte')}},
     'bm_mako' : {'bm_env': {'PYTHONPATH': relative('lib/mako')}},
     'bm_dulwich_log': {'bm_env': {'PYTHONPATH': relative('lib/dulwich-0.9.1')}},
-    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')},
-                     'iteration_scaling': 3},
+    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')}},
 }
 
 for name in ['expand', 'integrate', 'sum', 'str']:

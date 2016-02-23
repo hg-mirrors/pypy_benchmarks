@@ -47,22 +47,19 @@ def decompileClass():
                 source = javaclass.generateAST(c, makeGraph).print_()
 
 
-WARMUP_ITERATIONS = 30 # Krakatau needs a number of iterations to warmup...
-
 def main(n):
     l = []
     old_stdout = sys.stdout
     sys.stdout = cStringIO.StringIO()
     try:
-        for i in range(WARMUP_ITERATIONS + n):
+        for i in range(n):
             t0 = time.time()
-            for j in range(4):
-                decompileClass()
+            decompileClass()
             time_elapsed = time.time() - t0
             l.append(time_elapsed)
     finally:
         sys.stdout = old_stdout
-    return l[WARMUP_ITERATIONS:]
+    return l
 
 if __name__ == "__main__":
     parser = optparse.OptionParser(

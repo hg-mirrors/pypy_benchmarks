@@ -39,7 +39,8 @@ def test_django(count):
     times = []
     for _ in xrange(count):
         t0 = time.time()
-        data = DJANGO_TMPL.render(context)
+        for k in range(10):
+            data = DJANGO_TMPL.render(context)
         t1 = time.time()
         times.append(t1 - t0)
     return times

@@ -5,29 +5,45 @@
    "description": "Brute force n-queens solver."
  },
  "bm_chameleon": {
-   "total_runs": 500
+   "total_runs": 10,
+   "warmup": 2,
+   "description": "Chameleon templating library benchmark",
+   "comment": "needs reupdating chameleon"
  },
  "bm_mako": {
+   "description": "Mako templating library benchmark",
+   "comment": "needs updating",
+   "total_runs": 20,
+   "warmup": 2
  },
  "bm_dulwich_log": {
+   "description": "Pure python git implementation",
+   "comment": "needs updating",
+   "warmup": 3
  },
  "bm_icbd": {
+   "comment": "enable this benchmark"
  },
  "bm_krakatau": {
+   "description": "Java decompiler benchmark",
+   "total_runs": 60,
+   "comment": "look into updating & warmup",
+   "warmup": 40
  },
  "bm_mdp": {
- },
- "deltablue": {
+   "description": "Some AI ..."
  },
  "pypy_interp": {
-   "description": "interpreting py.py"
+   "description": "interpreting py.py",
+   "comment": " # XXX UPDATE"
  },
  "chaos": {
    "description": "Creates chaosgame-like fractals"
  },
  "cpython_doc": {
    "description": "Run sphinx over cpython documentation",
-   "total_runs": 1
+   "total_runs": 1,
+   "process_runs": 1
  },
  "crypto_pyaes": {
    "description": "A pure python implementation of AES"
@@ -41,9 +57,6 @@
  },
  "fannkuch": {
    "description": "Indexed-access to tiny integer-sequence. The fannkuch benchmark is defined by programs in Performing Lisp Analysis of the FANNKUCH Benchmark, Kenneth R. Anderson and Duane Rettig."
- },
- "float": {
-   "description": "Creates an array of points using circular projection and then normalizes and maximizes them. Floating-point heavy."
  },
  "gcbench": {
    "total_runs": 5,
@@ -94,8 +107,7 @@
  "rietveld": {
    "warmup": 2,
    "total_runs": 1500,
-   "description": "A Django application benchmark.",
-   "legacy_multiplier": 30
+   "description": "A Django application benchmark."
  },
  "scimark_fft": {
  },
@@ -186,5 +198,18 @@
    "description": "Runs twisted web server and connects through twisted HTTP client",
    "total_runs": 25,
    "warmup": 15
+ },
+ "pyxl_bench": {
+   "description": "Pyxl benchmark"
+ },
+ "sqlalchemy_benchmark": {
+ },
+ "sqlalchemy_imperative": {
+   "total_runs": 100
+ },
+ "sqlalchemy_declarative": {
+   "total_runs": 30
+ },
+ "sqlitesynth": {
  }
 }

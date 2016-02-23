@@ -347,11 +347,12 @@ class Result(object):
     """ An object representing a result of run. Can be converted to
     a string by calling string_representation
     """
-    def __init__(self, times, min_time, avg_time, std_time):
+    def __init__(self, times, min_time, avg_time, std_time, jit_summary):
         self.times = times
         self.min_time = min_time
         self.avg_time = avg_time
         self.std_time = std_time
+        self.jit_summary = jit_summary
 
     def string_representation(self):
         return "Time: %(min_time)f +- %(std_time)f" % self.__dict__
@@ -381,16 +382,18 @@ class MemoryUsageResult(object):
                  % self.__dict__)
 
 class SimpleResult(object):
-    def __init__(self, time):
+    def __init__(self, time, jit_summary):
         self.time = time
+        self.jit_summary = jit_summary
 
     def string_representation(self):
         return ("%(time)f"
                 % self.__dict__)
 
 class RawResult(object):
-    def __init__(self, times):
+    def __init__(self, times, jit_summary):
         self.times = times
+        self.jit_summary = jit_summary
 
     def string_representation(self):
         return "Raw results: %s" % (self.times,)
@@ -577,7 +580,7 @@ def BuildEnv(env=None, inherit_env=[]):
     return fixed_env
 
 
-def CompareMultipleRuns(times, options, bench_data):
+def CompareMultipleRuns(times, options, bench_data, jit_summary):
     """Compare multiple control vs experiment runs of the same benchmark.
 
     Args:
@@ -594,16 +597,14 @@ def CompareMultipleRuns(times, options, bench_data):
     if len(times) == 1:
         # With only one data point, we can't do any of the interesting stats
         # below.
-        return SimpleResult(times[0])
+        return SimpleResult(times[0], jit_summary)
 
     min_time = sorted(times)[0]
     warmup = bench_data.get('warmup', 0)
-    if bench_data.get('legacy_multiplier'):
-        times = [time * bench_data['legacy_multiplier'] for time in times]
     avg_time = avg(times[warmup:])
     std_time = SampleStdDev(times[warmup:])
 
-    return Result(times, min_time, avg_time, std_time)
+    return Result(times, min_time, avg_time, std_time, jit_summary)
 
 def CompareBenchmarkData(data, options, bench_data):
     """Compare performance and memory usage.
@@ -617,7 +618,7 @@ def CompareBenchmarkData(data, options, bench_data):
         Human-readable summary of the difference between the base and changed
         binaries.
     """
-    times, mem = data
+    times, mem, jit_summary = data
 
     # We suppress performance data when running with --track_memory.
     if options.track_memory:
@@ -626,7 +627,7 @@ def CompareBenchmarkData(data, options, bench_data):
             return CompareMemoryUsage(base_mem, changed_mem, options)
         return "Benchmark does not report memory usage yet"
 
-    return CompareMultipleRuns(times, options, bench_data)
+    return CompareMultipleRuns(times, options, bench_data, jit_summary)
 
 
 def CallAndCaptureOutput(command, env=None, track_memory=False, inherit_env=[]):
@@ -693,6 +694,7 @@ def MeasureGeneric(python, options, bench_data, bm_path, bm_env=None,
 
     trials = bench_data.get('total_runs', 50)
     warmup = bench_data.get('warmup', 0)
+    bm_env['PYPYLOG'] = "jit-summary:jit-summary.log"
     if options.rigorous:
         trials = (trials - warmup) * 2 + warmup
     elif options.fast:
@@ -705,7 +707,13 @@ def MeasureGeneric(python, options, bench_data, bm_path, bm_env=None,
                                              track_memory=options.track_memory,
                                              inherit_env=options.inherit_env)
     times = [parser(line) for line in result.splitlines()]
-    return times, mem_usage
+    try:
+        jit_summary = open("jit-summary.log").read()
+    except (OSError, IOError):
+        jit_summary = None
+    else:
+        os.unlink("jit-summary.log")
+    return times, mem_usage, jit_summary
 
 
 ### Benchmarks
@@ -1131,14 +1139,15 @@ def main(argv, bench_funcs=BENCH_FUNCS, bench_groups=BENCH_GROUPS):
         t0 = time.time()
         # PyPy specific modification: let the func to return a list of results
         # for sub-benchmarks
-        bench_result = func(base_cmd_prefix, options, bench_data)
-        name = getattr(func, 'benchmark_name', name)
-        if isinstance(bench_result, list):
-            for subname, subresult in bench_result:
-                fullname = '%s_%s' % (name, subname)
-                results.append((fullname, subresult, t0))
-        else:
-            results.append((name, bench_result, t0))
+        for k in range(bench_data.get("process_runs", 10)):
+            bench_result = func(base_cmd_prefix, options, bench_data)
+            name = getattr(func, 'benchmark_name', name)
+            if isinstance(bench_result, list):
+                for subname, subresult in bench_result:
+                    fullname = '%s_%s' % (name, subname)
+                    results.append((fullname, subresult, t0))
+            else:
+                results.append((name, bench_result, t0))
 
     print
     print "Report on %s" % " ".join(platform.uname())

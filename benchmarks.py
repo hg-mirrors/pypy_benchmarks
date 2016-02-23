@@ -59,19 +59,13 @@ def _register_new_bm_base_only(name, bm_name, d, **opts):
 TWISTED = [relative('lib/twisted-trunk'), relative('lib/zope.interface-3.5.3/src'), relative('own/twisted')]
 
 opts = {
-    'gcbench' : {'iteration_scaling' : .10},
-    'pidigits': {'iteration_scaling' : .10},
     'pyxl_bench': {'bm_env': {'PYTHONPATH': relative('lib/pyxl')}},
     'eparse'  : {'bm_env': {'PYTHONPATH': relative('lib/monte')}},
     'bm_mako' : {'bm_env': {'PYTHONPATH': relative('lib/mako')}},
     'bm_dulwich_log': {'bm_env': {'PYTHONPATH': relative('lib/dulwich-0.9.1')}},
-    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')},
-                     'iteration_scaling': 3},
-    'nqueens': {'iteration_scaling': .1},
-    'sqlalchemy_declarative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')},
-                               'iteration_scaling': 3},
-    'sqlalchemy_imperative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')},
-                              'iteration_scaling': 10},
+    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')}},
+    'sqlalchemy_declarative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')}},
+    'sqlalchemy_imperative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')}},
 }
 
 for name in ['expand', 'integrate', 'sum', 'str']:
@@ -84,12 +78,12 @@ for name in ['xml', 'text']:
                      globals(), bm_env={'PYTHONPATH': relative('lib/genshi')},
                      extra_args=['--benchmark=' + name])
 
-for name in ['float', 'nbody_modified', 'meteor-contest', 'fannkuch',
+for name in ['nbody_modified', 'meteor-contest', 'fannkuch',
              'spectral-norm', 'chaos', 'telco', 'go', 'pyflate-fast',
              'raytrace-simple', 'crypto_pyaes', 'bm_mako', 'bm_chameleon',
-             'json_bench', 'pidigits', 'hexiom2', 'eparse', 'deltablue',
+             'json_bench', 'pidigits', 'hexiom2', 'eparse',
              'bm_dulwich_log', 'bm_krakatau', 'bm_mdp', 'pypy_interp',
-             'sqlitesynth', 'pyxl_bench', 'nqueens', 'sqlalchemy_declarative',
+             'sqlitesynth', 'pyxl_bench', 'sqlalchemy_declarative',
              'sqlalchemy_imperative']:
     _register_new_bm(name, name, globals(), **opts.get(name, {}))
 

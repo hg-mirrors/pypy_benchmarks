@@ -7,6 +7,7 @@ import socket
 import sys
 import os
 import time
+import subprocess
 
 import benchmarks
 from saveresults import save
@@ -23,12 +24,16 @@ def convert_results(result_list):
     r = []
     for bench, cls, dict, t0 in result_list:
         runs = []
-        cur_time = t0
         for t in dict['times']:
-            runs.append({"start_timestamp": cur_time, "duration": t})
-            cur_time += t
-        r.append({"name": bench, "runs": runs, "events": []})
+            runs.append(t)
+        r.append({"name": bench, "runs": runs, "jit-summary": dict.get('jit_summary', '')})
     return r
+
+def get_branch(python):
+    return subprocess.check_output([python, '-c', 'import sys; print sys._mercurial[1]']).strip("\n")
+
+def get_revision(python):
+    return subprocess.check_output([python, '-c', 'import sys; print sys._mercurial[2]']).strip("\n")
 
 def run_and_store(benchmark_set, result_filename, path, revision=0,
                   options='', branch='default', args='', upload=False,
@@ -61,7 +66,7 @@ def run_and_store(benchmark_set, result_filename, path, revision=0,
         'benchmarks': convert_results(results),
         "interpreter": parser_options.interpreter_name or parser_options.python,
         "machine": force_host if force_host else socket.gethostname(),
-        "protocol_version_no": "1",
+        "protocol_version_no": "2",
         "start_timestamp": start_time,
         "end_timestamp": end_time,
         'options': options,
@@ -183,8 +188,8 @@ def main(argv):
     full_store = options.full_store
     output_filename = options.output_filename
 
-    branch = options.upload_branch
-    revision = options.upload_revision
+    branch = options.upload_branch or get_branch(options.python)
+    revision = options.upload_revision or get_revision(options.python)
     force_host = options.force_host
 
     if options.niceness is not None:

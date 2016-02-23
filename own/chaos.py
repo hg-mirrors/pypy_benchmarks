@@ -221,7 +221,7 @@ class Chaosgame(object):
         times = []
         for _ in range(n):
             t1 = time.time()
-            for i in xrange(5000):
+            for i in xrange(50000):
                 point = self.transform_point(point)
                 x = (point.x - self.minx) / self.width * w
                 y = (point.y - self.miny) / self.height * h
@@ -263,7 +263,7 @@ def main(n):
             3, [0, 0, 0, 1, 1, 1])
         ]
     c = Chaosgame(splines, 0.25)
-    return c.create_image_chaos(1000, 1200, "py.ppm", n)
+    return c.create_image_chaos(2000, 2400, "py.ppm", n)
 
 
 if __name__ == "__main__":

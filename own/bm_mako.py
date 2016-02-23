@@ -136,9 +136,10 @@ def test_mako(count):
     times = []
     for i in range(count):
         t0 = time.time()
-        data = template.render(table=table, paragraphs=paragraphs,
-                               lorem=LOREM_IPSUM, title=title,
-                               img_count=50)
+        for k in range(20):
+            data = template.render(table=table, paragraphs=paragraphs,
+                                   lorem=LOREM_IPSUM, title=title,
+                                   img_count=50)
         t1 = time.time()
         times.append(t1-t0)
     return times

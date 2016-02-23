@@ -22,9 +22,8 @@ class Branch(_ast.AST):
         self.true_block = None
         self.false_block = None
 
-        if lineno:
-            self.lineno = lineno
-            self.col_offset = 0
+        self.lineno = lineno or 0
+        self.col_offset = 0
 
     def set_true(self, bid):
         assert isinstance(bid, int)
@@ -39,10 +38,8 @@ class HasNext(_ast.AST):
     def __init__(self, iter, lineno=None, col_offset=None):
         assert isinstance(iter, _ast.AST)
         self.iter = iter
-        if lineno:
-            self.lineno = lineno
-        if col_offset:
-            self.col_offset = col_offset
+        self.lineno = lineno or 0
+        self.col_offset = col_offset or 0
 
 class CFG(object):
     def __init__(self):

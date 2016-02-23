@@ -8,7 +8,7 @@
 #  Outer loop added by Alex Jacoby
 
 import thread, os
-#from __pypy__.thread import atomic
+from pypystm import atomic, hint_commit_soon
 
 
 # Task IDs
@@ -371,23 +371,19 @@ class Richards(object):
         self.finished_lock = thread.allocate_lock()
         self.finished_lock.acquire()
 
-    def run_and_unlock(self, to_do):
+    def run_and_unlock(self, count):
         print 'running...'
         iterations = 0
         self.result = True
-        while 1:
-            try:
-                to_do.pop()
-            except IndexError:
-                break
-            iterations += 1
+        for i in range(count):
             self.result = self.run()
-        print 'done, iterations=%d, result=%r' % (iterations, self.result)
+        print 'done, iterations=%d, result=%r' % (count, self.result)
         self.finished_lock.release()
 
     def run(self):
-        #with atomic:
-        if 1:
+        hint_commit_soon()
+        with atomic:
+        #if 1:
             taskWorkArea = TaskWorkArea()
 
             IdleTask(I_IDLE, 1, 10000, TaskState().running(), IdleTaskRec(),
@@ -422,19 +418,20 @@ class Richards(object):
                 pass
             else:
                 return False
+        hint_commit_soon()
 
         return True
 
 def entry_point(iterations, NUM_THREADS):
     rlist = [Richards() for i in range(NUM_THREADS)]
-    to_do = [None] * iterations
     startTime = time()
-    for r in rlist:
-        thread.start_new_thread(r.run_and_unlock, (to_do,))
+    for i, r in enumerate(rlist):
+        count = (iterations * (i + 1)) // NUM_THREADS
+        count -= (iterations * i) // NUM_THREADS
+        thread.start_new_thread(r.run_and_unlock, (count,))
     for r in rlist:
         r.finished_lock.acquire()
     endTime = time()
-    assert to_do == []
     result = all(r.result for r in rlist)
     return result, startTime, endTime
 

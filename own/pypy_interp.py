@@ -26,8 +26,8 @@ def main(n):
     l = []
     space = gettestobjspace()
     # warmup
-    bench(space)
-    bench(space)
+    #bench(space)
+    #bench(space)
     for i in range(n):
         t0 = time.time()
         bench(space)

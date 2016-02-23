@@ -400,6 +400,9 @@ def get_shadowstackref(gctransformer):
         llmemory.raw_free(shadowstackref.base)
         if h:
             _c.destroy(h)
+    if not gctransformer.translator.config.translation.continuation:
+        def shadowstack_destructor(shadowstackref):
+            llmemory.raw_free(shadowstackref.base)
 
     destrptr = gctransformer.annotate_helper(shadowstack_destructor,
                                              [SHADOWSTACKREFPTR], lltype.Void)

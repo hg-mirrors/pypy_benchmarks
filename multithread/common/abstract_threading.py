@@ -3,18 +3,17 @@ from threading import Thread, Condition, RLock, local
 import thread, atexit, sys, time
 
 try:
-    from atomic import (atomic, getsegmentlimit, print_abort_info,
-                        hint_commit_soon, is_atomic)
-except:
+    from pypystm import atomic, getsegmentlimit, hint_commit_soon
+except ImportError:
+    raise
     atomic = RLock()
     def getsegmentlimit():
         return 1
-    def print_abort_info(tm=0.0):
-        pass
     def hint_commit_soon():
         pass
-    def is_atomic():
-        return atomic._RLock__count > 0
+
+def print_abort_info(tm=0.0):
+    "backward compatibility: no-op"
 
 
 class TLQueue_concurrent(object):
@@ -114,7 +113,7 @@ class ThreadPool(object):
 
     def shutdown(self):
         for w in self.workers:
-            self.input_queue.put((print_abort_info, (), {}))
+            #self.input_queue.put((print_abort_info, (), {}))
             self.input_queue.put((sys.exit, (), {}))
         for w in self.workers:
             w.join()

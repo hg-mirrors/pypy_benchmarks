@@ -31,7 +31,9 @@
    "warmup": 40
  },
  "bm_mdp": {
-   "description": "Some AI ..."
+   "description": "Some AI that uses a lot of fractions",
+   "total_runs": 2,
+   "warmup": 1
  },
  "pypy_interp": {
    "description": "interpreting py.py",

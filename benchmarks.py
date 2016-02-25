@@ -202,7 +202,7 @@ def BM_cpython_doc(python, options, bench_data):
         print err
         raise Exception("sphinx-build.py failed")
     res = float(out.splitlines()[-1])
-    return RawResult([res])
+    return RawResult([res], None)
 
 BM_cpython_doc.benchmark_name = 'sphinx'
 

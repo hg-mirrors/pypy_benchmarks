@@ -136,8 +136,7 @@ def trace(ray, objects, light, maxRecur):
 
 
 
-def task(img, x, h, cameraPos, objs, lightSource):
-    line = img[x]
+def task(line, x, h, cameraPos, objs, lightSource):
     for y in range(h):
         with atomic:
             ray = Ray(cameraPos,
@@ -173,10 +172,10 @@ def run(ths=8, w=1024, h=1024):
         img.append([0.0] * h)
     parallel_time = time.time()
     for x in range(w):
-        future_dispatcher(ths, img, x, h, cameraPos, objs, lightSource)
+        future_dispatcher(ths, img[x], x, h, cameraPos, objs, lightSource)
 
     for f in futures:
-        print f()
+        f()
     del futures[:]
     parallel_time = time.time() - parallel_time
 
@@ -185,6 +184,29 @@ def run(ths=8, w=1024, h=1024):
     return parallel_time
 
 
+def main(argv):
+    # warmiters threads args...
+    warmiters = int(argv[0])
+    threads = int(argv[1])
+    w, h = int(argv[2]), int(argv[3])
+
+    print "params (iters, threads, w, h):", warmiters, threads, w, h
+
+    print "do warmup:"
+    for i in range(5):
+        print "iter", i, "time:", run(threads, w, h)
+
+    print "turn off jit"
+    import pypyjit, gc
+    pypyjit.set_param("off")
+    pypyjit.set_param("threshold=999999999,trace_eagerness=99999999")
+    print "do", warmiters, "real iters:"
+    times = []
+    for i in range(warmiters):
+        gc.collect()
+        times.append(run(threads, w, h))
+    print "warmiters:", times
 
 if __name__ == '__main__':
-    run()
+    import sys
+    main(sys.argv[1:])

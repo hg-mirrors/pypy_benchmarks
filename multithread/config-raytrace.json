@@ -1,0 +1,21 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 3,
+        "warmiters": 5,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "raytrace": {
+            "file": "raytrace/raytrace.py",
+            "PYTHONPATH": "..",
+            "vmstarts": 5,
+            "warmiters": 3,
+            "args": ["512", "4096"]
+        }
+    }
+}

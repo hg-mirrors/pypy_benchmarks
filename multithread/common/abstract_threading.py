@@ -5,7 +5,7 @@ import thread, atexit, sys, time
 try:
     from pypystm import atomic, getsegmentlimit, hint_commit_soon
 except ImportError:
-    raise
+    print "NON-STM EXECUTION"
     atomic = RLock()
     def getsegmentlimit():
         return 1
@@ -144,9 +144,9 @@ class Future(object):
     def _task(self, func, *args, **kwargs):
         with self._cond:
             try:
-                hint_commit_soon()
+                #hint_commit_soon()
                 self._result = func(*args, **kwargs)
-                hint_commit_soon()
+                #hint_commit_soon()
             except Exception as e:
                 self._exception = e
             finally:
@@ -173,10 +173,10 @@ class AtomicFuture(Future):
     def _task(self, func, *args, **kwargs):
         with self._cond:
             try:
-                hint_commit_soon()
+                #hint_commit_soon()
                 with atomic:
                     self._result = func(*args, **kwargs)
-                hint_commit_soon()
+                #hint_commit_soon()
             except Exception as e:
                 self._exception = e
             finally:

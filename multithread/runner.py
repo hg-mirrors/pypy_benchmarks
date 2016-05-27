@@ -1,31 +1,6 @@
 #!/usr/bin/env python
-""" Usage: runner.py <result file> <path to pypy-c>
+""" Usage: runner.py <path to pypy-c> <config file> <result file>
 """
-
-config = {
-    "defaults": {
-        # global defaults:
-        "file": None,
-        "threads": [1, 2, 4, 8,],
-        "vmstarts": 3,
-        "warmiters": 5,
-        "args": [],
-        "cwd": ".", # relative to file
-        "PYTHONPATH": ".",
-    },
-
-    "benchs": {
-        # list of benchmarks:
-        "raytrace": {
-            "file": "raytrace/raytrace.py",
-            "PYTHONPATH": "..",
-            "vmstarts": 5,
-            "warmiters": 5,
-            "args": ["1024", "1024"] # w, h
-        },
-    },
-}
-
 
 import json
 import time
@@ -35,10 +10,18 @@ import pprint
 from subprocess import Popen, PIPE
 
 
+def extract_iter_times(stdout):
+    for line in stdout.split('\n'):
+        if "warmiters" in line:
+            # warmiters: [1.2,3.1,]
+            times = line.split(':')[1].strip()[1:-1]
+            return [float(t) for t in times.split(',')]
+    return None
+
 def run_benchmark(python_exec, bench_config):
     vmstarts = bench_config['vmstarts']
     threads = bench_config['threads']
-    print "## run_benchmark", bench_config['file']
+    print "## run_benchmark", bench_config
 
     failures = []
     timings = []
@@ -58,16 +41,24 @@ def run_benchmark(python_exec, bench_config):
             cwd = os.path.join(cwd, bench_config['cwd'])
             env = os.environ.copy()
             env['PYTHONPATH'] = bench_config['PYTHONPATH']
-            print "running:", cmd_str, "in", cwd, "with PYTHONPATH=", env['PYTHONPATH']
+            print "running:", cmd_str
 
             try:
-                print env['PYTHONPATH']
                 p = Popen(cmd, stdout=PIPE, stderr=PIPE, env=env, cwd=cwd)
+                # XXX: process could deadlock if stdout pipe is full -> never terminate -> timeout
+                start_time = time.time()
+                while p.poll() is None:
+                    time.sleep(0.5)
+                    if time.time() - start_time > 30 * 60:
+                        # kill after 30min
+                        p.kill()
+
                 if p.wait() != 0:
                     # error
                     stdout, stderr = p.stdout.read(), p.stderr.read()
                     failure = {
                         'cmd': cmd_str,
+                        'exitcode': p.returncode,
                         'stdout': stdout,
                         'stderr': stderr,
                     }
@@ -75,6 +66,7 @@ def run_benchmark(python_exec, bench_config):
                     print "failure:", failure
                 else:
                     stdout, stderr = p.stdout.read(), p.stderr.read()
+                    print stdout
                     iter_times = extract_iter_times(stdout)
                     times = {
                         'cmd': " ".join(cmd),
@@ -85,9 +77,14 @@ def run_benchmark(python_exec, bench_config):
                         'warmiters': iter_times,
                     }
                     timings.append(times)
-                    print "timing:", times
-            finally:
-                pass
+                    print "warmiters:", times['warmiters']
+            except Exception as e:
+                failures.append({
+                    'cmd': cmd_str, 'exception': str(e)})
+            except KeyboardInterrupt as e:
+                failures.append({
+                    'cmd': cmd_str, 'exception': str(e)})
+                return failures, timings
     return failures, timings
 
 
@@ -116,8 +113,14 @@ def run_benchmarks(results):
 
 
 def main(argv):
-    result_file = argv[0]
-    python_exec = argv[1]
+    """ Usage: runner.py <path to pypy-c> <config file> <result file> """
+    python_exec = argv[0]
+    config_file = argv[1]
+    result_file = argv[2]
+
+    assert os.path.exists(config_file)
+    with open(config_file, 'r') as f:
+        config = json.loads(f.read())
 
     if os.path.exists(result_file):
         with open(result_file, 'r+') as f:
@@ -141,4 +144,4 @@ def main(argv):
 if __name__ != '__main__': #FIXME: emacs bug?
     main(sys.argv[1:])
 else:
-    main(["results.json", "/usr/bin/python"])
+    main(["pypy-c", "config-raytrace.json", "results.json",])

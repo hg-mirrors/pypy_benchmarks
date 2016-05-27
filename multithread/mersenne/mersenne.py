@@ -6,7 +6,7 @@ import sys
 import time, random
 from common.abstract_threading import (
     atomic, Future, set_thread_pool, ThreadPool,
-    hint_commit_soon, print_abort_info)
+    turn_jitting_off)
 
 import itertools
 from collections import deque
@@ -48,10 +48,11 @@ def work(ps, counter, upb_count):
         return
 
     for p in ps:
-        with atomic:
+        if 1: #with atomic:
             if is_prime(p) and is_mersenne_prime(p):
                 #print p
-                counter[0] += 1
+                with atomic:
+                    counter[0] += 1
         if counter[0] >= upb_count:
             break
 
@@ -84,6 +85,32 @@ def run(threads=2, n=2000):
     return
 
 
+def main(argv):
+    # warmiters threads args...
+    warmiters = int(argv[0])
+    threads = int(argv[1])
+    n = int(argv[2])
 
-if __name__ == "__main__":
-    run()
+    print "params (iters, threads, n):", warmiters, threads, n
+
+    print "do warmup:"
+    for i in range(2):
+        t = time.time()
+        run(threads, n)
+        print "iter", i, "time:", time.time() - t
+
+    print "turn off jitting"
+    import gc
+    turn_jitting_off()
+    print "do", warmiters, "real iters:"
+    times = []
+    for i in range(warmiters):
+        gc.collect()
+        t = time.time()
+        run(threads, n)
+        times.append(time.time() - t)
+    print "warmiters:", times
+
+if __name__ == '__main__':
+    import sys
+    main(sys.argv[1:])

@@ -156,7 +156,6 @@ def main(argv):
                 indent=4, separators=(',', ': ')))
 
 
-if __name__ != '__main__': #FIXME: emacs bug?
+if __name__ == '__main__':
     main(sys.argv[1:])
-else:
-    main(["pypy-c", "config-raytrace.json", "results.json",])
+    # main(["pypy-c", "config-mersenne.json", "results.json",])

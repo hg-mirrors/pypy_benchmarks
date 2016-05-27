@@ -10,10 +10,10 @@
     },
 
     "benchs": {
-        "richards": {
-            "file": "richards/richards.py",
+        "mersenne": {
+            "file": "mersenne/mersenne.py",
             "PYTHONPATH": "..",
-            "args": ["30"]
+            "args": ["1500"]
         }
     }
 }

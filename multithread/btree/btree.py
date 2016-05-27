@@ -345,10 +345,7 @@ def run(threads=2, concurrency=8, operations=2000000):
     threads = int(threads)
     operations = int(operations)
 
-    tp = ThreadPool(threads)
-    print "new tp"
-    set_thread_pool(tp)
-    print "tp active"
+    set_thread_pool(ThreadPool(threads))
 
     tree = BTree(20)
     for _ in xrange(1000):

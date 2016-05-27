@@ -1,0 +1,18 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 3,
+        "warmiters": 5,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "parsible-bench": {
+            "file": "parsible-bench/parsible-bench.py",
+            "PYTHONPATH": ".."
+        }
+    }
+}

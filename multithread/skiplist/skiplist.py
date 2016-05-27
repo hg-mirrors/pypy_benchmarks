@@ -1,8 +1,9 @@
+
 # https://github.com/kunigami/blog-examples/tree/master/2012-09-23-skip-list
 
 from common.abstract_threading import (atomic, Future,
                                        set_thread_pool, ThreadPool,
-                                       print_abort_info, hint_commit_soon)
+                                       hint_commit_soon)
 import time, threading
 
 import random
@@ -66,7 +67,7 @@ class SkipList:
                 node.next[i] = update[i].next[i]
                 update[i].next[i] = node
             self.len += 1
-        hint_commit_soon()
+        #hint_commit_soon()
 
     def remove(self, elem):
         update = self.updateList(elem)
@@ -78,7 +79,7 @@ class SkipList:
                 if self.head.next[i] == None:
                     self.maxHeight -= 1
             self.len -= 1
-            hint_commit_soon()
+            #hint_commit_soon()
 
     def printList(self):
         for i in range(len(self.head.next)-1, -1, -1):
@@ -90,7 +91,7 @@ class SkipList:
 
 
 CONFLICTING = [SkipList.insert, SkipList.remove]
-OPS = [SkipList.find] * 98 + CONFLICTING
+OPS = [SkipList.find] * 198 + CONFLICTING
 ITEM_RANGE = 1000000
 
 def task(id, slist, ops):
@@ -119,7 +120,7 @@ def chunks(l, n):
 
 
 
-def run(threads=2, operations=2000000):
+def run(threads=2, concurrency=8, operations=2000000):
     threads = int(threads)
     operations = int(operations)
 
@@ -130,10 +131,10 @@ def run(threads=2, operations=2000000):
     for _ in xrange(1000):
         slist.insert(random.randint(1, ITEM_RANGE))
 
-    c_len = operations // threads
+    c_len = operations // concurrency
     fs = []
     parallel_time = time.time()
-    for i in xrange(threads):
+    for i in xrange(concurrency):
         fs.append(Future(task, i, slist, c_len))
     for f in fs:
         f()
@@ -149,7 +150,28 @@ def run(threads=2, operations=2000000):
 
 
 
+def main(argv):
+    # warmiters threads args...
+    warmiters = int(argv[0])
+    threads = int(argv[1])
+    cs, ops = int(argv[2]), int(argv[3])
 
+    print "params (iters, threads, concs, ops):", warmiters, threads, cs, ops
+
+    print "do warmup:"
+    for i in range(3):
+        print "iter", i, "time:", run(threads, cs, ops)
+
+    print "turn off jitting"
+    import gc
+    turn_jitting_off()
+    print "do", warmiters, "real iters:"
+    times = []
+    for i in range(warmiters):
+        gc.collect()
+        times.append(run(threads, cs, ops))
+    print "warmiters:", times
 
 if __name__ == '__main__':
-    run()
+    import sys
+    main(sys.argv[1:])

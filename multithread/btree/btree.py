@@ -2,7 +2,7 @@
 
 from common.abstract_threading import (
     atomic, Future, set_thread_pool, ThreadPool,
-    hint_commit_soon, print_abort_info)
+    hint_commit_soon, turn_jitting_off)
 import time, threading
 
 import random
@@ -205,7 +205,7 @@ class BTree(object):
             ancestors.append((node, index))
         node, index = ancestors.pop()
         node.insert(index, item, ancestors)
-        hint_commit_soon()
+        #hint_commit_soon()
         return True
 
     def remove(self, item):
@@ -214,7 +214,7 @@ class BTree(object):
         if self._present(item, ancestors):
             node, index = ancestors.pop()
             node.remove(index, ancestors)
-            hint_commit_soon()
+            #hint_commit_soon()
         # else:
         #     raise ValueError("%r not in %s" % (item, self.__class__.__name__))
 
@@ -312,7 +312,7 @@ class BTree(object):
 ######################################################################
 
 CONFLICTING = [BTree.insert, BTree.remove]
-OPS = [BTree.__contains__] * 98 + CONFLICTING
+OPS = [BTree.__contains__] * 198 + CONFLICTING
 
 ITEM_RANGE = 10000
 
@@ -341,20 +341,23 @@ def chunks(l, n):
 
 
 
-def run(threads=2, operations=2000000):
+def run(threads=2, concurrency=8, operations=2000000):
     threads = int(threads)
     operations = int(operations)
 
-    set_thread_pool(ThreadPool(threads))
+    tp = ThreadPool(threads)
+    print "new tp"
+    set_thread_pool(tp)
+    print "tp active"
 
     tree = BTree(20)
     for _ in xrange(1000):
         tree.insert(random.randint(1, ITEM_RANGE))
 
-    c_len = operations // threads
+    c_len = operations // concurrency
     fs = []
     parallel_time = time.time()
-    for i in xrange(threads):
+    for i in xrange(concurrency):
         fs.append(Future(task, i, tree, c_len))
     for f in fs:
         f()
@@ -369,6 +372,28 @@ def run(threads=2, operations=2000000):
 
 
 
+def main(argv):
+    # warmiters threads args...
+    warmiters = int(argv[0])
+    threads = int(argv[1])
+    cs, ops = int(argv[2]), int(argv[3])
+
+    print "params (iters, threads, concs, ops):", warmiters, threads, cs, ops
+
+    print "do warmup:"
+    for i in range(3):
+        print "iter", i, "time:", run(threads, cs, ops)
+
+    print "turn off jitting"
+    import gc
+    turn_jitting_off()
+    print "do", warmiters, "real iters:"
+    times = []
+    for i in range(warmiters):
+        gc.collect()
+        times.append(run(threads, cs, ops))
+    print "warmiters:", times
 
 if __name__ == '__main__':
-    run()
+    import sys
+    main(sys.argv[1:])

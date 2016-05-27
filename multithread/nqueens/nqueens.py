@@ -8,10 +8,10 @@
 
 
 import sys
-import time, random
+import time
 from common.abstract_threading import (
     atomic, Future, set_thread_pool, ThreadPool,
-    hint_commit_soon)
+    hint_commit_soon, turn_jitting_off)
 
 from itertools import permutations
 import itertools
@@ -28,7 +28,7 @@ def chunks(iterable, size):
 
 def check_solutions(n, cols, perms):
     sols = []
-    with atomic:
+    if 1: #with atomic:
         for vec in perms:
             if n == len(set(vec[i]+i for i in cols)) \
                == len(set(vec[i]-i for i in cols)):
@@ -41,7 +41,6 @@ def find_solutions(n):
     fs = []
     cols = range(n)
     for perms in chunks(permutations(cols), 100000):
-        hint_commit_soon()
         fs.append(Future(check_solutions, n, cols, perms))
     print "Futures:", len(fs)
     for f in fs:
@@ -58,11 +57,36 @@ def run(threads=2, n=10):
 
     find_solutions(n)
 
-
     # shutdown current pool
     set_thread_pool(None)
 
 
+def main(argv):
+    # warmiters threads args...
+    warmiters = int(argv[0])
+    threads = int(argv[1])
+    n = int(argv[2])
+
+    print "params (iters, threads, n):", warmiters, threads, n
+
+    print "do warmup:"
+    for i in range(3):
+        t = time.time()
+        run(threads, n)
+        print "iter", i, "time:", time.time() - t
+
+    print "turn off jitting"
+    import gc
+    turn_jitting_off()
+    print "do", warmiters, "real iters:"
+    times = []
+    for i in range(warmiters):
+        gc.collect()
+        t = time.time()
+        run(threads, n)
+        times.append(time.time() - t)
+    print "warmiters:", times
 
 if __name__ == "__main__":
-    run()
+    import sys
+    main(sys.argv[1:])

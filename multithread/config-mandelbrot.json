@@ -1,0 +1,21 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 3,
+        "warmiters": 5,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "mandelbrot": {
+            "file": "mandelbrot/mandelbrot.py",
+            "PYTHONPATH": "..",
+            "vmstarts": 3,
+            "warmiters": 3,
+            "args": ["64", "512", "512"]
+        }
+    }
+}

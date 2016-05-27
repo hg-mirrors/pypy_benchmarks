@@ -1,0 +1,21 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 3,
+        "warmiters": 3,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "btree": {
+            "file": "btree/btree.py",
+            "PYTHONPATH": "..",
+            "vmstarts": 3,
+            "warmiters": 3,
+            "args": ["16", "500000"]
+        }
+    }
+}

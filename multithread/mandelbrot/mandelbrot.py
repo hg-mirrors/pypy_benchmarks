@@ -1,15 +1,17 @@
-from common.abstract_threading import atomic, Future, set_thread_pool, ThreadPool
+from common.abstract_threading import (
+    atomic, Future, set_thread_pool, ThreadPool,
+    turn_jitting_off)
 import sys, time
 
 
 def calculate(a, b, im_size, max_iter=255):
-    print "a:%s, b:%s, im_size:%s" % (a, b, im_size)
+    #print "a:%s, b:%s, im_size:%s" % (a, b, im_size)
     ar, ai = a
     br, bi = b
     width, height = im_size
     imag_step = (bi - ai) / (height - 1)
     real_step = (br - ar) / (width - 1)
-    print "real/width:%s, imag/height:%s" % (real_step, imag_step)
+    #print "real/width:%s, imag/height:%s" % (real_step, imag_step)
 
     result = [[0] * width for y in xrange(height)]
     for y in xrange(height):
@@ -82,8 +84,32 @@ def run(threads=2, stripes=64, w=4096, h=4096):
     return parallel_time
 
 
+def main(argv):
+    # warmiters threads args...
+    warmiters = int(argv[0])
+    threads = int(argv[1])
+    stripes, w, h = int(argv[2]), int(argv[3]), int(argv[4])
+
+    print "params (iters, threads, s, w, h):", warmiters, threads, stripes, w, h
+
+    print "do warmup:"
+    for i in range(3):
+        print "iter", i, "time:", run(threads, stripes, w, h)
+
+    print "turn off jitting"
+    import gc
+    turn_jitting_off()
+    print "do", warmiters, "real iters:"
+    times = []
+    for i in range(warmiters):
+        gc.collect()
+        times.append(run(threads, stripes, w, h))
+    print "warmiters:", times
 
 if __name__ == '__main__':
-    image = run(int(sys.argv[1]), int(sys.argv[2]))
-    #save_to_file(out_image)
-    save_img(out_image)
+    main(sys.argv[1:])
+
+# if __name__ == '__main__':
+#     image = run(int(sys.argv[1]), int(sys.argv[2]))
+#     #save_to_file(out_image)
+#     save_img(out_image)

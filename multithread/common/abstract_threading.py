@@ -15,6 +15,16 @@ except ImportError:
 def print_abort_info(tm=0.0):
     "backward compatibility: no-op"
 
+def turn_jitting_off():
+    """function that turns off the JIT
+    shouldn't be in this module, but well..."""
+    try:
+        import pypyjit
+        pypyjit.set_param("off")
+        pypyjit.set_param("threshold=999999999,trace_eagerness=99999999")
+    except ImportError:
+        pass
+
 
 class TLQueue_concurrent(object):
     def __init__(self):
@@ -144,9 +154,9 @@ class Future(object):
     def _task(self, func, *args, **kwargs):
         with self._cond:
             try:
-                #hint_commit_soon()
+                hint_commit_soon()
                 self._result = func(*args, **kwargs)
-                #hint_commit_soon()
+                hint_commit_soon()
             except Exception as e:
                 self._exception = e
             finally:
@@ -173,10 +183,10 @@ class AtomicFuture(Future):
     def _task(self, func, *args, **kwargs):
         with self._cond:
             try:
-                #hint_commit_soon()
+                hint_commit_soon()
                 with atomic:
                     self._result = func(*args, **kwargs)
-                #hint_commit_soon()
+                hint_commit_soon()
             except Exception as e:
                 self._exception = e
             finally:

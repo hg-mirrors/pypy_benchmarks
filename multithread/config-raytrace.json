@@ -14,8 +14,8 @@
             "file": "raytrace/raytrace.py",
             "PYTHONPATH": "..",
             "vmstarts": 5,
-            "warmiters": 3,
-            "args": ["512", "4096"]
+            "warmiters": 2,
+            "args": ["128", "512"]
         }
     }
 }

@@ -4,7 +4,7 @@
 from math import sqrt, pi
 from common.abstract_threading import (
     atomic, Future, set_thread_pool, ThreadPool,
-    print_abort_info, hint_commit_soon)
+    print_abort_info, hint_commit_soon, turn_jitting_off)
 import time
 
 #import platform
@@ -138,7 +138,7 @@ def trace(ray, objects, light, maxRecur):
 
 def task(line, x, h, cameraPos, objs, lightSource):
     for y in range(h):
-        with atomic:
+        if 1:#with atomic:
             ray = Ray(cameraPos,
                       (Vector(x/50.0-5,y/50.0-5,0)-cameraPos).normal())
             col = trace(ray, objs, lightSource, 10)
@@ -193,13 +193,12 @@ def main(argv):
     print "params (iters, threads, w, h):", warmiters, threads, w, h
 
     print "do warmup:"
-    for i in range(5):
+    for i in range(3):
         print "iter", i, "time:", run(threads, w, h)
 
-    print "turn off jit"
-    import pypyjit, gc
-    pypyjit.set_param("off")
-    pypyjit.set_param("threshold=999999999,trace_eagerness=99999999")
+    print "turn off jitting"
+    import gc
+    turn_jitting_off()
     print "do", warmiters, "real iters:"
     times = []
     for i in range(warmiters):

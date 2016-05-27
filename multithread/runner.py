@@ -81,9 +81,9 @@ def run_benchmark(python_exec, bench_config):
             except Exception as e:
                 failures.append({
                     'cmd': cmd_str, 'exception': str(e)})
-            except KeyboardInterrupt as e:
+            except KeyboardInterrupt:
                 failures.append({
-                    'cmd': cmd_str, 'exception': str(e)})
+                    'cmd': cmd_str, 'exception': 'KeyboardInterrupt'})
                 return failures, timings
     return failures, timings
 
@@ -128,9 +128,24 @@ def main(argv):
     else:
         results = {}
 
+    p = Popen([python_exec, "--version"],
+              stdout=PIPE, stderr=PIPE)
+    _, python_version = p.communicate()
+    assert p.returncode == 0
+    print python_version
+
+    p = Popen(["hg", "id"], stdout=PIPE, stderr=PIPE)
+    hg_id, _ = p.communicate()
+    assert p.returncode == 0
+    print "id", hg_id
+
     run_key = time.ctime()
-    results[run_key] = {'config': config,
-                        'python': python_exec}
+    results[run_key] = {
+        'config': config,
+        'python': python_exec,
+        'python-version': python_version,
+        'hg-id': hg_id}
+
     try:
         run_benchmarks(results[run_key])
         print results[run_key]['results']

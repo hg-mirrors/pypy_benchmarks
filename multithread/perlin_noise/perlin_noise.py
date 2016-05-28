@@ -5,7 +5,7 @@ import sys
 import time, random
 from common.abstract_threading import (
     atomic, Future, set_thread_pool, ThreadPool,
-    hint_commit_soon, print_abort_info)
+    hint_commit_soon, print_abort_info, turn_jitting_off)
 
 import itertools
 from collections import deque

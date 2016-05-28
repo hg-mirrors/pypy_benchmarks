@@ -1,0 +1,62 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 1,
+        "warmiters": 1,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "nqueens": {
+            "file": "nqueens/nqueens.py",
+            "PYTHONPATH": "..",
+            "args": ["10"]
+        },
+
+        "parsible-bench": {
+            "file": "parsible-bench/parsible-bench.py",
+            "PYTHONPATH": ".."
+        },
+
+        "mersenne": {
+            "file": "mersenne/mersenne.py",
+            "PYTHONPATH": "..",
+            "args": ["1500"]
+        },
+
+        "richards": {
+            "file": "richards/richards.py",
+            "PYTHONPATH": "..",
+            "args": ["20"]
+        },
+
+        "mandelbrot": {
+            "file": "mandelbrot/mandelbrot.py",
+            "PYTHONPATH": "..",
+            "args": ["64", "128", "512"]
+        },
+
+        "btree": {
+            "file": "btree/btree.py",
+            "PYTHONPATH": "..",
+            "args": ["16", "300000"]
+        },
+
+        "skiplist": {
+            "file": "skiplist/skiplist.py",
+            "PYTHONPATH": "..",
+            "args": ["16", "100000"]
+        },
+
+        "raytrace": {
+            "file": "raytrace/raytrace.py",
+            "PYTHONPATH": "..",
+            "args": ["128", "512"]
+        }
+
+    }
+
+}

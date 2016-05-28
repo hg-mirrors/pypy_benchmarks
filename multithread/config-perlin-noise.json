@@ -1,0 +1,19 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 3,
+        "warmiters": 5,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "perlin": {
+            "file": "perlin_noise/perlin_noise.py",
+            "PYTHONPATH": "..",
+            "args": ["5"]
+        }
+    }
+}

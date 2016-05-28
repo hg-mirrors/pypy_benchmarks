@@ -55,6 +55,12 @@
             "file": "raytrace/raytrace.py",
             "PYTHONPATH": "..",
             "args": ["128", "512"]
+        },
+
+        "perlin": {
+            "file": "perlin_noise/perlin_noise.py",
+            "PYTHONPATH": "..",
+            "args": ["4"]
         }
 
     }

@@ -3,7 +3,7 @@
 
 import sys
 import time, random
-from common.abstract_threading import (AtomicFuture,
+from common.abstract_threading import (
     atomic, Future, set_thread_pool, ThreadPool,
     hint_commit_soon, print_abort_info)
 
@@ -67,16 +67,15 @@ def grad(hash, x, y, z):
 
 def work(n, x):
     res = []
-    hint_commit_soon()
-    with atomic:
-        for y in xrange(n):
-            for z in xrange(n):
-                res.append(perlin_noise(x/3., y/3., z/3.))
-    hint_commit_soon()
+    #hint_commit_soon()
+    for y in xrange(n):
+        for z in xrange(n):
+            res.append(perlin_noise(x/3., y/3., z/3.))
+    #hint_commit_soon()
     return res
 
 
-def run(threads=2, n=50):
+def run(threads=2, n=5):
     threads = int(threads)
     n = int(n)
 
@@ -91,5 +90,32 @@ def run(threads=2, n=50):
     set_thread_pool(None)
 
 
+def main(argv):
+    # warmiters threads args...
+    warmiters = int(argv[0])
+    threads = int(argv[1])
+    n = int(argv[2])
+
+    print "params (iters, threads, n):", warmiters, threads, n
+
+    print "do warmup:"
+    for i in range(2):
+        t = time.time()
+        run(threads, n)
+        print "iter", i, "time:", time.time() - t
+
+    print "turn off jitting"
+    import gc
+    turn_jitting_off()
+    print "do", warmiters, "real iters:"
+    times = []
+    for i in range(warmiters):
+        gc.collect()
+        t = time.time()
+        run(threads, n)
+        times.append(time.time() - t)
+    print "warmiters:", times
+
 if __name__ == "__main__":
-    run()
+    import sys
+    main(sys.argv[1:])

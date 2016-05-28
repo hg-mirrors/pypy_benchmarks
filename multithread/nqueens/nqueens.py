@@ -40,7 +40,7 @@ def find_solutions(n):
     solutions = []
     fs = []
     cols = range(n)
-    for perms in chunks(permutations(cols), 100000):
+    for perms in chunks(permutations(cols), 10000):
         fs.append(Future(check_solutions, n, cols, perms))
     print "Futures:", len(fs)
     for f in fs:

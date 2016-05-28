@@ -13,7 +13,7 @@
         "nqueens": {
             "file": "nqueens/nqueens.py",
             "PYTHONPATH": "..",
-            "args": ["10"]
+            "args": ["9"]
         },
 
         "parsible-bench": {
@@ -36,7 +36,7 @@
         "mandelbrot": {
             "file": "mandelbrot/mandelbrot.py",
             "PYTHONPATH": "..",
-            "args": ["64", "128", "512"]
+            "args": ["64", "384", "512"]
         },
 
         "btree": {

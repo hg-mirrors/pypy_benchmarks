@@ -3,7 +3,7 @@
 
 from common.abstract_threading import (atomic, Future,
                                        set_thread_pool, ThreadPool,
-                                       hint_commit_soon)
+                                       hint_commit_soon, turn_jitting_off)
 import time, threading
 
 import random

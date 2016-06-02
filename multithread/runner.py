@@ -9,6 +9,7 @@ import copy
 import pprint
 from subprocess import Popen, PIPE
 
+WITH_NUMACTL = True
 
 def extract_iter_times(stdout):
     for line in stdout.split('\n'):
@@ -35,6 +36,9 @@ def run_benchmark(python_exec, bench_config):
                     str(bench_config['warmiters']),
                     str(ts)]
                    + bench_config['args'])
+            if WITH_NUMACTL:
+                # run on node 2, allocate preferrably on node 2
+                cmd = ["numactl", "-N2", "--preferred=2"] + cmd
             cmd_str = " ".join(cmd)
 
             cwd, _ = os.path.split(bench_file)

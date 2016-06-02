@@ -101,6 +101,7 @@ def print_latex_table(all_res, gil_run_key, stm_run_key):
     stm_grouped = collect_warmiters(all_res, stm_run_key)
 
     assert stm_grouped.keys() == gil_grouped.keys()
+    warnings = ""
     for bench_key in stm_grouped.keys():
         elems = []
         gil_bench = gil_grouped[bench_key]
@@ -109,7 +110,10 @@ def print_latex_table(all_res, gil_run_key, stm_run_key):
         min_gil, min_stm = 9999999., 9999999.
         for vm_bench in [gil_bench, stm_bench]:
             for ts in threads:
-                mean, std = np.mean(vm_bench[ts]), np.std(vm_bench[ts])
+                samples = vm_bench[ts]
+                if len(samples) < 30:
+                    warnings += "WARNING, %s had only %s samples\n" % (bench_key, len(samples))
+                mean, std = np.mean(samples), np.std(samples)
                 if vm_bench is gil_bench:
                     if mean < min_gil:
                         min_gil = mean
@@ -121,19 +125,20 @@ def print_latex_table(all_res, gil_run_key, stm_run_key):
         cells = []
         min_mean = min(min_gil, min_stm)
         for e in elems:
-            if e[0] == min_mean:
+            if e[0] == min_gil or e[0] == min_stm:
                 s = r"$\mathbf{%.2f}$ \scriptsize $\pm %.1f$ \footnotesize" % e
             else:
                 s = r"$%.2f$ \scriptsize $\pm %.1f$ \footnotesize" % e
             cells.append(s)
         #
         speedup = min_gil / min_stm
-        cells.append(r"$%.1f\times$" % speedup)
+        cells.append(r"$%.2f\times$" % speedup)
         print r"%s & " % bench_key + " & ".join(cells) + r" \\"
     print r"\hline"
     print r"\end{tabularx}"
     print r"\normalsize"
     print ""
+    print warnings
 
 def main(argv):
     results_file = argv[0]
@@ -152,7 +157,7 @@ def main(argv):
         choice = raw_input()
 
         gil_run_key, stm_run_key = [runs[int(c)] for c in choice.split(',')]
-        #print_csv(all_res, stm_run_key)
+        print_csv(all_res, gil_run_key)
         print_latex_table(all_res, gil_run_key, stm_run_key)
 
 

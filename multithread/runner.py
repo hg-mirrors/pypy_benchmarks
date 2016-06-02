@@ -10,6 +10,7 @@ import pprint
 from subprocess import Popen, PIPE
 
 WITH_NUMACTL = True
+MAX_RETRY = 100  # per bench
 
 def extract_iter_times(stdout):
     for line in stdout.split('\n'):
@@ -26,8 +27,10 @@ def run_benchmark(python_exec, bench_config):
 
     failures = []
     timings = []
+    retries = 0
     for ts in threads:
-        for vm in range(vmstarts):
+        vm = 0
+        while vm < vmstarts:
             print "threads: %s, vm: %s" % (ts, vm)
 
             bench_file = os.path.abspath(bench_config['file'])
@@ -68,6 +71,10 @@ def run_benchmark(python_exec, bench_config):
                     }
                     failures.append(failure)
                     print "failure:", failure
+                    if retries < MAX_RETRY:
+                        print "RETRY"
+                        retries += 1
+                        continue  # w/o incrementing 'vm'
                 else:
                     stdout, stderr = p.stdout.read(), p.stderr.read()
                     print stdout
@@ -89,6 +96,7 @@ def run_benchmark(python_exec, bench_config):
                 failures.append({
                     'cmd': cmd_str, 'exception': 'KeyboardInterrupt'})
                 return failures, timings
+            vm += 1
     return failures, timings
 
 

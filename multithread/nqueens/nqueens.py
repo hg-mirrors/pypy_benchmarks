@@ -6,7 +6,7 @@
 # of the execution time constructing the permutations. Thus
 # only half the execution is parallelised.
 
-
+import gc
 import sys
 import time
 from common.abstract_threading import (
@@ -40,13 +40,17 @@ def find_solutions(n):
     solutions = []
     fs = []
     cols = range(n)
-    for perms in chunks(permutations(cols), 10000):
+    cs = list(chunks(permutations(cols), 10000))
+    gc.collect()
+    t = time.time()
+    for perms in cs:
         fs.append(Future(check_solutions, n, cols, perms))
     print "Futures:", len(fs)
     for f in fs:
         solutions.extend(f())
-
+    t = time.time() - t
     print "found:", len(solutions)
+    return t
 
 
 def run(threads=2, n=10):
@@ -55,11 +59,11 @@ def run(threads=2, n=10):
 
     set_thread_pool(ThreadPool(threads))
 
-    find_solutions(n)
+    t = find_solutions(n)
 
     # shutdown current pool
     set_thread_pool(None)
-
+    return t
 
 def main(argv):
     # warmiters threads args...
@@ -71,20 +75,18 @@ def main(argv):
 
     print "do warmup:"
     for i in range(3):
-        t = time.time()
-        run(threads, n)
-        print "iter", i, "time:", time.time() - t
+        t = run(threads, n)
+        print "iter", i, "time:", t
 
     print "turn off jitting"
-    import gc
     turn_jitting_off()
     print "do", warmiters, "real iters:"
     times = []
     for i in range(warmiters):
         gc.collect()
-        t = time.time()
-        run(threads, n)
-        times.append(time.time() - t)
+
+        t = run(threads, n)
+        times.append(t)
     print "warmiters:", times
 
 if __name__ == "__main__":

@@ -128,6 +128,9 @@ class ThreadPool(object):
         for w in self.workers:
             w.join()
 
+    def __str__(self):
+        return "TP(%s)" % len(self.workers)
+
 
 _thread_pool = ThreadPool()
 atexit.register(_thread_pool.shutdown)
@@ -136,6 +139,7 @@ def set_thread_pool(th):
     global _thread_pool
     if _thread_pool:
         _thread_pool.shutdown()
+    print "set_thread_pool", th
     _thread_pool = th
 
 

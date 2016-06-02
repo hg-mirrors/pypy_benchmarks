@@ -24,7 +24,7 @@
         "mersenne": {
             "file": "mersenne/mersenne.py",
             "PYTHONPATH": "..",
-            "args": ["1500"]
+            "args": ["2000"]
         },
 
         "richards": {
@@ -48,7 +48,7 @@
         "skiplist": {
             "file": "skiplist/skiplist.py",
             "PYTHONPATH": "..",
-            "args": ["16", "100000"]
+            "args": ["16", "200000"]
         },
 
         "raytrace": {

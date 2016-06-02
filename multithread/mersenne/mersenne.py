@@ -73,7 +73,9 @@ def run(threads=2, n=2000):
 
     counter = [0]
     fs = []
-    for ps in chunks(xrange(2, upb_prime+1), 500):
+    cs = list(chunks(xrange(2, upb_prime+1), 100))
+    print len(cs), "futures"
+    for ps in cs:
         fs.append(Future(work, ps, counter, upb_count))
 
     [f() for f in fs]

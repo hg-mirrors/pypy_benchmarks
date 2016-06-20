@@ -94,7 +94,7 @@ def print_latex_table(all_res, gil_run_key, stm_run_key):
     print r"\footnotesize"
     print r"\begin{tabularx}{\textwidth}{l|r@{\hspace{5pt}}r@{\hspace{5pt}}r@{\hspace{5pt}}r|r@{\hspace{5pt}}r@{\hspace{5pt}}r@{\hspace{5pt}}r|r}"
     #print r"\hline"
-    print r"\textbf{Python VM} & \multicolumn{4}{c|}{\textbf{PyPy-GIL}} & \multicolumn{4}{c}{\textbf{PyPy-STM}} & \multicolumn{1}{|p{1cm}}{\textbf{Max. speedup}} \\ \hline"
+    print r"\textbf{Python VM} & \multicolumn{4}{c|}{\textbf{PyPy-GIL}} & \multicolumn{4}{c}{\textbf{PyPy-STM}} & \multicolumn{1}{|p{2cm}}{\textbf{Max. speedup}} \\ \hline"
     print r"\textbf{Threads} & \multicolumn{1}{c}{\textbf{1}} & \multicolumn{1}{c}{\textbf{2}} & \multicolumn{1}{c}{\textbf{4}} & \multicolumn{1}{c|}{\textbf{8}} & \multicolumn{1}{c}{\textbf{1}} & \multicolumn{1}{c}{\textbf{2}} & \multicolumn{1}{c}{\textbf{4}} & \multicolumn{1}{c}{\textbf{8}} & \multicolumn{1}{|c}{*} \\ \hline"
 
     gil_grouped = collect_warmiters(all_res, gil_run_key)
@@ -102,6 +102,7 @@ def print_latex_table(all_res, gil_run_key, stm_run_key):
 
     assert stm_grouped.keys() == gil_grouped.keys()
     warnings = ""
+    lines = 1
     for bench_key in stm_grouped.keys():
         elems = []
         gil_bench = gil_grouped[bench_key]
@@ -126,14 +127,16 @@ def print_latex_table(all_res, gil_run_key, stm_run_key):
         min_mean = min(min_gil, min_stm)
         for e in elems:
             if e[0] == min_gil or e[0] == min_stm:
-                s = r"$\mathbf{%.2f}$ \scriptsize $\pm %.1f$ \footnotesize" % e
+                s = r"$\mathbf{%.2f}$ \tiny $\pm %.1f$ \footnotesize" % e
             else:
-                s = r"$%.2f$ \scriptsize $\pm %.1f$ \footnotesize" % e
+                s = r"$%.2f$ \tiny $\pm %.1f$ \footnotesize" % e
             cells.append(s)
         #
         speedup = min_gil / min_stm
-        cells.append(r"$%.2f\times$" % speedup)
-        print r"%s & " % bench_key + " & ".join(cells) + r" \\"
+        cells.append(r"\multicolumn{1}{c}{$%.2f\times$}" % speedup)
+        print r"%s & " % bench_key + " & ".join(cells) + r" \\" + (
+            r" \hdashline[0.5pt/5pt]{}" if lines % 3 == 0 else "")
+        lines += 1
     print r"\hline"
     print r"\end{tabularx}"
     print r"\normalsize"

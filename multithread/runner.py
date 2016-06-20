@@ -72,7 +72,8 @@ def run_benchmark(python_exec, bench_config):
                     failures.append(failure)
                     print "failure:", failure
                     if retries < MAX_RETRY:
-                        print "RETRY"
+                        print "####### FAILURE! RETRYING #######"
+                        time.sleep(5)
                         retries += 1
                         continue  # w/o incrementing 'vm'
                 else:

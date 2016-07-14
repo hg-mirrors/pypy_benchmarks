@@ -8,7 +8,10 @@
 #  Outer loop added by Alex Jacoby
 
 import thread, os
-from common.abstract_threading import atomic, hint_commit_soon
+from common.abstract_threading import (
+    atomic, Future, set_thread_pool, ThreadPool,
+    hint_commit_soon, turn_jitting_off)
+
 
 # Task IDs
 I_IDLE = 1
@@ -442,7 +445,12 @@ def main(argv):
 
     print "params:", warmiters, threads, iterations
     print "do warmup:"
-    result, startTime, endTime = entry_point(4, threads)
+    entry_point(iterations, threads)
+    entry_point(iterations, threads)
+    entry_point(iterations, threads)
+
+    print "turn off jitting"
+    turn_jitting_off()
 
     print "do", warmiters, "real iters:"
     times = []

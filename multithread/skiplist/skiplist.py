@@ -91,7 +91,7 @@ class SkipList:
 
 
 CONFLICTING = [SkipList.insert, SkipList.remove]
-OPS = [SkipList.find] * 198 + CONFLICTING
+OPS = [SkipList.find] * 1998 + CONFLICTING
 ITEM_RANGE = 1000000
 
 def task(id, slist, ops):

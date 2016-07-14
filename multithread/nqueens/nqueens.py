@@ -74,7 +74,7 @@ def main(argv):
     print "params (iters, threads, n):", warmiters, threads, n
 
     print "do warmup:"
-    for i in range(3):
+    for i in range(4):
         t = run(threads, n)
         print "iter", i, "time:", t
 

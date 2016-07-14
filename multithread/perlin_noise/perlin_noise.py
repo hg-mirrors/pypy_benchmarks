@@ -99,7 +99,9 @@ def main(argv):
     print "params (iters, threads, n):", warmiters, threads, n
 
     print "do warmup:"
-    for i in range(2):
+    # JIT compiles *tons* of bridges for the perlin_noise function
+    # turning it off after /some/ warmup speeds it up by 10x
+    for i in range(1):
         t = time.time()
         run(threads, n)
         print "iter", i, "time:", time.time() - t

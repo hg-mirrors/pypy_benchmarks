@@ -312,7 +312,7 @@ class BTree(object):
 ######################################################################
 
 CONFLICTING = [BTree.insert, BTree.remove]
-OPS = [BTree.__contains__] * 198 + CONFLICTING
+OPS = [BTree.__contains__] * 1998 + CONFLICTING
 
 ITEM_RANGE = 10000
 

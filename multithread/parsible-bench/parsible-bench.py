@@ -35,7 +35,7 @@ def main(argv):
     print "params (iters, threads):", warmiters, threads
 
     print "do warmup:"
-    for i in range(4):
+    for i in range(6):
         print "iter", i, "time:", run(threads)
 
     print "turn off jitting"

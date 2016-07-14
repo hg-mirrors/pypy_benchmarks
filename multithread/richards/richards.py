@@ -371,12 +371,12 @@ class Richards(object):
         self.finished_lock.acquire()
 
     def run_and_unlock(self, count):
-        print 'running...'
+        #print 'running...'
         iterations = 0
         self.result = True
         for i in range(count):
             self.result = self.run()
-        print 'done, iterations=%d, result=%r' % (count, self.result)
+        #print 'done, iterations=%d, result=%r' % (count, self.result)
         self.finished_lock.release()
 
     def run(self):

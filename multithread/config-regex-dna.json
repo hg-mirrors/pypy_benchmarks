@@ -1,0 +1,20 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 3,
+        "warmiters": 3,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "regex-dna": {
+            "file": "regex-dna/regex-dna.py",
+            "PYTHONPATH": "..",
+            "vmstarts": 3,
+            "warmiters": 3
+        }
+    }
+}

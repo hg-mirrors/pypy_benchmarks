@@ -61,6 +61,22 @@
             "file": "perlin_noise/perlin_noise.py",
             "PYTHONPATH": "..",
             "args": ["4"]
+        },
+
+        "regex-dna": {
+            "file": "regex-dna/regex-dna.py",
+            "PYTHONPATH": ".."
+        },
+
+        "fannkuch-redux": {
+            "file": "fannkuch-redux/fannkuch-redux.py",
+            "PYTHONPATH": "..",
+            "args": ["9"]
+        },
+
+        "k-nucleotide": {
+            "file": "k-nucleotide/k-nucleotide.py",
+            "PYTHONPATH": ".."
         }
 
     }

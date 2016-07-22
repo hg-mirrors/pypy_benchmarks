@@ -1,0 +1,20 @@
+{
+    "defaults": {
+        "file": null,
+        "threads": [1, 2, 4, 8],
+        "vmstarts": 3,
+        "warmiters": 3,
+        "PYTHONPATH": ".",
+        "args": [],
+        "cwd": "."
+    },
+
+    "benchs": {
+        "k-nucleotide": {
+            "file": "k-nucleotide/k-nucleotide.py",
+            "PYTHONPATH": "..",
+            "vmstarts": 3,
+            "warmiters": 3
+        }
+    }
+}

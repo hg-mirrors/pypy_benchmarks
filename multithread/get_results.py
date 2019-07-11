@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import os
 import sys
@@ -9,7 +9,7 @@ def collect_warmiters(all_res, run_key):
     # group timings by thread (multiple vmstarts)
     res_over_run = all_res[run_key]
     grouped = {}
-    for bench_key, timings in res_over_run.items():
+    for bench_key, timings in list(res_over_run.items()):
         for t in timings:
             per_bench = grouped.setdefault(bench_key, {})
             per_bench.setdefault(t['threads'], []).extend(t['warmiters'])
@@ -17,30 +17,30 @@ def collect_warmiters(all_res, run_key):
     return grouped
 
 def retrieve_data(results):
-    print "RUNS:", len(results)
+    print("RUNS:", len(results))
     all_res = {}
-    for run_key, run in results.iteritems():
+    for run_key, run in results.items():
         res_over_run = {}
 
-        print "###", "RUN", run_key, "###"
-        print "python:", run['python']
-        print "python-version:", run['python-version'].strip()
-        print "hg-id:", run['hg-id'].strip()
+        print("###", "RUN", run_key, "###")
+        print("python:", run['python'])
+        print("python-version:", run['python-version'].strip())
+        print("hg-id:", run['hg-id'].strip())
         run_results = run['results']
-        print "RESULTS:", len(run_results)
+        print("RESULTS:", len(run_results))
 
-        print "BENCHMARKS:", run_results.keys()
-        for bench_key, bench_res in run_results.items():
-            print "BENCHMARK:", bench_key
+        print("BENCHMARKS:", list(run_results.keys()))
+        for bench_key, bench_res in list(run_results.items()):
+            print("BENCHMARK:", bench_key)
             if 'fail_reason' in bench_res:
-                print "FAILED:", bench_res
+                print("FAILED:", bench_res)
             else:
                 timings = bench_res['timings']
                 failures = bench_res['failures']
-                print "timings:", len(timings), "failures:", len(failures)
+                print("timings:", len(timings), "failures:", len(failures))
                 res_over_run.setdefault(bench_key, []).extend(timings)
                 if failures:
-                    print "############# THERE ARE FAILURES! #############"
+                    print("############# THERE ARE FAILURES! #############")
                     #print "fail reasons:", failures
                     #import pdb;pdb.set_trace()
         # print ""
@@ -52,8 +52,8 @@ def retrieve_data(results):
         #     for ts in sorted(per_bench.keys()):
         #         if per_bench[ts]:
         #             print "TS:", ts, "times:", per_bench[ts]
-        print ""
-        print ""
+        print("")
+        print("")
     return all_res
 
 
@@ -62,12 +62,12 @@ def print_csv(all_res, run_key):
 
     grouped = collect_warmiters(all_res, run_key)
     cols = len(grouped) * 2 + 1 # "threads" + avg, stddev for each benchmark
-    rows = len(grouped.values()[0]) + 1 # name + threads
+    rows = len(list(grouped.values())[0]) + 1 # name + threads
     table = [["" for _ in range(cols)] for _ in range(rows)] # t[row][col]
 
     table[0][0] = "Threads"
     for bench_num, (b, per_bench) in enumerate(grouped.items()):
-        print "BENCH", b
+        print("BENCH", b)
         table[0][1 + bench_num * 2] = b
         ts_index = 0
         for ts in sorted(per_bench.keys()):
@@ -78,7 +78,7 @@ def print_csv(all_res, run_key):
                 else:
                     assert table[row][0] == ts
 
-                print "TS:", ts, "times:", per_bench[ts]
+                print("TS:", ts, "times:", per_bench[ts])
                 col = 1 + bench_num * 2
                 table[row][col] = np.mean(per_bench[ts])
                 table[row][col+1] = np.std(per_bench[ts])
@@ -86,24 +86,24 @@ def print_csv(all_res, run_key):
 
     # print table:
     for r in range(rows):
-        line = ",\t".join(map(str, table[r]))
-        print line
+        line = ";".join(map(str, table[r]))
+        print(line)
 
 def print_latex_table(all_res, gil_run_key, stm_run_key):
-    print ""
-    print r"\footnotesize"
-    print r"\begin{tabularx}{\textwidth}{l|r@{\hspace{5pt}}r@{\hspace{5pt}}r@{\hspace{5pt}}r|r@{\hspace{5pt}}r@{\hspace{5pt}}r@{\hspace{5pt}}r|r}"
+    print("")
+    print(r"\footnotesize")
+    print(r"\begin{tabularx}{\textwidth}{l|r@{\hspace{5pt}}r@{\hspace{5pt}}r@{\hspace{5pt}}r|r@{\hspace{5pt}}r@{\hspace{5pt}}r@{\hspace{5pt}}r|r}")
     #print r"\hline"
-    print r"\textbf{Python VM} & \multicolumn{4}{c|}{\textbf{PyPy-GIL}} & \multicolumn{4}{c}{\textbf{PyPy-STM}} & \multicolumn{1}{|p{2cm}}{\textbf{Max. speedup}} \\ \hline"
-    print r"\textbf{Threads} & \multicolumn{1}{c}{\textbf{1}} & \multicolumn{1}{c}{\textbf{2}} & \multicolumn{1}{c}{\textbf{4}} & \multicolumn{1}{c|}{\textbf{8}} & \multicolumn{1}{c}{\textbf{1}} & \multicolumn{1}{c}{\textbf{2}} & \multicolumn{1}{c}{\textbf{4}} & \multicolumn{1}{c}{\textbf{8}} & \multicolumn{1}{|c}{*} \\ \hline"
+    print(r"\textbf{Python VM} & \multicolumn{4}{c|}{\textbf{PyPy-GIL}} & \multicolumn{4}{c}{\textbf{PyPy-STM}} & \multicolumn{1}{|p{2cm}}{\textbf{Max. speedup}} \\ \hline")
+    print(r"\textbf{Threads} & \multicolumn{1}{c}{\textbf{1}} & \multicolumn{1}{c}{\textbf{2}} & \multicolumn{1}{c}{\textbf{4}} & \multicolumn{1}{c|}{\textbf{8}} & \multicolumn{1}{c}{\textbf{1}} & \multicolumn{1}{c}{\textbf{2}} & \multicolumn{1}{c}{\textbf{4}} & \multicolumn{1}{c}{\textbf{8}} & \multicolumn{1}{|c}{*} \\ \hline")
 
     gil_grouped = collect_warmiters(all_res, gil_run_key)
     stm_grouped = collect_warmiters(all_res, stm_run_key)
 
-    assert stm_grouped.keys() == gil_grouped.keys()
+    assert list(stm_grouped.keys()) == list(gil_grouped.keys())
     warnings = ""
     lines = 1
-    for bench_key in stm_grouped.keys():
+    for bench_key in list(stm_grouped.keys()):
         elems = []
         gil_bench = gil_grouped[bench_key]
         stm_bench = stm_grouped[bench_key]
@@ -134,14 +134,14 @@ def print_latex_table(all_res, gil_run_key, stm_run_key):
         #
         speedup = min_gil / min_stm
         cells.append(r"\multicolumn{1}{c}{$%.2f\times$}" % speedup)
-        print r"%s & " % bench_key + " & ".join(cells) + r" \\" + (
-            r" \hdashline[0.5pt/5pt]{}" if lines % 3 == 0 else "")
+        print(r"%s & " % bench_key + " & ".join(cells) + r" \\" + (
+            r" \hdashline[0.5pt/5pt]{}" if lines % 3 == 0 else ""))
         lines += 1
-    print r"\hline"
-    print r"\end{tabularx}"
-    print r"\normalsize"
-    print ""
-    print warnings
+    print(r"\hline")
+    print(r"\end{tabularx}")
+    print(r"\normalsize")
+    print("")
+    print(warnings)
 
 def main(argv):
     results_file = argv[0]
@@ -152,12 +152,12 @@ def main(argv):
 
     all_res = retrieve_data(results)
     while True:
-        print "select gil and stm run (e.g., 0,1):"
-        runs = all_res.keys()
+        print("select gil and stm run (e.g., 0,1):")
+        runs = list(all_res.keys())
         choices = ["%s: %s (%s)" % (i, r, results[r]['python'])
                    for i, r in enumerate(runs)]
-        print "\n".join(choices)
-        choice = raw_input()
+        print("\n".join(choices))
+        choice = input()
 
         gil_run_key, stm_run_key = [runs[int(c)] for c in choice.split(',')]
         print_csv(all_res, gil_run_key)

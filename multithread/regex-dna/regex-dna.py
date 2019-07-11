@@ -50,16 +50,17 @@ from re import sub, findall
 def var_find(f, seq):
     return len(findall(f, seq))
 
-def main_b():
-    with open('regexdna-inputYYY.txt', 'r') as f:
-        seq = f.read()
+def main_b(small=False):
+    f = 'regexdna-inputYYY.txt' if not small else 'regexdna-input10000.txt'
+    with open(f, 'r') as f:
+        seq = f.read().lower()
     ilen = len(seq)
 
     seq = sub('>.*\n|\n', '', seq)
     clen = len(seq)
 
 
-    variants = (
+    variants = [
           'agggtaaa|tttaccct',
           '[cgt]gggtaaa|tttaccc[acg]',
           'a[act]ggtaaa|tttacc[agt]t',
@@ -68,12 +69,15 @@ def main_b():
           'aggg[acg]aaa|ttt[cgt]ccct',
           'agggt[cgt]aa|tt[acg]accct',
           'agggta[cgt]a|t[acg]taccct',
-          'agggtaa[cgt]|[acg]ttaccct')
+          'agggtaa[cgt]|[acg]ttaccct']
+    # instead of increasing input data, just search for the variants
+    # multiple times:
+    variants = 40 * variants
 
     t = time.time()
     fs = [Future(var_find, v, seq) for v in variants]
     for f in zip(variants, fs):
-        print(f[0], f[1]())
+        print(f[1]())
     t = time.time() - t
 
     subst = {
@@ -90,12 +94,12 @@ def main_b():
     return t
 
 
-def run(threads=2):
+def run(threads=2, small=False):
     threads = int(threads)
 
     set_thread_pool(ThreadPool(threads))
 
-    t = main_b()
+    t = main_b(small)
 
     # shutdown current pool
     set_thread_pool(None)
@@ -105,12 +109,14 @@ def main(argv):
     # warmiters threads args...
     warmiters = int(argv[0])
     threads = int(argv[1])
+    small = len(argv) == 3
+        
 
     print "params (iters, threads):", warmiters, threads
 
     print "do warmup:"
-    for i in range(4):
-        t = run(threads)
+    for i in range(3):
+        t = run(threads, small)
         print "iter", i, "time:", t
 
     print "turn off jitting"
@@ -120,7 +126,7 @@ def main(argv):
     for i in range(warmiters):
         gc.collect()
 
-        t = run(threads)
+        t = run(threads, small)
         times.append(t)
     print "warmiters:", times
 

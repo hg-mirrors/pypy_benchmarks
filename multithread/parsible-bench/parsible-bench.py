@@ -17,6 +17,10 @@ def run(threads):
                  pid_file="/tmp/parsible.pid",
                  debug=False, batch=True, auto_reload=False)
     t = time.time()
+    # run several times instead of adding more log-data to this repo
+    p.main(128)
+    p.main(128)
+    p.main(128)
     p.main(128)
     parallel_time = time.time() - t
 

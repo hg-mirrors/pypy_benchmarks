@@ -80,9 +80,13 @@ def main_b():
     sequence = "".join(load()).upper()
     plres = []
 
+    # to increase benchmark time without changing input size, repeat the nuclei to 
+    # look for
+    nucleos = nucleos * 10
+
     t = time.time()
     # ORIGINAL version only looked for 1, 2 sequences
-    for nl in 1, 2, 3, 4, 5, 6, 7, 8:
+    for nl in range(1, 20):
         plres.append(Future(sort_seq, sequence, nl))
 
     for se in nucleos.split():

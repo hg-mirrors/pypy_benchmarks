@@ -4,6 +4,8 @@ import thread, atexit, sys, time
 
 try:
     from pypystm import atomic, getsegmentlimit, hint_commit_soon
+    # don't use atomic-feature
+    atomic = RLock()
 except ImportError:
     print "NON-STM EXECUTION"
     atomic = RLock()

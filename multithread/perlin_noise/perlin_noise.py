@@ -83,7 +83,7 @@ def run(threads=2, n=5):
 
     res = []
     for x in range(n):
-        res.append(Future(work, 400, x))
+        res.append(Future(work, 200, x))
     res = [f() for f in res]
 
     # shutdown current pool

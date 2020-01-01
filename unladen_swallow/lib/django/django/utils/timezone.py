@@ -5,6 +5,7 @@ Timezone-related classes and functions.
 from datetime import datetime, timedelta, tzinfo
 from threading import local
 
+import sys
 import pytz
 
 from django.conf import settings

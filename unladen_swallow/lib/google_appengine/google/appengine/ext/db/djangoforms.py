@@ -660,7 +660,7 @@ class ModelFormMetaclass(type):
     for base in bases[::-1]:
       if hasattr(base, 'base_fields'):
         fields = base.base_fields.items() + fields
-    declared_fields = django.utils.datastructures.SortedDict()
+    declared_fields = django.utils.datastructures.OrderedDict()
     for field_name, obj in fields:
       declared_fields[field_name] = obj
 
@@ -682,7 +682,7 @@ class ModelFormMetaclass(type):
         raise django.core.exceptions.ImproperlyConfigured(
             '%s defines a different model than its parent.' % class_name)
 
-      model_fields = django.utils.datastructures.SortedDict()
+      model_fields = django.utils.datastructures.OrderedDict()
       for name, prop in sorted(opts.model.properties().iteritems(),
                                key=lambda prop: prop[1].creation_counter):
         if opts.fields and name not in opts.fields:

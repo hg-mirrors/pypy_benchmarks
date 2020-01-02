@@ -956,6 +956,7 @@ class Node(object):
         try:
             return self.render(context)
         except Exception as e:
+            import pdb;pdb.set_trace()
             if context.template.engine.debug and not hasattr(e, 'template_debug'):
                 e.template_debug = context.render_context.template.get_exception_info(e, self.token)
             raise

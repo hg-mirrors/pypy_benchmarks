@@ -34,12 +34,6 @@ def convert_results(result_list):
         r.append({"name": bench, "runs": runs, "jit-summary": dict.get('jit_summary', '')})
     return r
 
-def get_branch(python):
-    return subprocess.check_output([python, '-c', 'import sys; print sys._mercurial[1]']).strip("\n")
-
-def get_revision(python):
-    return subprocess.check_output([python, '-c', 'import sys; print sys._mercurial[2]']).strip("\n")
-
 def run_and_store(benchmark_set, result_filename, path, revision=0,
                   options='', branch='default', args='', upload=False,
                   fast=False, full_store=False, parser_options=None):
@@ -47,8 +41,8 @@ def run_and_store(benchmark_set, result_filename, path, revision=0,
     _funcs.update(perf._FindAllBenchmarks(benchmarks.__dict__))
     bench_data = json.load(open('bench-data.json'))
     funcs = {}
-    for key, value in _funcs.iteritems():
-        funcs[key] = (value, bench_data[key])
+    for key, value in _funcs.items():
+        funcs[key] = (value, bench_data.get(key, {}))
     opts = ['-b', ','.join(benchmark_set),
             '--inherit_env=PATH',
             '--no_charts']
@@ -122,7 +116,7 @@ def main(argv):
     benchmark_group.add_option(
         '--force-interpreter-name', default=None, action='store',
         dest='interpreter_name',
-        help=("Force the interpreter name present",)
+        help="Force the interpreter name present"
     )
     benchmark_group.add_option(
         '-r', '--revision', action="store",
@@ -193,8 +187,8 @@ def main(argv):
     full_store = options.full_store
     output_filename = options.output_filename
 
-    branch = options.upload_branch or get_branch(options.python)
-    revision = options.upload_revision or get_revision(options.python)
+    branch = options.upload_branch
+    revision = options.upload_revision
     force_host = options.force_host
 
     if options.niceness is not None:
@@ -211,10 +205,10 @@ def main(argv):
 
         # prevent to upload results from the nullpython dummy
         host = force_host if force_host else socket.gethostname()
-        print save(options.upload_project,
+        print(save(options.upload_project,
                    revision, results, options.upload_executable, host,
                    options.upload_url,
-                   branch=branch)
+                   branch=branch))
 
 
 if __name__ == '__main__':

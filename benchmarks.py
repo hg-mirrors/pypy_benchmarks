@@ -54,7 +54,7 @@ def _register_new_bm_base_only(name, bm_name, d, **opts):
                                       *args, **kwargs)
         except subprocess.CalledProcessError as e:
             return ResultError(e)
-        return RawResult(data[0])
+        return RawResult(data[0], None)
     BM.func_name = 'BM_' + bm_name
 
     d[BM.func_name] = BM
@@ -201,7 +201,7 @@ if sys.version_info[0] < 3:
         return result
     BM_translate.benchmark_name = 'trans2'
 
-def BM_cpython_doc(python, options, bench_data):
+def BM_sphinx(python, options, bench_data):
     from unladen_swallow.perf import RawResult
     import subprocess, shutil
     t = []
@@ -229,7 +229,7 @@ def BM_cpython_doc(python, options, bench_data):
     res = float(out.splitlines()[-1])
     return RawResult([res], None)
 
-BM_cpython_doc.benchmark_name = 'sphinx'
+BM_sphinx.benchmark_name = 'sphinx'
 
 # Scimark
 _register_new_bm_base_only('scimark', 'scimark_SOR', globals(),
@@ -244,4 +244,4 @@ _register_new_bm_base_only('scimark', 'scimark_FFT', globals(),
                  extra_args=['--benchmark=FFT', '1024', '1000'])
 
 if __name__ == '__main__':
-    print sorted(_FindAllBenchmarks(globals()).keys())
+    print(sorted(_FindAllBenchmarks(globals()).keys()))

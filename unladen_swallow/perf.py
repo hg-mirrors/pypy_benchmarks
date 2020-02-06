@@ -96,6 +96,8 @@ def SampleStdDev(seq):
     Returns:
         The standard deviation as a float.
     """
+    if len(seq) < 2:
+        return 0.0
     mean = avg(seq)
     squares = ((x - mean) ** 2 for x in seq)
     return math.sqrt(sum(squares) / (len(seq) - 1))
@@ -596,8 +598,8 @@ def CompareMultipleRuns(times, options, bench_data, jit_summary):
         A string summarizing the difference between the runs, suitable for
         human consumption.
     """
-    if options.no_statistics or len(base_times) ==0 or len(changed_times) == 0:
-        return RawResult(base_times, changed_times)
+    if options.no_statistics or len(times) ==0:
+        return RawResult(times)
     if options.no_statistics:
         return RawResult(times)
     if len(times) == 1:
@@ -675,7 +677,7 @@ def CallAndCaptureOutput(command, env=None, track_memory=False, inherit_env=[]):
 
 
 def MeasureGeneric(python, options, bench_data, bm_path, bm_env=None,
-                   extra_args=[], parser=float):
+                   extra_args=[], iteration_scaling=1, parser=float):
     """Abstract measurement function for Unladen's bm_* scripts.
 
     Based on the values of options.fast/rigorous, will pass -n {5,50,100} to
@@ -708,7 +710,7 @@ def MeasureGeneric(python, options, bench_data, bm_path, bm_env=None,
         trials = (trials - warmup) * 2 + warmup
     elif options.fast:
         trials = (trials - warmup) // 10 + warmup
-    trials = max(1, trials)
+    trials = max(1, int(trials * iteration_scaling))
 
     RemovePycs()
     command = python + [bm_path, "-n", trials] + extra_args
@@ -939,7 +941,7 @@ def BM_SlowUnpickle(base_python, changed_python, options):
     return _PickleBenchmark(base_python, changed_python, options, ["unpickle"])
 
 
-def MeasureAi(python, options):
+def MeasureAi(python, options, bench_data):
     """Test the performance of some small AI problem solvers.
 
     Args:
@@ -1376,19 +1378,23 @@ def main(argv, bench_funcs=BENCH_FUNCS, bench_groups=BENCH_GROUPS):
 
     results = []
     errors = []
+    if options.fast:
+        process_runs = 1
+    else:
+        process_runs = 10
     for name in sorted(should_run):
         func, bench_data = bench_funcs[name]
         print("Running %s..." % name)
         t0 = time.time()
         # PyPy specific modification: let the func to return a list of results
         # for sub-benchmarks
-        try:
-            for k in range(bench_data.get("process_runs", 10)):
+        for k in range(bench_data.get("process_runs", process_runs)):
+            try:
                 bench_result = func(base_cmd_prefix, options, bench_data)
-        except Exception as e:
-            traceback.print_exc()
-            errors.append(e)
-            continue
+            except Exception as e:
+                traceback.print_exc()
+                errors.append(e)
+                break
             name = getattr(func, 'benchmark_name', name)
             if isinstance(bench_result, list):
                 for subname, subresult in bench_result:

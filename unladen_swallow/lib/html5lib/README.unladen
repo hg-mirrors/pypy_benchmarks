@@ -1,2 +1,2 @@
-This html5lib, cloned from https://html5lib.googlecode.com/hg/ at rev
-16b9dacec7. We only pull in the python/src directory.
+This html5lib, cloned from https://github.com/html5lib/html5lib-python at rev
+1.0.1. We copy only the html5lib directory. Also copied webencodings 0.5.1

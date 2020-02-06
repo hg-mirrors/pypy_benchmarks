@@ -8,9 +8,12 @@ Twisted Python Roots: an abstract hierarchy representation for Twisted.
 Maintainer: Glyph Lefkowitz
 """
 
-# System imports
-import types
+from __future__ import absolute_import, division
+
 from twisted.python import reflect
+from twisted.python._oldstyle import _oldStyle
+
+
 
 class NotSupportedError(NotImplementedError):
     """
@@ -19,6 +22,8 @@ class NotSupportedError(NotImplementedError):
     """
 
 
+
+@_oldStyle
 class Request:
     """I am an abstract representation of a request for an entity.
 
@@ -40,6 +45,8 @@ class Request:
         raise NotImplementedError("%s.finish" % reflect.qual(self.__class__))
 
 
+
+@_oldStyle
 class Entity:
     """I am a terminal object in a hierarchy, with no children.
 
@@ -58,6 +65,8 @@ class Entity:
         raise NotImplementedError("%s.render" % reflect.qual(self.__class__))
 
 
+
+@_oldStyle
 class Collection:
     """I represent a static collection of entities.
 
@@ -232,7 +241,7 @@ class Homogenous(Constrained):
     specified by my 'entityType' attribute.
     """
 
-    entityType = types.InstanceType
+    entityType = object
 
     def entityConstraint(self, entity):
         if isinstance(entity, self.entityType):

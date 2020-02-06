@@ -2,7 +2,6 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-
 """
 HTML rendering for twisted.web.
 
@@ -19,16 +18,41 @@ HTML rendering for twisted.web.
     L{AttributeError}.
 """
 
-from zope.interface import implements
+from __future__ import division, absolute_import
 
-from cStringIO import StringIO
+__all__ = [
+    'TEMPLATE_NAMESPACE', 'VALID_HTML_TAG_NAMES', 'Element', 'TagLoader',
+    'XMLString', 'XMLFile', 'renderer', 'flatten', 'flattenString', 'tags',
+    'Comment', 'CDATA', 'Tag', 'slot', 'CharRef', 'renderElement'
+    ]
+
+import warnings
+
+from collections import OrderedDict
+
+from zope.interface import implementer
+
 from xml.sax import make_parser, handler
 
-from twisted.web._stan import Tag, slot, Comment, CDATA
+from twisted.python.compat import NativeStringIO, items
+from twisted.python.filepath import FilePath
+from twisted.web._stan import Tag, slot, Comment, CDATA, CharRef
+from twisted.web.iweb import ITemplateLoader
+from twisted.logger import Logger
 
 TEMPLATE_NAMESPACE = 'http://twistedmatrix.com/ns/twisted.web.template/0.1'
 
-from twisted.web.iweb import ITemplateLoader
+# Go read the definition of NOT_DONE_YET. For lulz. This is totally
+# equivalent. And this turns out to be necessary, because trying to import
+# NOT_DONE_YET in this module causes a circular import which we cannot escape
+# from. From which we cannot escape. Etc. glyph is okay with this solution for
+# now, and so am I, as long as this comment stays to explain to future
+# maintainers what it means. ~ C.
+#
+# See http://twistedmatrix.com/trac/ticket/5557 for progress on fixing this.
+NOT_DONE_YET = 1
+_moduleLog = Logger()
+
 
 class _NSContext(object):
     """
@@ -42,7 +66,7 @@ class _NSContext(object):
         """
         self.parent = parent
         if parent is not None:
-            self.nss = dict(parent.nss)
+            self.nss = OrderedDict(parent.nss)
         else:
             self.nss = {'http://www.w3.org/XML/1998/namespace':'xml'}
 
@@ -185,8 +209,8 @@ class _ToStan(handler.ContentHandler, handler.EntityResolver):
 
         render = None
 
-        attrs = dict(attrs)
-        for k, v in attrs.items():
+        attrs = OrderedDict(attrs)
+        for k, v in items(attrs):
             attrNS, justTheName = k
             if attrNS != TEMPLATE_NAMESPACE:
                 continue
@@ -201,8 +225,8 @@ class _ToStan(handler.ContentHandler, handler.EntityResolver):
         # specified as having a namespace in the template) or prefix:name,
         # preserving the xml namespace prefix given in the document.
 
-        nonTemplateAttrs = {}
-        for (attrNs, attrName), v in attrs.items():
+        nonTemplateAttrs = OrderedDict()
+        for (attrNs, attrName), v in items(attrs):
             nsPrefix = self.prefixMap.get(attrNs)
             if nsPrefix is None:
                 attrKey = attrName
@@ -228,7 +252,7 @@ class _ToStan(handler.ContentHandler, handler.EntityResolver):
 
         # Apply any xmlns attributes
         if self.xmlnsAttrs:
-            nonTemplateAttrs.update(dict(self.xmlnsAttrs))
+            nonTemplateAttrs.update(OrderedDict(self.xmlnsAttrs))
             self.xmlnsAttrs = []
 
         # Add the prefix that was used in the parsed template for non-template
@@ -238,7 +262,7 @@ class _ToStan(handler.ContentHandler, handler.EntityResolver):
             if prefix is not None:
                 name = '%s:%s' % (self.prefixMap[ns],name)
         el = Tag(
-            name, attributes=dict(nonTemplateAttrs), render=render,
+            name, attributes=OrderedDict(nonTemplateAttrs), render=render,
             filename=filename, lineNumber=lineNumber,
             columnNumber=columnNumber)
         self.stack.append(el)
@@ -314,6 +338,9 @@ def _flatsaxParse(fl):
     Perform a SAX parse of an XML document with the _ToStan class.
 
     @param fl: The XML document to be parsed.
+    @type fl: A file object or filename.
+
+    @return: a C{list} of Stan objects.
     """
     parser = make_parser()
     parser.setFeature(handler.feature_validation, 0)
@@ -331,44 +358,113 @@ def _flatsaxParse(fl):
     return s.document
 
 
+@implementer(ITemplateLoader)
+class TagLoader(object):
+    """
+    An L{ITemplateLoader} that loads existing L{IRenderable} providers.
+
+    @ivar tag: The object which will be loaded.
+    @type tag: An L{IRenderable} provider.
+    """
+
+    def __init__(self, tag):
+        """
+        @param tag: The object which will be loaded.
+        @type tag: An L{IRenderable} provider.
+        """
+        self.tag = tag
+
+
+    def load(self):
+        return [self.tag]
+
+
+
+@implementer(ITemplateLoader)
 class XMLString(object):
     """
     An L{ITemplateLoader} that loads and parses XML from a string.
 
-    @type s: C{string}
-    @param s: The string from which to load the XML.
+    @ivar _loadedTemplate: The loaded document.
+    @type _loadedTemplate: a C{list} of Stan objects.
     """
-    implements(ITemplateLoader)
 
     def __init__(self, s):
         """
-        Run the parser on a StringIO copy of the string.
+        Run the parser on a L{NativeStringIO} copy of the string.
+
+        @param s: The string from which to load the XML.
+        @type s: C{str}, or a UTF-8 encoded L{bytes}.
         """
-        self._loadedTemplate = _flatsaxParse(StringIO(s))
+        if not isinstance(s, str):
+            s = s.decode('utf8')
+
+        self._loadedTemplate = _flatsaxParse(NativeStringIO(s))
 
 
     def load(self):
+        """
+        Return the document.
+
+        @return: the loaded document.
+        @rtype: a C{list} of Stan objects.
+        """
         return self._loadedTemplate
 
 
 
+@implementer(ITemplateLoader)
 class XMLFile(object):
     """
     An L{ITemplateLoader} that loads and parses XML from a file.
 
-    @type fobj: file object
-    @param fobj: The file object from which to load the XML.
-    """
-    implements(ITemplateLoader)
+    @ivar _loadedTemplate: The loaded document, or L{None}, if not loaded.
+    @type _loadedTemplate: a C{list} of Stan objects, or L{None}.
 
-    def __init__(self, fobj):
-        self._loadDoc = lambda: _flatsaxParse(fobj)
+    @ivar _path: The L{FilePath}, file object, or filename that is being
+        loaded from.
+    """
+
+    def __init__(self, path):
+        """
+        Run the parser on a file.
+
+        @param path: The file from which to load the XML.
+        @type path: L{FilePath}
+        """
+        if not isinstance(path, FilePath):
+            warnings.warn(
+                "Passing filenames or file objects to XMLFile is deprecated "
+                "since Twisted 12.1.  Pass a FilePath instead.",
+                category=DeprecationWarning, stacklevel=2)
         self._loadedTemplate = None
+        self._path = path
+
+
+    def _loadDoc(self):
+        """
+        Read and parse the XML.
+
+        @return: the loaded document.
+        @rtype: a C{list} of Stan objects.
+        """
+        if not isinstance(self._path, FilePath):
+            return _flatsaxParse(self._path)
+        else:
+            with self._path.open('r') as f:
+                return _flatsaxParse(f)
+
+
+    def __repr__(self):
+        return '<XMLFile of %r>' % (self._path,)
 
 
     def load(self):
         """
-        Load the document if it's not already loaded.
+        Return the document, first loading it if necessary.
+
+        @return: the loaded document.
+        @rtype: a C{list} of Stan objects.
         """
         if self._loadedTemplate is None:
             self._loadedTemplate = self._loadDoc()
@@ -376,18 +472,26 @@ class XMLFile(object):
 
 
 
+# Last updated October 2011, using W3Schools as a reference. Link:
+# http://www.w3schools.com/html5/html5_reference.asp
+# Note that <xmp> is explicitly omitted; its semantics do not work with
+# t.w.template and it is officially deprecated.
 VALID_HTML_TAG_NAMES = set([
-    'a', 'abbr', 'acronym', 'address', 'applet', 'area', 'b', 'base',
-    'basefont', 'bdo', 'big', 'blockquote', 'body', 'br', 'button', 'caption',
-    'center', 'cite', 'code', 'col', 'colgroup', 'dd', 'del', 'dfn', 'dir',
-    'div', 'dl', 'dt', 'em', 'fieldset', 'font', 'form', 'frame', 'frameset',
-    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'hr', 'html', 'i', 'iframe',
-    'img', 'input', 'ins', 'isindex', 'kbd', 'label', 'legend', 'li', 'link',
-    'map', 'menu', 'meta', 'noframes', 'noscript', 'object', 'ol', 'optgroup',
-    'option', 'p', 'param', 'pre', 'q', 's', 'samp', 'script', 'select',
-    'small', 'span', 'strike', 'strong', 'style', 'sub', 'sup', 'table',
-    'tbody', 'td', 'textarea', 'tfoot', 'th', 'thead', 'title', 'tr', 'tt', 'u',
-    'ul', 'var'
+    'a', 'abbr', 'acronym', 'address', 'applet', 'area', 'article', 'aside',
+    'audio', 'b', 'base', 'basefont', 'bdi', 'bdo', 'big', 'blockquote',
+    'body', 'br', 'button', 'canvas', 'caption', 'center', 'cite', 'code',
+    'col', 'colgroup', 'command', 'datalist', 'dd', 'del', 'details', 'dfn',
+    'dir', 'div', 'dl', 'dt', 'em', 'embed', 'fieldset', 'figcaption',
+    'figure', 'font', 'footer', 'form', 'frame', 'frameset', 'h1', 'h2', 'h3',
+    'h4', 'h5', 'h6', 'head', 'header', 'hgroup', 'hr', 'html', 'i', 'iframe',
+    'img', 'input', 'ins', 'isindex', 'keygen', 'kbd', 'label', 'legend',
+    'li', 'link', 'map', 'mark', 'menu', 'meta', 'meter', 'nav', 'noframes',
+    'noscript', 'object', 'ol', 'optgroup', 'option', 'output', 'p', 'param',
+    'pre', 'progress', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'script',
+    'section', 'select', 'small', 'source', 'span', 'strike', 'strong',
+    'style', 'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'textarea',
+    'tfoot', 'th', 'thead', 'time', 'title', 'tr', 'tt', 'u', 'ul', 'var',
+    'video', 'wbr',
 ])
 
 
@@ -420,11 +524,52 @@ tags = _TagFactory()
 
 
 
+def renderElement(request, element,
+                  doctype=b'<!DOCTYPE html>', _failElement=None):
+    """
+    Render an element or other C{IRenderable}.
+
+    @param request: The C{Request} being rendered to.
+    @param element: An C{IRenderable} which will be rendered.
+    @param doctype: A C{bytes} which will be written as the first line of
+        the request, or L{None} to disable writing of a doctype.  The C{string}
+        should not include a trailing newline and will default to the HTML5
+        doctype C{'<!DOCTYPE html>'}.
+
+    @returns: NOT_DONE_YET
+
+    @since: 12.1
+    """
+    if doctype is not None:
+        request.write(doctype)
+        request.write(b'\n')
+
+    if _failElement is None:
+        _failElement = twisted.web.util.FailureElement
+
+    d = flatten(request, element, request.write)
+
+    def eb(failure):
+        _moduleLog.failure(
+            "An error occurred while rendering the response.",
+            failure=failure
+        )
+        if request.site.displayTracebacks:
+            return flatten(request, _failElement(failure),
+                           request.write).encode('utf8')
+        else:
+            request.write(
+                (b'<div style="font-size:800%;'
+                 b'background-color:#FFF;'
+                 b'color:#F00'
+                 b'">An error occurred while rendering the response.</div>'))
+
+    d.addErrback(eb)
+    d.addBoth(lambda _: request.finish())
+    return NOT_DONE_YET
+
+
+
 from twisted.web._element import Element, renderer
 from twisted.web._flatten import flatten, flattenString
-
-__all__ = [
-    'TEMPLATE_NAMESPACE', 'VALID_HTML_TAG_NAMES', 'Element', 'renderer',
-    'flatten', 'flattenString', 'tags', 'Comment', 'CDATA', 'Tag', 'slot'
-]
-
+import twisted.web.util

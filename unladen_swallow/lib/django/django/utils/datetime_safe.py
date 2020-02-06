@@ -4,30 +4,43 @@
 #
 # Based on code submitted to comp.lang.python by Andrew Dalke
 #
-# >>> datetime_safe.date(1850, 8, 2).strftime("%Y/%M/%d was a %A")
+# >>> datetime_safe.date(1850, 8, 2).strftime("%Y/%m/%d was a %A")
 # '1850/08/02 was a Friday'
 
-from datetime import date as real_date, datetime as real_datetime
 import re
-import time
+import time as ttime
+from datetime import (
+    date as real_date, datetime as real_datetime, time as real_time,
+)
+
 
 class date(real_date):
     def strftime(self, fmt):
         return strftime(self, fmt)
 
+
 class datetime(real_datetime):
     def strftime(self, fmt):
         return strftime(self, fmt)
 
-    def combine(self, date, time):
-        return datetime(date.year, date.month, date.day, time.hour, time.minute, time.microsecond, time.tzinfo)
+    @classmethod
+    def combine(cls, date, time):
+        return cls(date.year, date.month, date.day,
+                   time.hour, time.minute, time.second,
+                   time.microsecond, time.tzinfo)
 
     def date(self):
         return date(self.year, self.month, self.day)
 
+
+class time(real_time):
+    pass
+
+
 def new_date(d):
     "Generate a safe date from a datetime.date object."
     return date(d.year, d.month, d.day)
+
 
 def new_datetime(d):
     """
@@ -38,9 +51,11 @@ def new_datetime(d):
         kw.extend([d.hour, d.minute, d.second, d.microsecond, d.tzinfo])
     return datetime(*kw)
 
+
 # This library does not support strftime's "%s" or "%y" format strings.
 # Allowed if there's an even number of "%"s because they are escaped.
 _illegal_formatting = re.compile(r"((^|[^%])(%%)*%[sy])")
+
 
 def _findall(text, substr):
     # Also finds overlaps
@@ -51,8 +66,9 @@ def _findall(text, substr):
         if j == -1:
             break
         sites.append(j)
-        i=j+1
+        i = j + 1
     return sites
+
 
 def strftime(dt, fmt):
     if dt.year >= 1900:
@@ -71,11 +87,11 @@ def strftime(dt, fmt):
     # Move to around the year 2000
     year = year + ((2000 - year) // 28) * 28
     timetuple = dt.timetuple()
-    s1 = time.strftime(fmt, (year,) + timetuple[1:])
+    s1 = ttime.strftime(fmt, (year,) + timetuple[1:])
     sites1 = _findall(s1, str(year))
 
-    s2 = time.strftime(fmt, (year+28,) + timetuple[1:])
-    sites2 = _findall(s2, str(year+28))
+    s2 = ttime.strftime(fmt, (year + 28,) + timetuple[1:])
+    sites2 = _findall(s2, str(year + 28))
 
     sites = []
     for site in sites1:
@@ -83,7 +99,7 @@ def strftime(dt, fmt):
             sites.append(site)
 
     s = s1
-    syear = "%4d" % (dt.year,)
+    syear = "%04d" % (dt.year,)
     for site in sites:
-        s = s[:site] + syear + s[site+4:]
+        s = s[:site] + syear + s[site + 4:]
     return s

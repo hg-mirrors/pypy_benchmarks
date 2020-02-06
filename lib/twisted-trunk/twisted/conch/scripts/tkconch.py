@@ -2,28 +2,34 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-#
-# $Id: tkconch.py,v 1.6 2003/02/22 08:10:15 z3p Exp $
-
-""" Implementation module for the `tkconch` command.
+"""
+Implementation module for the `tkconch` command.
 """
 
-from __future__ import nested_scopes
+from __future__ import print_function
 
-import Tkinter, tkFileDialog, tkFont, tkMessageBox, string
+from twisted.conch import error
 from twisted.conch.ui import tkvt100
 from twisted.conch.ssh import transport, userauth, connection, common, keys
 from twisted.conch.ssh import session, forwarding, channel
 from twisted.conch.client.default import isInKnownHosts
 from twisted.internet import reactor, defer, protocol, tksupport
 from twisted.python import usage, log
+from twisted.python.compat import _PY3
 
 import os, sys, getpass, struct, base64, signal
+
+if _PY3:
+    import tkinter as Tkinter
+    import tkinter.filedialog as tkFileDialog
+    import tkinter.messagebox as tkMessageBox
+else:
+    import Tkinter, tkFileDialog, tkMessageBox
 
 class TkConchMenu(Tkinter.Frame):
     def __init__(self, *args, **params):
         ## Standard heading: initialization
-        apply(Tkinter.Frame.__init__, (self,) + args, params)
+        Tkinter.Frame.__init__(self, *args, **params)
 
         self.master.title('TkConch')
         self.localRemoteVar = Tkinter.StringVar()
@@ -86,7 +92,7 @@ class TkConchMenu(Tkinter.Frame):
         self.grid_columnconfigure(2, weight=1, minsize=2)
 
         self.master.protocol("WM_DELETE_WINDOW", sys.exit)
-        
+
 
     def getIdentityFile(self):
         r = tkFileDialog.askopenfilename()
@@ -160,7 +166,7 @@ class TkConchMenu(Tkinter.Frame):
             finished = 0
         if finished:
             self.master.quit()
-            self.master.destroy()        
+            self.master.destroy()
             if options['log']:
                 realout = sys.stdout
                 log.startLogging(sys.stderr)
@@ -192,7 +198,7 @@ class GeneralOptions(usage.Options):
                     ['localforward', 'L', None, 'listen-port:host:port   Forward local port to remote address'],
                     ['remoteforward', 'R', None, 'listen-port:host:port   Forward remote port to local address'],
                     ]
-    
+
     optFlags = [['tty', 't', 'Tty; allocate a tty even if command is given.'],
                 ['notty', 'T', 'Do not allocate a tty.'],
                 ['version', 'V', 'Display version number only.'],
@@ -200,18 +206,22 @@ class GeneralOptions(usage.Options):
                 ['noshell', 'N', 'Do not execute a shell or command.'],
                 ['subsystem', 's', 'Invoke command (mandatory) as SSH2 subsystem.'],
                 ['log', 'v', 'Log to stderr'],
-                ['ansilog', 'a', 'Print the receieved data to stdout']]
+                ['ansilog', 'a', 'Print the received data to stdout']]
 
-    #zsh_altArgDescr = {"foo":"use this description for foo instead"}
-    #zsh_multiUse = ["foo", "bar"]
-    zsh_mutuallyExclusive = [("tty", "notty")]
-    zsh_actions = {"cipher":"(%s)" % " ".join(transport.SSHClientTransport.supportedCiphers),
-                   "macs":"(%s)" % " ".join(transport.SSHClientTransport.supportedMACs)}
-    zsh_actionDescr = {"localforward":"listen-port:host:port",
-                       "remoteforward":"listen-port:host:port"}
-    # user, host, or user@host completion similar to zsh's ssh completion
-    zsh_extras = ['1:host | user@host:{_ssh;if compset -P "*@"; then _wanted hosts expl "remote host name" _ssh_hosts && ret=0 elif compset -S "@*"; then _wanted users expl "login name" _ssh_users -S "" && ret=0 else if (( $+opt_args[-l] )); then tmp=() else tmp=( "users:login name:_ssh_users -qS@" ) fi; _alternative "hosts:remote host name:_ssh_hosts" "$tmp[@]" && ret=0 fi}',
-                  '*:command: ']
+    _ciphers = transport.SSHClientTransport.supportedCiphers
+    _macs = transport.SSHClientTransport.supportedMACs
+
+    compData = usage.Completions(
+        mutuallyExclusive=[("tty", "notty")],
+        optActions={
+            "cipher": usage.CompleteList(_ciphers),
+            "macs": usage.CompleteList(_macs),
+            "localforward": usage.Completer(descr="listen-port:host:port"),
+            "remoteforward": usage.Completer(descr="listen-port:host:port")},
+        extraActions=[usage.CompleteUserAtHost(),
+                      usage.Completer(descr="command"),
+                      usage.Completer(descr="argument", repeat=True)]
+        )
 
     identitys = []
     localForwards = []
@@ -299,8 +309,8 @@ def run():
     options = GeneralOptions()
     try:
         options.parseOptions(args)
-    except usage.UsageError, u:
-        print 'ERROR: %s' % u
+    except usage.UsageError as u:
+        print('ERROR: %s' % u)
         options.opt_help()
         sys.exit(1)
     for k,v in options.items():
@@ -333,7 +343,7 @@ def handleError():
     raise
 
 class SSHClientFactory(protocol.ClientFactory):
-    noisy = 1 
+    noisy = 1
 
     def stopFactory(self):
         reactor.stop()
@@ -371,19 +381,19 @@ class SSHClientTransport(transport.SSHClientTransport):
         elif goodKey == 2: # AAHHHHH changed
             return defer.fail(error.ConchError('bad host key'))
         else:
-            if options['host'] == self.transport.getPeer()[1]:
+            if options['host'] == self.transport.getPeer().host:
                 host = options['host']
                 khHost = options['host']
             else:
-                host = '%s (%s)' % (options['host'], 
-                                    self.transport.getPeer()[1])
-                khHost = '%s,%s' % (options['host'], 
-                                    self.transport.getPeer()[1])
+                host = '%s (%s)' % (options['host'],
+                                    self.transport.getPeer().host)
+                khHost = '%s,%s' % (options['host'],
+                                    self.transport.getPeer().host)
             keyType = common.getNS(pubKey)[0]
             ques = """The authenticity of host '%s' can't be established.\r
-%s key fingerprint is %s.""" % (host, 
-                                {'ssh-dss':'DSA', 'ssh-rsa':'RSA'}[keyType], 
-                                fingerprint) 
+%s key fingerprint is %s.""" % (host,
+                                {b'ssh-dss':'DSA', b'ssh-rsa':'RSA'}[keyType],
+                                fingerprint)
             ques+='\r\nAre you sure you want to continue connecting (yes/no)? '
             return deferredAskFrame(ques, 1).addCallback(self._cbVerifyHostKey, pubKey, khHost, keyType)
 
@@ -394,14 +404,16 @@ class SSHClientTransport(transport.SSHClientTransport):
             frame.write('Host key verification failed.\r\n')
             raise error.ConchError('bad host key')
         try:
-            frame.write("Warning: Permanently added '%s' (%s) to the list of known hosts.\r\n" % (khHost, {'ssh-dss':'DSA', 'ssh-rsa':'RSA'}[keyType]))
-            known_hosts = open(os.path.expanduser('~/.ssh/known_hosts'), 'a')
-            encodedKey = base64.encodestring(pubKey).replace('\n', '')
-            known_hosts.write('\n%s %s %s' % (khHost, keyType, encodedKey))
-            known_hosts.close()
+            frame.write(
+                "Warning: Permanently added '%s' (%s) to the list of "
+                "known hosts.\r\n" %
+                (khHost, {b'ssh-dss':'DSA', b'ssh-rsa':'RSA'}[keyType]))
+            with open(os.path.expanduser('~/.ssh/known_hosts'), 'a') as known_hosts:
+                encodedKey = base64.encodestring(pubKey).replace(b'\n', b'')
+                known_hosts.write('\n%s %s %s' % (khHost, keyType, encodedKey))
         except:
             log.deferr()
-            raise error.ConchError 
+            raise error.ConchError
 
     def connectionSecure(self):
         if options['user']:
@@ -416,7 +428,7 @@ class SSHUserAuthClient(userauth.SSHUserAuthClient):
     def getPassword(self, prompt = None):
         if not prompt:
             prompt = "%s@%s's password: " % (self.user, options['host'])
-        return deferredAskFrame(prompt,0) 
+        return deferredAskFrame(prompt,0)
 
     def getPublicKey(self):
         files = [x for x in options.identitys if x not in self.usedFiles]
@@ -425,22 +437,22 @@ class SSHUserAuthClient(userauth.SSHUserAuthClient):
         file = files[0]
         log.msg(file)
         self.usedFiles.append(file)
-        file = os.path.expanduser(file) 
+        file = os.path.expanduser(file)
         file += '.pub'
         if not os.path.exists(file):
             return
         try:
-            return keys.Key.fromFile(file).blob() 
+            return keys.Key.fromFile(file).blob()
         except:
             return self.getPublicKey() # try again
-    
+
     def getPrivateKey(self):
         file = os.path.expanduser(self.usedFiles[-1])
         if not os.path.exists(file):
             return None
         try:
             return defer.succeed(keys.Key.fromFile(file).keyObject)
-        except keys.BadKeyError, e:
+        except keys.BadKeyError as e:
             if e.args[0] == 'encrypted key with no password':
                 prompt = "Enter passphrase for key '%s': " % \
                        self.usedFiles[-1]
@@ -463,7 +475,7 @@ class SSHConnection(connection.SSHConnection):
         if options.localForwards:
             for localPort, hostport in options.localForwards:
                 reactor.listenTCP(localPort,
-                            forwarding.SSHListenForwardingFactory(self, 
+                            forwarding.SSHListenForwardingFactory(self,
                                 hostport,
                                 forwarding.SSHListenClientForwardingChannel))
         if options.remoteForwards:
@@ -472,13 +484,13 @@ class SSHConnection(connection.SSHConnection):
                         (remotePort, hostport))
                 data = forwarding.packGlobal_tcpip_forward(
                     ('0.0.0.0', remotePort))
-                d = self.sendGlobalRequest('tcpip-forward', data)
+                self.sendGlobalRequest('tcpip-forward', data)
                 self.remoteForwards[remotePort] = hostport
 
 class SSHSession(channel.SSHChannel):
 
-    name = 'session'
-    
+    name = b'session'
+
     def channelOpen(self, foo):
         #global globalSession
         #globalSession = self
@@ -493,7 +505,7 @@ class SSHSession(channel.SSHChannel):
         frame.callback = c.dataReceived
         frame.canvas.focus_force()
         if options['subsystem']:
-            self.conn.sendRequest(self, 'subsystem', \
+            self.conn.sendRequest(self, b'subsystem', \
                 common.NS(options['command']))
         elif options['command']:
             if options['tty']:
@@ -501,7 +513,7 @@ class SSHSession(channel.SSHChannel):
                 #winsz = fcntl.ioctl(fd, tty.TIOCGWINSZ, '12345678')
                 winSize = (25,80,0,0) #struct.unpack('4H', winsz)
                 ptyReqData = session.packRequest_pty_req(term, winSize, '')
-                self.conn.sendRequest(self, 'pty-req', ptyReqData)                
+                self.conn.sendRequest(self, b'pty-req', ptyReqData)
             self.conn.sendRequest(self, 'exec', \
                 common.NS(options['command']))
         else:
@@ -510,8 +522,8 @@ class SSHSession(channel.SSHChannel):
                 #winsz = fcntl.ioctl(fd, tty.TIOCGWINSZ, '12345678')
                 winSize = (25,80,0,0) #struct.unpack('4H', winsz)
                 ptyReqData = session.packRequest_pty_req(term, winSize, '')
-                self.conn.sendRequest(self, 'pty-req', ptyReqData)
-            self.conn.sendRequest(self, 'shell', '')
+                self.conn.sendRequest(self, b'pty-req', ptyReqData)
+            self.conn.sendRequest(self, b'shell', b'')
         self.conn.transport.transport.setTcpNoDelay(1)
 
     def handleInput(self, char):
@@ -541,8 +553,10 @@ class SSHSession(channel.SSHChannel):
             self.write(char)
 
     def dataReceived(self, data):
+        if _PY3 and isinstance(data, bytes):
+            data = data.decode("utf-8")
         if options['ansilog']:
-            print repr(data)
+            print(repr(data))
         frame.write(data)
 
     def extReceived(self, t, data):

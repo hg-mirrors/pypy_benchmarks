@@ -1,66 +1,51 @@
-from django.conf import settings
-from django.db.backends.creation import BaseDatabaseCreation
+import subprocess
+import sys
+
+from django.db.backends.base.creation import BaseDatabaseCreation
+
+from .client import DatabaseClient
+
 
 class DatabaseCreation(BaseDatabaseCreation):
-    # This dictionary maps Field objects to their associated MySQL column
-    # types, as strings. Column-type strings can contain format strings; they'll
-    # be interpolated against the values of Field.__dict__ before being output.
-    # If a column type is set to None, it won't be included in the output.
-    data_types = {
-        'AutoField':         'integer AUTO_INCREMENT',
-        'BooleanField':      'bool',
-        'CharField':         'varchar(%(max_length)s)',
-        'CommaSeparatedIntegerField': 'varchar(%(max_length)s)',
-        'DateField':         'date',
-        'DateTimeField':     'datetime',
-        'DecimalField':      'numeric(%(max_digits)s, %(decimal_places)s)',
-        'FileField':         'varchar(%(max_length)s)',
-        'FilePathField':     'varchar(%(max_length)s)',
-        'FloatField':        'double precision',
-        'IntegerField':      'integer',
-        'IPAddressField':    'char(15)',
-        'NullBooleanField':  'bool',
-        'OneToOneField':     'integer',
-        'PositiveIntegerField': 'integer UNSIGNED',
-        'PositiveSmallIntegerField': 'smallint UNSIGNED',
-        'SlugField':         'varchar(%(max_length)s)',
-        'SmallIntegerField': 'smallint',
-        'TextField':         'longtext',
-        'TimeField':         'time',
-    }
 
     def sql_table_creation_suffix(self):
         suffix = []
-        if settings.TEST_DATABASE_CHARSET:
-            suffix.append('CHARACTER SET %s' % settings.TEST_DATABASE_CHARSET)
-        if settings.TEST_DATABASE_COLLATION:
-            suffix.append('COLLATE %s' % settings.TEST_DATABASE_COLLATION)
+        test_settings = self.connection.settings_dict['TEST']
+        if test_settings['CHARSET']:
+            suffix.append('CHARACTER SET %s' % test_settings['CHARSET'])
+        if test_settings['COLLATION']:
+            suffix.append('COLLATE %s' % test_settings['COLLATION'])
         return ' '.join(suffix)
 
-    def sql_for_inline_foreign_key_references(self, field, known_models, style):
-        "All inline references are pending under MySQL"
-        return [], True
-        
-    def sql_for_inline_many_to_many_references(self, model, field, style):
-        from django.db import models
-        opts = model._meta
+    def _clone_test_db(self, number, verbosity, keepdb=False):
         qn = self.connection.ops.quote_name
-        
-        table_output = [
-            '    %s %s %s,' %
-                (style.SQL_FIELD(qn(field.m2m_column_name())),
-                style.SQL_COLTYPE(models.ForeignKey(model).db_type()),
-                style.SQL_KEYWORD('NOT NULL')),
-            '    %s %s %s,' %
-            (style.SQL_FIELD(qn(field.m2m_reverse_name())),
-            style.SQL_COLTYPE(models.ForeignKey(field.rel.to).db_type()),
-            style.SQL_KEYWORD('NOT NULL'))
-        ]
-        deferred = [
-            (field.m2m_db_table(), field.m2m_column_name(), opts.db_table,
-                opts.pk.column),
-            (field.m2m_db_table(), field.m2m_reverse_name(),
-                field.rel.to._meta.db_table, field.rel.to._meta.pk.column)
-            ]
-        return table_output, deferred
-        
+        source_database_name = self.connection.settings_dict['NAME']
+        target_database_name = self.get_test_db_clone_settings(number)['NAME']
+
+        with self._nodb_connection.cursor() as cursor:
+            try:
+                cursor.execute("CREATE DATABASE %s" % qn(target_database_name))
+            except Exception:
+                if keepdb:
+                    return
+                try:
+                    if verbosity >= 1:
+                        print("Destroying old test database for alias %s..." % (
+                            self._get_database_display_str(verbosity, target_database_name),
+                        ))
+                    cursor.execute("DROP DATABASE %s" % qn(target_database_name))
+                    cursor.execute("CREATE DATABASE %s" % qn(target_database_name))
+                except Exception as e:
+                    sys.stderr.write("Got an error recreating the test database: %s\n" % e)
+                    sys.exit(2)
+
+        dump_cmd = DatabaseClient.settings_to_cmd_args(self.connection.settings_dict)
+        dump_cmd[0] = 'mysqldump'
+        dump_cmd[-1] = source_database_name
+        load_cmd = DatabaseClient.settings_to_cmd_args(self.connection.settings_dict)
+        load_cmd[-1] = target_database_name
+
+        dump_proc = subprocess.Popen(dump_cmd, stdout=subprocess.PIPE)
+        load_proc = subprocess.Popen(load_cmd, stdin=dump_proc.stdout, stdout=subprocess.PIPE)
+        dump_proc.stdout.close()    # allow dump_proc to receive a SIGPIPE if load_proc exits.
+        load_proc.communicate()

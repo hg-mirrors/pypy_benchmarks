@@ -3,127 +3,170 @@
     sphinx.directives.other
     ~~~~~~~~~~~~~~~~~~~~~~~
 
-    :copyright: Copyright 2007-2011 by the Sphinx team, see AUTHORS.
+    :copyright: Copyright 2007-2019 by the Sphinx team, see AUTHORS.
     :license: BSD, see LICENSE for details.
 """
 
-import os
+import re
 
 from docutils import nodes
-from docutils.parsers.rst import Directive, directives
+from docutils.parsers.rst import directives
+from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+from docutils.parsers.rst.directives.misc import Class
+from docutils.parsers.rst.directives.misc import Include as BaseInclude
+from six.moves import range
 
 from sphinx import addnodes
-from sphinx.locale import pairindextypes, _
+from sphinx.domains.changeset import VersionChange  # NOQA  # for compatibility
+from sphinx.locale import _
 from sphinx.util import url_re, docname_join
-from sphinx.util.nodes import explicit_title_re
-from sphinx.util.compat import make_admonition
-from sphinx.util.matching import patfilter
+from sphinx.util.docutils import SphinxDirective
+from sphinx.util.matching import Matcher, patfilter
+from sphinx.util.nodes import explicit_title_re, set_source_info, \
+    process_index_entry
+
+if False:
+    # For type annotation
+    from typing import Any, Dict, Generator, List, Tuple  # NOQA
+    from sphinx.application import Sphinx  # NOQA
 
 
-class TocTree(Directive):
+glob_re = re.compile(r'.*[*?\[].*')
+
+
+def int_or_nothing(argument):
+    # type: (unicode) -> int
+    if not argument:
+        return 999
+    return int(argument)
+
+
+class TocTree(SphinxDirective):
     """
     Directive to notify Sphinx about the hierarchical structure of the docs,
     and to include a table-of-contents like tree in the current document.
     """
-
     has_content = True
     required_arguments = 0
     optional_arguments = 0
     final_argument_whitespace = False
     option_spec = {
         'maxdepth': int,
+        'name': directives.unchanged,
+        'caption': directives.unchanged_required,
         'glob': directives.flag,
         'hidden': directives.flag,
-        'numbered': directives.flag,
+        'includehidden': directives.flag,
+        'numbered': int_or_nothing,
         'titlesonly': directives.flag,
+        'reversed': directives.flag,
     }
 
     def run(self):
-        env = self.state.document.settings.env
-        suffix = env.config.source_suffix
-        glob = 'glob' in self.options
+        # type: () -> List[nodes.Node]
+        subnode = addnodes.toctree()
+        subnode['parent'] = self.env.docname
 
-        ret = []
         # (title, ref) pairs, where ref may be a document, or an external link,
         # and title may be None if the document's title is to be used
-        entries = []
-        includefiles = []
-        all_docnames = env.found_docs.copy()
-        # don't add the currently visited file in catch-all patterns
-        all_docnames.remove(env.docname)
+        subnode['entries'] = []
+        subnode['includefiles'] = []
+        subnode['maxdepth'] = self.options.get('maxdepth', -1)
+        subnode['caption'] = self.options.get('caption')
+        subnode['glob'] = 'glob' in self.options
+        subnode['hidden'] = 'hidden' in self.options
+        subnode['includehidden'] = 'includehidden' in self.options
+        subnode['numbered'] = self.options.get('numbered', 0)
+        subnode['titlesonly'] = 'titlesonly' in self.options
+        set_source_info(self, subnode)
+        wrappernode = nodes.compound(classes=['toctree-wrapper'])
+        wrappernode.append(subnode)
+        self.add_name(wrappernode)
+
+        ret = self.parse_content(subnode)
+        ret.append(wrappernode)
+        return ret
+
+    def parse_content(self, toctree):
+        suffixes = self.config.source_suffix
+
+        # glob target documents
+        all_docnames = self.env.found_docs.copy()
+        all_docnames.remove(self.env.docname)  # remove current document
+
+        ret = []
+        excluded = Matcher(self.config.exclude_patterns)
         for entry in self.content:
             if not entry:
                 continue
-            if not glob:
-                # look for explicit titles ("Some Title <document>")
-                m = explicit_title_re.match(entry)
-                if m:
-                    ref = m.group(2)
-                    title = m.group(1)
+            # look for explicit titles ("Some Title <document>")
+            explicit = explicit_title_re.match(entry)
+            if (toctree['glob'] and glob_re.match(entry) and
+                    not explicit and not url_re.match(entry)):
+                patname = docname_join(self.env.docname, entry)
+                docnames = sorted(patfilter(all_docnames, patname))
+                for docname in docnames:
+                    all_docnames.remove(docname)  # don't include it again
+                    toctree['entries'].append((None, docname))
+                    toctree['includefiles'].append(docname)
+                if not docnames:
+                    ret.append(self.state.document.reporter.warning(
+                        'toctree glob pattern %r didn\'t match any documents'
+                        % entry, line=self.lineno))
+            else:
+                if explicit:
+                    ref = explicit.group(2)
+                    title = explicit.group(1)
                     docname = ref
                 else:
                     ref = docname = entry
                     title = None
                 # remove suffixes (backwards compatibility)
-                if docname.endswith(suffix):
-                    docname = docname[:-len(suffix)]
+                for suffix in suffixes:
+                    if docname.endswith(suffix):
+                        docname = docname[:-len(suffix)]
+                        break
                 # absolutize filenames
-                docname = docname_join(env.docname, docname)
+                docname = docname_join(self.env.docname, docname)
                 if url_re.match(ref) or ref == 'self':
-                    entries.append((title, ref))
-                elif docname not in env.found_docs:
-                    ret.append(self.state.document.reporter.warning(
-                        'toctree contains reference to nonexisting '
-                        'document %r' % docname, line=self.lineno))
-                    env.note_reread()
+                    toctree['entries'].append((title, ref))
+                elif docname not in self.env.found_docs:
+                    if excluded(self.env.doc2path(docname, None)):
+                        message = 'toctree contains reference to excluded document %r'
+                    else:
+                        message = 'toctree contains reference to nonexisting document %r'
+
+                    ret.append(self.state.document.reporter.warning(message % docname,
+                                                                    line=self.lineno))
+                    self.env.note_reread()
                 else:
-                    entries.append((title, docname))
-                    includefiles.append(docname)
-            else:
-                patname = docname_join(env.docname, entry)
-                docnames = sorted(patfilter(all_docnames, patname))
-                for docname in docnames:
-                    all_docnames.remove(docname) # don't include it again
-                    entries.append((None, docname))
-                    includefiles.append(docname)
-                if not docnames:
-                    ret.append(self.state.document.reporter.warning(
-                        'toctree glob pattern %r didn\'t match any documents'
-                        % entry, line=self.lineno))
-        subnode = addnodes.toctree()
-        subnode['parent'] = env.docname
+                    all_docnames.discard(docname)
+                    toctree['entries'].append((title, docname))
+                    toctree['includefiles'].append(docname)
+
         # entries contains all entries (self references, external links etc.)
-        subnode['entries'] = entries
-        # includefiles only entries that are documents
-        subnode['includefiles'] = includefiles
-        subnode['maxdepth'] = self.options.get('maxdepth', -1)
-        subnode['glob'] = glob
-        subnode['hidden'] = 'hidden' in self.options
-        subnode['numbered'] = 'numbered' in self.options
-        subnode['titlesonly'] = 'titlesonly' in self.options
-        wrappernode = nodes.compound(classes=['toctree-wrapper'])
-        wrappernode.append(subnode)
-        ret.append(wrappernode)
+        if 'reversed' in self.options:
+            toctree['entries'] = list(reversed(toctree['entries']))
+
         return ret
 
 
-class Author(Directive):
+class Author(SphinxDirective):
     """
     Directive to give the name of the author of the current document
     or section. Shown in the output only if the show_authors option is on.
     """
-
     has_content = False
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = True
-    option_spec = {}
+    option_spec = {}  # type: Dict
 
     def run(self):
-        env = self.state.document.settings.env
-        if not env.config.show_authors:
+        # type: () -> List[nodes.Node]
+        if not self.config.show_authors:
             return []
-        para = nodes.paragraph()
+        para = nodes.paragraph(translatable=False)
         emph = nodes.emphasis()
         para += emph
         if self.name == 'sectionauthor':
@@ -141,142 +184,68 @@ class Author(Directive):
         return [para] + messages
 
 
-class Index(Directive):
+class Index(SphinxDirective):
     """
     Directive to add entries to the index.
     """
-
     has_content = False
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = True
-    option_spec = {}
-
-    indextypes = [
-        'single', 'pair', 'double', 'triple',
-    ]
+    option_spec = {}  # type: Dict
 
     def run(self):
+        # type: () -> List[nodes.Node]
         arguments = self.arguments[0].split('\n')
-        env = self.state.document.settings.env
-        targetid = 'index-%s' % env.new_serialno('index')
+        targetid = 'index-%s' % self.env.new_serialno('index')
         targetnode = nodes.target('', '', ids=[targetid])
         self.state.document.note_explicit_target(targetnode)
         indexnode = addnodes.index()
-        indexnode['entries'] = ne = []
+        indexnode['entries'] = []
         indexnode['inline'] = False
+        set_source_info(self, indexnode)
         for entry in arguments:
-            entry = entry.strip()
-            for type in pairindextypes:
-                if entry.startswith(type+':'):
-                    value = entry[len(type)+1:].strip()
-                    value = pairindextypes[type] + '; ' + value
-                    ne.append(('pair', value, targetid, value))
-                    break
-            else:
-                for type in self.indextypes:
-                    if entry.startswith(type+':'):
-                        value = entry[len(type)+1:].strip()
-                        if type == 'double':
-                            type = 'pair'
-                        ne.append((type, value, targetid, value))
-                        break
-                # shorthand notation for single entries
-                else:
-                    for value in entry.split(','):
-                        value = value.strip()
-                        if not value:
-                            continue
-                        ne.append(('single', value, targetid, value))
+            indexnode['entries'].extend(process_index_entry(entry, targetid))
         return [indexnode, targetnode]
 
 
-class VersionChange(Directive):
-    """
-    Directive to describe a change/addition/deprecation in a specific version.
-    """
-
-    has_content = True
-    required_arguments = 1
-    optional_arguments = 1
-    final_argument_whitespace = True
-    option_spec = {}
-
-    def run(self):
-        node = addnodes.versionmodified()
-        node.document = self.state.document
-        node['type'] = self.name
-        node['version'] = self.arguments[0]
-        if len(self.arguments) == 2:
-            inodes, messages = self.state.inline_text(self.arguments[1],
-                                                      self.lineno+1)
-            node.extend(inodes)
-            if self.content:
-                self.state.nested_parse(self.content, self.content_offset, node)
-            ret = [node] + messages
-        else:
-            ret = [node]
-        env = self.state.document.settings.env
-        env.note_versionchange(node['type'], node['version'], node, self.lineno)
-        return ret
-
-
-class SeeAlso(Directive):
+class SeeAlso(BaseAdmonition):
     """
     An admonition mentioning things to look at as reference.
     """
-
-    has_content = True
-    required_arguments = 0
-    optional_arguments = 1
-    final_argument_whitespace = True
-    option_spec = {}
-
-    def run(self):
-        ret = make_admonition(
-            addnodes.seealso, self.name, [_('See also')], self.options,
-            self.content, self.lineno, self.content_offset, self.block_text,
-            self.state, self.state_machine)
-        if self.arguments:
-            argnodes, msgs = self.state.inline_text(self.arguments[0],
-                                                    self.lineno)
-            para = nodes.paragraph()
-            para += argnodes
-            para += msgs
-            ret[0].insert(1, para)
-        return ret
+    node_class = addnodes.seealso
 
 
-class TabularColumns(Directive):
+class TabularColumns(SphinxDirective):
     """
     Directive to give an explicit tabulary column definition to LaTeX.
     """
-
     has_content = False
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = True
-    option_spec = {}
+    option_spec = {}  # type: Dict
 
     def run(self):
+        # type: () -> List[nodes.Node]
         node = addnodes.tabular_col_spec()
         node['spec'] = self.arguments[0]
-        node.line = self.lineno
+        set_source_info(self, node)
         return [node]
 
 
-class Centered(Directive):
+class Centered(SphinxDirective):
     """
     Directive to create a centered line of bold text.
     """
-
     has_content = False
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = True
-    option_spec = {}
+    option_spec = {}  # type: Dict
 
     def run(self):
+        # type: () -> List[nodes.Node]
         if not self.arguments:
             return []
         subnode = addnodes.centered()
@@ -286,19 +255,18 @@ class Centered(Directive):
         return [subnode] + messages
 
 
-
-class Acks(Directive):
+class Acks(SphinxDirective):
     """
     Directive for a list of names.
     """
-
     has_content = True
     required_arguments = 0
     optional_arguments = 0
     final_argument_whitespace = False
-    option_spec = {}
+    option_spec = {}  # type: Dict
 
     def run(self):
+        # type: () -> List[nodes.Node]
         node = addnodes.acks()
         node.document = self.state.document
         self.state.nested_parse(self.content, self.content_offset, node)
@@ -309,11 +277,10 @@ class Acks(Directive):
         return [node]
 
 
-class HList(Directive):
+class HList(SphinxDirective):
     """
     Directive for a list that gets compacted horizontally.
     """
-
     has_content = True
     required_arguments = 0
     optional_arguments = 0
@@ -323,6 +290,7 @@ class HList(Directive):
     }
 
     def run(self):
+        # type: () -> List[nodes.Node]
         ncolumns = self.options.get('columns', 2)
         node = nodes.paragraph()
         node.document = self.state.document
@@ -337,7 +305,7 @@ class HList(Directive):
         index = 0
         newnode = addnodes.hlist()
         for column in range(ncolumns):
-            endindex = index + (column < nmore and (npercol+1) or npercol)
+            endindex = index + (column < nmore and (npercol + 1) or npercol)
             col = addnodes.hlistcol()
             col += nodes.bullet_list()
             col[0] += fulllist.children[index:endindex]
@@ -346,62 +314,105 @@ class HList(Directive):
         return [newnode]
 
 
-class Only(Directive):
+class Only(SphinxDirective):
     """
     Directive to only include text if the given tag(s) are enabled.
     """
-
     has_content = True
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = True
-    option_spec = {}
+    option_spec = {}  # type: Dict
 
     def run(self):
+        # type: () -> List[nodes.Node]
         node = addnodes.only()
         node.document = self.state.document
-        node.line = self.lineno
+        set_source_info(self, node)
         node['expr'] = self.arguments[0]
-        self.state.nested_parse(self.content, self.content_offset, node,
-                                match_titles=1)
-        return [node]
+
+        # Same as util.nested_parse_with_titles but try to handle nested
+        # sections which should be raised higher up the doctree.
+        surrounding_title_styles = self.state.memo.title_styles
+        surrounding_section_level = self.state.memo.section_level
+        self.state.memo.title_styles = []
+        self.state.memo.section_level = 0
+        try:
+            self.state.nested_parse(self.content, self.content_offset,
+                                    node, match_titles=1)
+            title_styles = self.state.memo.title_styles
+            if (not surrounding_title_styles or
+                    not title_styles or
+                    title_styles[0] not in surrounding_title_styles or
+                    not self.state.parent):
+                # No nested sections so no special handling needed.
+                return [node]
+            # Calculate the depths of the current and nested sections.
+            current_depth = 0
+            parent = self.state.parent
+            while parent:
+                current_depth += 1
+                parent = parent.parent
+            current_depth -= 2
+            title_style = title_styles[0]
+            nested_depth = len(surrounding_title_styles)
+            if title_style in surrounding_title_styles:
+                nested_depth = surrounding_title_styles.index(title_style)
+            # Use these depths to determine where the nested sections should
+            # be placed in the doctree.
+            n_sects_to_raise = current_depth - nested_depth + 1
+            parent = self.state.parent
+            for i in range(n_sects_to_raise):
+                if parent.parent:
+                    parent = parent.parent
+            parent.append(node)
+            return []
+        finally:
+            self.state.memo.title_styles = surrounding_title_styles
+            self.state.memo.section_level = surrounding_section_level
 
 
-from docutils.parsers.rst.directives.misc import Include as BaseInclude
-
-class Include(BaseInclude):
+class Include(BaseInclude, SphinxDirective):
     """
     Like the standard "Include" directive, but interprets absolute paths
-    correctly.
+    "correctly", i.e. relative to source directory.
     """
 
     def run(self):
-        if self.arguments[0].startswith('/') or \
-               self.arguments[0].startswith(os.sep):
-            env = self.state.document.settings.env
-            self.arguments[0] = os.path.join(env.srcdir, self.arguments[0][1:])
+        # type: () -> List[nodes.Node]
+        if self.arguments[0].startswith('<') and \
+           self.arguments[0].endswith('>'):
+            # docutils "standard" includes, do not do path processing
+            return BaseInclude.run(self)
+        rel_filename, filename = self.env.relfn2path(self.arguments[0])
+        self.arguments[0] = filename
+        self.env.note_included(filename)
         return BaseInclude.run(self)
 
 
-directives.register_directive('toctree', TocTree)
-directives.register_directive('sectionauthor', Author)
-directives.register_directive('moduleauthor', Author)
-directives.register_directive('codeauthor', Author)
-directives.register_directive('index', Index)
-directives.register_directive('deprecated', VersionChange)
-directives.register_directive('versionadded', VersionChange)
-directives.register_directive('versionchanged', VersionChange)
-directives.register_directive('seealso', SeeAlso)
-directives.register_directive('tabularcolumns', TabularColumns)
-directives.register_directive('centered', Centered)
-directives.register_directive('acks', Acks)
-directives.register_directive('hlist', HList)
-directives.register_directive('only', Only)
-directives.register_directive('include', Include)
+def setup(app):
+    # type: (Sphinx) -> Dict[unicode, Any]
+    directives.register_directive('toctree', TocTree)
+    directives.register_directive('sectionauthor', Author)
+    directives.register_directive('moduleauthor', Author)
+    directives.register_directive('codeauthor', Author)
+    directives.register_directive('index', Index)
+    directives.register_directive('seealso', SeeAlso)
+    directives.register_directive('tabularcolumns', TabularColumns)
+    directives.register_directive('centered', Centered)
+    directives.register_directive('acks', Acks)
+    directives.register_directive('hlist', HList)
+    directives.register_directive('only', Only)
+    directives.register_directive('include', Include)
 
-# register the standard rst class directive under a different name
-from docutils.parsers.rst.directives.misc import Class
-# only for backwards compatibility now
-directives.register_directive('cssclass', Class)
-# new standard name when default-domain with "class" is in effect
-directives.register_directive('rst-class', Class)
+    # register the standard rst class directive under a different name
+    # only for backwards compatibility now
+    directives.register_directive('cssclass', Class)
+    # new standard name when default-domain with "class" is in effect
+    directives.register_directive('rst-class', Class)
+
+    return {
+        'version': 'builtin',
+        'parallel_read_safe': True,
+        'parallel_write_safe': True,
+    }

@@ -5,72 +5,92 @@
 Tests for L{twisted.web.twcgi}.
 """
 
-import sys, os
+import sys
+import os
+import json
+from io import BytesIO
 
 from twisted.trial import unittest
-from twisted.internet import reactor, interfaces, error
-from twisted.python import util, failure
+from twisted.internet import address, reactor, interfaces, error
+from twisted.python import util, failure, log
 from twisted.web.http import NOT_FOUND, INTERNAL_SERVER_ERROR
-from twisted.web import client, twcgi, server, resource
+from twisted.web import client, twcgi, server, resource, http_headers
 from twisted.web.test._util import _render
 from twisted.web.test.test_web import DummyRequest
 
 DUMMY_CGI = '''\
-print "Header: OK"
-print
-print "cgi output"
+print("Header: OK")
+print("")
+print("cgi output")
 '''
 
 DUAL_HEADER_CGI = '''\
-print "Header: spam"
-print "Header: eggs"
-print
-print "cgi output"
+print("Header: spam")
+print("Header: eggs")
+print("")
+print("cgi output")
+'''
+
+BROKEN_HEADER_CGI = '''\
+print("XYZ")
+print("")
+print("cgi output")
 '''
 
 SPECIAL_HEADER_CGI = '''\
-print "Server: monkeys"
-print "Date: last year"
-print
-print "cgi output"
+print("Server: monkeys")
+print("Date: last year")
+print("")
+print("cgi output")
 '''
 
 READINPUT_CGI = '''\
-# this is an example of a correctly-written CGI script which reads a body
+# This is an example of a correctly-written CGI script which reads a body
 # from stdin, which only reads env['CONTENT_LENGTH'] bytes.
 
 import os, sys
 
 body_length = int(os.environ.get('CONTENT_LENGTH',0))
 indata = sys.stdin.read(body_length)
-print "Header: OK"
-print
-print "readinput ok"
+print("Header: OK")
+print("")
+print("readinput ok")
 '''
 
 READALLINPUT_CGI = '''\
-# this is an example of the typical (incorrect) CGI script which expects
+# This is an example of the typical (incorrect) CGI script which expects
 # the server to close stdin when the body of the request is complete.
 # A correct CGI should only read env['CONTENT_LENGTH'] bytes.
 
 import sys
 
 indata = sys.stdin.read()
-print "Header: OK"
-print
-print "readallinput ok"
+print("Header: OK")
+print("")
+print("readallinput ok")
 '''
 
 NO_DUPLICATE_CONTENT_TYPE_HEADER_CGI = '''\
-print "content-type: text/cgi-duplicate-test"
-print
-print "cgi output"
+print("content-type: text/cgi-duplicate-test")
+print("")
+print("cgi output")
+'''
+
+HEADER_OUTPUT_CGI = '''\
+import json
+import os
+print("")
+print("")
+vals = {x:y for x,y in os.environ.items() if x.startswith("HTTP_")}
+print(json.dumps(vals))
 '''
 
 class PythonScript(twcgi.FilteredScript):
     filter = sys.executable
 
-class CGI(unittest.TestCase):
+
+
+class CGITests(unittest.TestCase):
     """
     Tests for L{twcgi.FilteredScript}.
     """
@@ -78,38 +98,42 @@ class CGI(unittest.TestCase):
     if not interfaces.IReactorProcess.providedBy(reactor):
         skip = "CGI tests require a functional reactor.spawnProcess()"
 
+
     def startServer(self, cgi):
         root = resource.Resource()
         cgipath = util.sibpath(__file__, cgi)
-        root.putChild("cgi", PythonScript(cgipath))
+        root.putChild(b"cgi", PythonScript(cgipath))
         site = server.Site(root)
         self.p = reactor.listenTCP(0, site)
         return self.p.getHost().port
 
+
     def tearDown(self):
-        if self.p:
+        if getattr(self, 'p', None):
             return self.p.stopListening()
 
 
     def writeCGI(self, source):
         cgiFilename = os.path.abspath(self.mktemp())
-        cgiFile = file(cgiFilename, 'wt')
-        cgiFile.write(source)
-        cgiFile.close()
+        with open(cgiFilename, 'wt') as cgiFile:
+            cgiFile.write(source)
         return cgiFilename
 
 
-    def testCGI(self):
+    def test_CGI(self):
         cgiFilename = self.writeCGI(DUMMY_CGI)
 
         portnum = self.startServer(cgiFilename)
-        d = client.getPage("http://localhost:%d/cgi" % portnum)
+        url = 'http://localhost:%d/cgi' % (portnum,)
+        url = url.encode("ascii")
+        d = client.Agent(reactor).request(b"GET", url)
+        d.addCallback(client.readBody)
         d.addCallback(self._testCGI_1)
         return d
 
 
     def _testCGI_1(self, res):
-        self.assertEqual(res, "cgi output" + os.linesep)
+        self.assertEqual(res, b"cgi output" + os.linesep.encode("ascii"))
 
 
     def test_protectedServerAndDate(self):
@@ -121,13 +145,17 @@ class CGI(unittest.TestCase):
 
         portnum = self.startServer(cgiFilename)
         url = "http://localhost:%d/cgi" % (portnum,)
-        factory = client.HTTPClientFactory(url)
-        reactor.connectTCP('localhost', portnum, factory)
-        def checkResponse(ignored):
-            self.assertNotIn('monkeys', factory.response_headers['server'])
-            self.assertNotIn('last year', factory.response_headers['date'])
-        factory.deferred.addCallback(checkResponse)
-        return factory.deferred
+        url = url.encode("ascii")
+        agent = client.Agent(reactor)
+        d = agent.request(b"GET", url)
+        d.addCallback(discardBody)
+        def checkResponse(response):
+            self.assertNotIn('monkeys',
+                             response.headers.getRawHeaders('server'))
+            self.assertNotIn('last year',
+                             response.headers.getRawHeaders('date'))
+        d.addCallback(checkResponse)
+        return d
 
 
     def test_noDuplicateContentTypeHeaders(self):
@@ -139,79 +167,232 @@ class CGI(unittest.TestCase):
 
         portnum = self.startServer(cgiFilename)
         url = "http://localhost:%d/cgi" % (portnum,)
-        factory = client.HTTPClientFactory(url)
-        reactor.connectTCP('localhost', portnum, factory)
-        def checkResponse(ignored):
+        url = url.encode("ascii")
+        agent = client.Agent(reactor)
+        d = agent.request(b"GET", url)
+        d.addCallback(discardBody)
+        def checkResponse(response):
             self.assertEqual(
-                factory.response_headers['content-type'], ['text/cgi-duplicate-test'])
-        factory.deferred.addCallback(checkResponse)
-        return factory.deferred
+                response.headers.getRawHeaders('content-type'),
+                ['text/cgi-duplicate-test'])
+            return response
+        d.addCallback(checkResponse)
+        return d
+
+
+    def test_noProxyPassthrough(self):
+        """
+        The CGI script is never called with the Proxy header passed through.
+        """
+        cgiFilename = self.writeCGI(HEADER_OUTPUT_CGI)
+
+        portnum = self.startServer(cgiFilename)
+        url = "http://localhost:%d/cgi" % (portnum,)
+        url = url.encode("ascii")
+
+        agent = client.Agent(reactor)
+
+        headers = http_headers.Headers({b"Proxy": [b"foo"],
+                                        b"X-Innocent-Header": [b"bar"]})
+        d = agent.request(b"GET", url, headers=headers)
+
+        def checkResponse(response):
+            headers = json.loads(response.decode("ascii"))
+            self.assertEqual(
+                set(headers.keys()),
+                {"HTTP_HOST", "HTTP_CONNECTION", "HTTP_X_INNOCENT_HEADER"})
+
+        d.addCallback(client.readBody)
+        d.addCallback(checkResponse)
+        return d
 
 
     def test_duplicateHeaderCGI(self):
         """
-        If a CGI script emits two instances of the same header, both are sent in
-        the response.
+        If a CGI script emits two instances of the same header, both are sent
+        in the response.
         """
         cgiFilename = self.writeCGI(DUAL_HEADER_CGI)
 
         portnum = self.startServer(cgiFilename)
         url = "http://localhost:%d/cgi" % (portnum,)
-        factory = client.HTTPClientFactory(url)
-        reactor.connectTCP('localhost', portnum, factory)
-        def checkResponse(ignored):
+        url = url.encode("ascii")
+        agent = client.Agent(reactor)
+        d = agent.request(b"GET", url)
+        d.addCallback(discardBody)
+        def checkResponse(response):
             self.assertEqual(
-                factory.response_headers['header'], ['spam', 'eggs'])
-        factory.deferred.addCallback(checkResponse)
-        return factory.deferred
+                response.headers.getRawHeaders('header'), ['spam', 'eggs'])
+        d.addCallback(checkResponse)
+        return d
 
 
-    def testReadEmptyInput(self):
-        cgiFilename = os.path.abspath(self.mktemp())
-        cgiFile = file(cgiFilename, 'wt')
-        cgiFile.write(READINPUT_CGI)
-        cgiFile.close()
+    def test_malformedHeaderCGI(self):
+        """
+        Check for the error message in the duplicated header
+        """
+        cgiFilename = self.writeCGI(BROKEN_HEADER_CGI)
 
         portnum = self.startServer(cgiFilename)
-        d = client.getPage("http://localhost:%d/cgi" % portnum)
-        d.addCallback(self._testReadEmptyInput_1)
-        return d
-    testReadEmptyInput.timeout = 5
-    def _testReadEmptyInput_1(self, res):
-        self.assertEqual(res, "readinput ok%s" % os.linesep)
+        url = "http://localhost:%d/cgi" % (portnum,)
+        url = url.encode("ascii")
+        agent = client.Agent(reactor)
+        d = agent.request(b"GET", url)
+        d.addCallback(discardBody)
+        loggedMessages = []
 
-    def testReadInput(self):
+        def addMessage(eventDict):
+            loggedMessages.append(log.textFromEventDict(eventDict))
+
+        log.addObserver(addMessage)
+        self.addCleanup(log.removeObserver, addMessage)
+
+        def checkResponse(ignored):
+            self.assertIn("ignoring malformed CGI header: " + repr(b'XYZ'),
+                          loggedMessages)
+
+        d.addCallback(checkResponse)
+        return d
+
+
+    def test_ReadEmptyInput(self):
         cgiFilename = os.path.abspath(self.mktemp())
-        cgiFile = file(cgiFilename, 'wt')
-        cgiFile.write(READINPUT_CGI)
-        cgiFile.close()
+        with open(cgiFilename, 'wt') as cgiFile:
+            cgiFile.write(READINPUT_CGI)
 
         portnum = self.startServer(cgiFilename)
-        d = client.getPage("http://localhost:%d/cgi" % portnum,
-                           method="POST",
-                           postdata="Here is your stdin")
-        d.addCallback(self._testReadInput_1)
+        agent = client.Agent(reactor)
+        url = "http://localhost:%d/cgi" % (portnum,)
+        url = url.encode("ascii")
+        d = agent.request(b"GET", url)
+        d.addCallback(client.readBody)
+        d.addCallback(self._test_ReadEmptyInput_1)
         return d
-    testReadInput.timeout = 5
-    def _testReadInput_1(self, res):
-        self.assertEqual(res, "readinput ok%s" % os.linesep)
+    test_ReadEmptyInput.timeout = 5
 
 
-    def testReadAllInput(self):
+    def _test_ReadEmptyInput_1(self, res):
+        expected = "readinput ok{}".format(os.linesep)
+        expected = expected.encode("ascii")
+        self.assertEqual(res, expected)
+
+
+    def test_ReadInput(self):
         cgiFilename = os.path.abspath(self.mktemp())
-        cgiFile = file(cgiFilename, 'wt')
-        cgiFile.write(READALLINPUT_CGI)
-        cgiFile.close()
+        with open(cgiFilename, 'wt') as cgiFile:
+            cgiFile.write(READINPUT_CGI)
 
         portnum = self.startServer(cgiFilename)
-        d = client.getPage("http://localhost:%d/cgi" % portnum,
-                           method="POST",
-                           postdata="Here is your stdin")
-        d.addCallback(self._testReadAllInput_1)
+        agent = client.Agent(reactor)
+        url = "http://localhost:%d/cgi" % (portnum,)
+        url = url.encode("ascii")
+        d = agent.request(
+            uri=url,
+            method=b"POST",
+            bodyProducer=client.FileBodyProducer(
+                BytesIO(b"Here is your stdin")),
+        )
+        d.addCallback(client.readBody)
+        d.addCallback(self._test_ReadInput_1)
         return d
-    testReadAllInput.timeout = 5
-    def _testReadAllInput_1(self, res):
-        self.assertEqual(res, "readallinput ok%s" % os.linesep)
+    test_ReadInput.timeout = 5
+
+
+    def _test_ReadInput_1(self, res):
+        expected = "readinput ok{}".format(os.linesep)
+        expected = expected.encode("ascii")
+        self.assertEqual(res, expected)
+
+
+    def test_ReadAllInput(self):
+        cgiFilename = os.path.abspath(self.mktemp())
+        with open(cgiFilename, 'wt') as cgiFile:
+            cgiFile.write(READALLINPUT_CGI)
+
+        portnum = self.startServer(cgiFilename)
+        url = "http://localhost:%d/cgi" % (portnum,)
+        url = url.encode("ascii")
+        d = client.Agent(reactor).request(
+            uri=url,
+            method=b"POST",
+            bodyProducer=client.FileBodyProducer(
+                BytesIO(b"Here is your stdin")),
+        )
+        d.addCallback(client.readBody)
+        d.addCallback(self._test_ReadAllInput_1)
+        return d
+    test_ReadAllInput.timeout = 5
+
+
+    def _test_ReadAllInput_1(self, res):
+        expected = "readallinput ok{}".format(os.linesep)
+        expected = expected.encode("ascii")
+        self.assertEqual(res, expected)
+
+
+    def test_useReactorArgument(self):
+        """
+        L{twcgi.FilteredScript.runProcess} uses the reactor passed as an
+        argument to the constructor.
+        """
+        class FakeReactor:
+            """
+            A fake reactor recording whether spawnProcess is called.
+            """
+            called = False
+            def spawnProcess(self, *args, **kwargs):
+                """
+                Set the C{called} flag to C{True} if C{spawnProcess} is called.
+
+                @param args: Positional arguments.
+                @param kwargs: Keyword arguments.
+                """
+                self.called = True
+
+        fakeReactor = FakeReactor()
+        request = DummyRequest(['a', 'b'])
+        request.client = address.IPv4Address('TCP', '127.0.0.1', 12345)
+        resource = twcgi.FilteredScript("dummy-file", reactor=fakeReactor)
+        _render(resource, request)
+
+        self.assertTrue(fakeReactor.called)
+
+
+
+class CGIScriptTests(unittest.TestCase):
+    """
+    Tests for L{twcgi.CGIScript}.
+    """
+
+    def test_pathInfo(self):
+        """
+        L{twcgi.CGIScript.render} sets the process environment
+        I{PATH_INFO} from the request path.
+        """
+        class FakeReactor:
+            """
+            A fake reactor recording the environment passed to spawnProcess.
+            """
+            def spawnProcess(self, process, filename, args, env, wdir):
+                """
+                Store the C{env} L{dict} to an instance attribute.
+
+                @param process: Ignored
+                @param filename: Ignored
+                @param args: Ignored
+                @param env: The environment L{dict} which will be stored
+                @param wdir: Ignored
+                """
+                self.process_env = env
+
+        _reactor = FakeReactor()
+        resource = twcgi.CGIScript(self.mktemp(), reactor=_reactor)
+        request = DummyRequest(['a', 'b'])
+        request.client = address.IPv4Address('TCP', '127.0.0.1', 12345)
+        _render(resource, request)
+
+        self.assertEqual(_reactor.process_env["PATH_INFO"],
+                         "/a/b")
 
 
 
@@ -270,34 +451,12 @@ class CGIProcessProtocolTests(unittest.TestCase):
 
 
 
-class CGIDeprecationTests(unittest.TestCase):
+def discardBody(response):
     """
-    Tests for deprecations in L{twisted.web.twcgi}.
+    Discard the body of a HTTP response.
+
+    @param response: The response.
+
+    @return: The response.
     """
-
-    def test_PHP3ScriptIsDeprecated(self):
-        """
-        L{twcgi.PHP3Script} is deprecated.
-        """
-        twcgi.PHP3Script
-
-        warnings = self.flushWarnings([self.test_PHP3ScriptIsDeprecated])
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertIn("PHP3Script is deprecated. "
-                      "Use twisted.web.twcgi.FilteredScript instead.",
-                      warnings[0]['message'])
-
-
-    def test_PHPScriptIsDeprecated(self):
-        """
-        L{twcgi.PHPScript} is deprecated.
-        """
-        twcgi.PHPScript
-
-        warnings = self.flushWarnings([self.test_PHPScriptIsDeprecated])
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertIn("PHPScript is deprecated. "
-                      "Use twisted.web.twcgi.FilteredScript instead.",
-                      warnings[0]['message'])
+    return client.readBody(response).addCallback(lambda _: response)

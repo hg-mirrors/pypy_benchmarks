@@ -13,15 +13,20 @@ and reasonable handling of Deferreds.
 @author: Jp Calderone
 """
 
-import code, sys, StringIO, tokenize
+import code, sys, tokenize
+from io import BytesIO
 
 from twisted.conch import recvline
 
 from twisted.internet import defer
+from twisted.python.compat import _tokenize, _get_async_param
 from twisted.python.htmlizer import TokenPrinter
 
+
+
 class FileWrapper:
-    """Minimal write-file-like object.
+    """
+    Minimal write-file-like object.
 
     Writes are translated into addOutput calls on an object passed to
     __init__.  Newlines are also converted from network to local style.
@@ -33,17 +38,23 @@ class FileWrapper:
     def __init__(self, o):
         self.o = o
 
+
     def flush(self):
         pass
+
 
     def write(self, data):
         self.o.addOutput(data.replace('\r\n', '\n'))
 
+
     def writelines(self, lines):
         self.write(''.join(lines))
 
+
+
 class ManholeInterpreter(code.InteractiveInterpreter):
-    """Interactive Interpreter with special output and Deferred support.
+    """
+    Interactive Interpreter with special output and Deferred support.
 
     Aside from the features provided by L{code.InteractiveInterpreter}, this
     class captures sys.stdout output and redirects it to the appropriate
@@ -63,12 +74,17 @@ class ManholeInterpreter(code.InteractiveInterpreter):
         self.filename = filename
         self.resetBuffer()
 
+
     def resetBuffer(self):
-        """Reset the input buffer."""
+        """
+        Reset the input buffer.
+        """
         self.buffer = []
 
+
     def push(self, line):
-        """Push a line to the interpreter.
+        """
+        Push a line to the interpreter.
 
         The line should not have a trailing newline; it may have
         internal newlines.  The line is appended to a buffer and the
@@ -80,13 +96,18 @@ class ManholeInterpreter(code.InteractiveInterpreter):
         value is 1 if more input is required, 0 if the line was dealt
         with in some way (this is the same as runsource()).
 
+        @param line: line of text
+        @type line: L{bytes}
+        @return: L{bool} from L{code.InteractiveInterpreter.runsource}
         """
         self.buffer.append(line)
-        source = "\n".join(self.buffer)
+        source = b"\n".join(self.buffer)
+        source = source.decode("utf-8")
         more = self.runsource(source, self.filename)
         if not more:
             self.resetBuffer()
         return more
+
 
     def runcode(self, *a, **kw):
         orighook, sys.displayhook = sys.displayhook, self.displayhook
@@ -98,6 +119,7 @@ class ManholeInterpreter(code.InteractiveInterpreter):
                 sys.stdout = origout
         finally:
             sys.displayhook = orighook
+
 
     def displayhook(self, obj):
         self.locals['_'] = obj
@@ -118,26 +140,37 @@ class ManholeInterpreter(code.InteractiveInterpreter):
         elif obj is not None:
             self.write(repr(obj))
 
+
     def _cbDisplayDeferred(self, result, k, obj):
         self.write("Deferred #%d called back: %r" % (k, result), True)
         del self._pendingDeferreds[id(obj)]
         return result
+
 
     def _ebDisplayDeferred(self, failure, k, obj):
         self.write("Deferred #%d failed: %r" % (k, failure.getErrorMessage()), True)
         del self._pendingDeferreds[id(obj)]
         return failure
 
-    def write(self, data, async=False):
-        self.handler.addOutput(data, async)
 
-CTRL_C = '\x03'
-CTRL_D = '\x04'
-CTRL_BACKSLASH = '\x1c'
-CTRL_L = '\x0c'
+    def write(self, data, isAsync=None, **kwargs):
+        isAsync = _get_async_param(isAsync, **kwargs)
+        self.handler.addOutput(data, isAsync)
+
+
+
+CTRL_C = b'\x03'
+CTRL_D = b'\x04'
+CTRL_BACKSLASH = b'\x1c'
+CTRL_L = b'\x0c'
+CTRL_A = b'\x01'
+CTRL_E = b'\x05'
+
+
 
 class Manhole(recvline.HistoricRecvLine):
-    """Mediator between a fancy line source and an interactive interpreter.
+    """
+    Mediator between a fancy line source and an interactive interpreter.
 
     This accepts lines from its transport and passes them on to a
     L{ManholeInterpreter}.  Control commands (^C, ^D, ^\) are also handled
@@ -153,12 +186,15 @@ class Manhole(recvline.HistoricRecvLine):
         if namespace is not None:
             self.namespace = namespace.copy()
 
+
     def connectionMade(self):
         recvline.HistoricRecvLine.connectionMade(self)
         self.interpreter = ManholeInterpreter(self, self.namespace)
         self.keyHandlers[CTRL_C] = self.handle_INT
         self.keyHandlers[CTRL_D] = self.handle_EOF
         self.keyHandlers[CTRL_L] = self.handle_FF
+        self.keyHandlers[CTRL_A] = self.handle_HOME
+        self.keyHandlers[CTRL_E] = self.handle_END
         self.keyHandlers[CTRL_BACKSLASH] = self.handle_QUIT
 
 
@@ -173,14 +209,14 @@ class Manhole(recvline.HistoricRecvLine):
         self.interpreter.resetBuffer()
 
         self.terminal.nextLine()
-        self.terminal.write("KeyboardInterrupt")
+        self.terminal.write(b"KeyboardInterrupt")
         self.terminal.nextLine()
         self.terminal.write(self.ps[self.pn])
 
 
     def handle_EOF(self):
         if self.lineBuffer:
-            self.terminal.write('\a')
+            self.terminal.write(b'\a')
         else:
             self.handle_QUIT()
 
@@ -201,16 +237,19 @@ class Manhole(recvline.HistoricRecvLine):
 
     def _needsNewline(self):
         w = self.terminal.lastWrite
-        return not w.endswith('\n') and not w.endswith('\x1bE')
+        return not w.endswith(b'\n') and not w.endswith(b'\x1bE')
 
-    def addOutput(self, bytes, async=False):
-        if async:
+
+    def addOutput(self, data, isAsync=None, **kwargs):
+        isAsync = _get_async_param(isAsync, **kwargs)
+        if isAsync:
             self.terminal.eraseLine()
-            self.terminal.cursorBackward(len(self.lineBuffer) + len(self.ps[self.pn]))
+            self.terminal.cursorBackward(len(self.lineBuffer) +
+                                         len(self.ps[self.pn]))
 
-        self.terminal.write(bytes)
+        self.terminal.write(data)
 
-        if async:
+        if isAsync:
             if self._needsNewline():
                 self.terminal.nextLine()
 
@@ -223,6 +262,7 @@ class Manhole(recvline.HistoricRecvLine):
 
                 self._deliverBuffer(oldBuffer)
 
+
     def lineReceived(self, line):
         more = self.interpreter.push(line)
         self.pn = bool(more)
@@ -230,8 +270,11 @@ class Manhole(recvline.HistoricRecvLine):
             self.terminal.nextLine()
         self.terminal.write(self.ps[self.pn])
 
+
+
 class VT102Writer:
-    """Colorizer for Python tokens.
+    """
+    Colorizer for Python tokens.
 
     A series of tokens are written to instances of this object.  Each is
     colored in a particular way.  The final line of the result of this is
@@ -239,25 +282,27 @@ class VT102Writer:
     """
 
     typeToColor = {
-        'identifier': '\x1b[31m',
-        'keyword': '\x1b[32m',
-        'parameter': '\x1b[33m',
-        'variable': '\x1b[1;33m',
-        'string': '\x1b[35m',
-        'number': '\x1b[36m',
-        'op': '\x1b[37m'}
+        'identifier': b'\x1b[31m',
+        'keyword': b'\x1b[32m',
+        'parameter': b'\x1b[33m',
+        'variable': b'\x1b[1;33m',
+        'string': b'\x1b[35m',
+        'number': b'\x1b[36m',
+        'op': b'\x1b[37m'}
 
-    normalColor = '\x1b[0m'
+    normalColor = b'\x1b[0m'
 
     def __init__(self):
         self.written = []
 
+
     def color(self, type):
-        r = self.typeToColor.get(type, '')
+        r = self.typeToColor.get(type, b'')
         return r
 
+
     def write(self, token, type=None):
-        if token and token != '\r':
+        if token and token != b'\r':
             c = self.color(type)
             if c:
                 self.written.append(c)
@@ -265,36 +310,56 @@ class VT102Writer:
             if c:
                 self.written.append(self.normalColor)
 
-    def __str__(self):
-        s = ''.join(self.written)
-        return s.strip('\n').splitlines()[-1]
+
+    def __bytes__(self):
+        s = b''.join(self.written)
+        return s.strip(b'\n').splitlines()[-1]
+
+    if bytes == str:
+        # Compat with Python 2.7
+        __str__ = __bytes__
+
+
 
 def lastColorizedLine(source):
-    """Tokenize and colorize the given Python source.
+    """
+    Tokenize and colorize the given Python source.
 
     Returns a VT102-format colorized version of the last line of C{source}.
+
+    @param source: Python source code
+    @type source: L{str} or L{bytes}
+    @return: L{bytes} of colorized source
     """
+    if not isinstance(source, bytes):
+        source = source.encode("utf-8")
     w = VT102Writer()
     p = TokenPrinter(w.write).printtoken
-    s = StringIO.StringIO(source)
+    s = BytesIO(source)
 
-    tokenize.tokenize(s.readline, p)
+    for token in _tokenize(s.readline):
+        (tokenType, string, start, end, line) = token
+        p(tokenType, string, start, end, line)
 
-    return str(w)
+    return bytes(w)
+
+
 
 class ColoredManhole(Manhole):
-    """A REPL which syntax colors input as users type it.
+    """
+    A REPL which syntax colors input as users type it.
     """
 
     def getSource(self):
-        """Return a string containing the currently entered source.
+        """
+        Return a string containing the currently entered source.
 
         This is only the code which will be considered for execution
         next.
         """
-        return ('\n'.join(self.interpreter.buffer) +
-                '\n' +
-                ''.join(self.lineBuffer))
+        return (b'\n'.join(self.interpreter.buffer) +
+                b'\n' +
+                b''.join(self.lineBuffer))
 
 
     def characterReceived(self, ch, moreCharactersComing):
@@ -309,7 +374,7 @@ class ColoredManhole(Manhole):
             # like 2 femtoseconds.
             return
 
-        if ch == ' ':
+        if ch == b' ':
             # Don't bother to try to color whitespace
             self.terminal.write(ch)
             return

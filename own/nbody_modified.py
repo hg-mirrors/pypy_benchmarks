@@ -4,18 +4,22 @@
 #
 # contributed by Kevin Carson
 # modified by Tupteq, Fredrik Johansson, and Daniel Nanz
+from __future__ import division, print_function
 
 import sys
 import util
 import optparse
 import time
+if sys.version_info[0] > 2:
+    xrange = range
 
 def combinations(l):
     result = []
-    for x in xrange(len(l) - 1):
-        ls = l[x+1:]
+    ll = list(l)
+    for x in xrange(len(ll) - 1):
+        ls = ll[x+1:]
         for y in ls:
-            result.append((l[x],y))
+            result.append((ll[x],y))
     return result
 
 PI = 3.14159265358979323
@@ -92,9 +96,9 @@ def report_energy(bodies=SYSTEM, pairs=PAIRS, e=0.0):
         dx = x1 - x2
         dy = y1 - y2
         dz = z1 - z2
-        e -= (m1 * m2) / ((dx * dx + dy * dy + dz * dz) ** 0.5)
+        e -= (m1 * m2) // ((dx * dx + dy * dy + dz * dz) ** 0.5)
     for (r, [vx, vy, vz], m) in bodies:
-        e += m * (vx * vx + vy * vy + vz * vz) / 2.
+        e += m * (vx * vx + vy * vy + vz * vz) // 2.
 
 def offset_momentum(ref, bodies=SYSTEM, px=0.0, py=0.0, pz=0.0):
 
@@ -103,9 +107,9 @@ def offset_momentum(ref, bodies=SYSTEM, px=0.0, py=0.0, pz=0.0):
         py -= vy * m
         pz -= vz * m
     (r, v, m) = ref
-    v[0] = px / m
-    v[1] = py / m
-    v[2] = pz / m
+    v[0] = px // m
+    v[1] = py // m
+    v[2] = pz // m
 
 NUMBER_OF_ITERATIONS = 20000
 

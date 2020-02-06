@@ -5,8 +5,11 @@
 Tests for L{twisted.web._auth}.
 """
 
+from __future__ import division, absolute_import
 
-from zope.interface import implements
+import base64
+
+from zope.interface import implementer
 from zope.interface.verify import verifyObject
 
 from twisted.trial import unittest
@@ -30,10 +33,12 @@ from twisted.web.server import NOT_DONE_YET
 from twisted.web.static import Data
 
 from twisted.web.test.test_web import DummyRequest
+from twisted.test.proto_helpers import EventLoggingObserver
+from twisted.logger import globalLogPublisher
 
 
 def b64encode(s):
-    return s.encode('base64').strip()
+    return base64.b64encode(s).strip()
 
 
 class BasicAuthTestsMixin:
@@ -44,13 +49,13 @@ class BasicAuthTestsMixin:
     """
     def setUp(self):
         self.request = self.makeRequest()
-        self.realm = 'foo'
-        self.username = 'dreid'
-        self.password = 'S3CuR1Ty'
+        self.realm = b'foo'
+        self.username = b'dreid'
+        self.password = b'S3CuR1Ty'
         self.credentialFactory = basic.BasicCredentialFactory(self.realm)
 
 
-    def makeRequest(self, method='GET', clientAddress=None):
+    def makeRequest(self, method=b'GET', clientAddress=None):
         """
         Create a request object to be passed to
         L{basic.BasicCredentialFactory.decode} along with a response value.
@@ -74,12 +79,12 @@ class BasicAuthTestsMixin:
         into a L{UsernamePassword} object with a password which reflects the
         one which was encoded in the response.
         """
-        response = b64encode('%s:%s' % (self.username, self.password))
+        response = b64encode(b''.join([self.username, b':', self.password]))
 
         creds = self.credentialFactory.decode(response, self.request)
         self.assertTrue(IUsernamePassword.providedBy(creds))
         self.assertTrue(creds.checkPassword(self.password))
-        self.assertFalse(creds.checkPassword(self.password + 'wrong'))
+        self.assertFalse(creds.checkPassword(self.password + b'wrong'))
 
 
     def test_incorrectPadding(self):
@@ -87,8 +92,8 @@ class BasicAuthTestsMixin:
         L{basic.BasicCredentialFactory.decode} decodes a base64-encoded
         response with incorrect padding.
         """
-        response = b64encode('%s:%s' % (self.username, self.password))
-        response = response.strip('=')
+        response = b64encode(b''.join([self.username, b':', self.password]))
+        response = response.strip(b'=')
 
         creds = self.credentialFactory.decode(response, self.request)
         self.assertTrue(verifyObject(IUsernamePassword, creds))
@@ -100,7 +105,7 @@ class BasicAuthTestsMixin:
         L{basic.BasicCredentialFactory.decode} raises L{LoginFailed} if passed
         a response which is not base64-encoded.
         """
-        response = 'x' # one byte cannot be valid base64 text
+        response = b'x' # one byte cannot be valid base64 text
         self.assertRaises(
             error.LoginFailed,
             self.credentialFactory.decode, response, self.makeRequest())
@@ -111,7 +116,7 @@ class BasicAuthTestsMixin:
         L{basic.BasicCredentialFactory.decode} raises L{LoginFailed} when
         passed a response which is not valid base64-encoded text.
         """
-        response = b64encode('123abc+/')
+        response = b64encode(b'123abc+/')
         self.assertRaises(
             error.LoginFailed,
             self.credentialFactory.decode,
@@ -119,26 +124,28 @@ class BasicAuthTestsMixin:
 
 
 class RequestMixin:
-    def makeRequest(self, method='GET', clientAddress=None):
+    def makeRequest(self, method=b'GET', clientAddress=None):
         """
         Create a L{DummyRequest} (change me to create a
         L{twisted.web.http.Request} instead).
         """
-        request = DummyRequest('/')
+        if clientAddress is None:
+            clientAddress = IPv4Address("TCP", "localhost", 1234)
+        request = DummyRequest(b'/')
         request.method = method
         request.client = clientAddress
         return request
 
 
 
-class BasicAuthTestCase(RequestMixin, BasicAuthTestsMixin, unittest.TestCase):
+class BasicAuthTests(RequestMixin, BasicAuthTestsMixin, unittest.TestCase):
     """
     Basic authentication tests which use L{twisted.web.http.Request}.
     """
 
 
 
-class DigestAuthTestCase(RequestMixin, unittest.TestCase):
+class DigestAuthTests(RequestMixin, unittest.TestCase):
     """
     Digest authentication tests which use L{twisted.web.http.Request}.
     """
@@ -147,8 +154,8 @@ class DigestAuthTestCase(RequestMixin, unittest.TestCase):
         """
         Create a DigestCredentialFactory for testing
         """
-        self.realm = "test realm"
-        self.algorithm = "md5"
+        self.realm = b"test realm"
+        self.algorithm = b"md5"
         self.credentialFactory = digest.DigestCredentialFactory(
             self.algorithm, self.realm)
         self.request = self.makeRequest()
@@ -160,8 +167,8 @@ class DigestAuthTestCase(RequestMixin, unittest.TestCase):
         L{twisted.cred.digest.DigestCredentialFactory} with the HTTP method and
         host of the request.
         """
-        host = '169.254.0.1'
-        method = 'GET'
+        host = b'169.254.0.1'
+        method = b'GET'
         done = [False]
         response = object()
         def check(_response, _method, _host):
@@ -193,31 +200,31 @@ class DigestAuthTestCase(RequestMixin, unittest.TestCase):
         None of the values may have newlines in them.
         """
         challenge = self.credentialFactory.getChallenge(self.request)
-        self.assertEqual(challenge['qop'], 'auth')
-        self.assertEqual(challenge['realm'], 'test realm')
-        self.assertEqual(challenge['algorithm'], 'md5')
+        self.assertEqual(challenge['qop'], b'auth')
+        self.assertEqual(challenge['realm'], b'test realm')
+        self.assertEqual(challenge['algorithm'], b'md5')
         self.assertIn('nonce', challenge)
         self.assertIn('opaque', challenge)
         for v in challenge.values():
-            self.assertNotIn('\n', v)
+            self.assertNotIn(b'\n', v)
 
 
     def test_getChallengeWithoutClientIP(self):
         """
         L{DigestCredentialFactory.getChallenge} can issue a challenge even if
-        the L{Request} it is passed returns C{None} from C{getClientIP}.
+        the L{Request} it is passed returns L{None} from C{getClientIP}.
         """
-        request = self.makeRequest('GET', None)
+        request = self.makeRequest(b'GET', None)
         challenge = self.credentialFactory.getChallenge(request)
-        self.assertEqual(challenge['qop'], 'auth')
-        self.assertEqual(challenge['realm'], 'test realm')
-        self.assertEqual(challenge['algorithm'], 'md5')
+        self.assertEqual(challenge['qop'], b'auth')
+        self.assertEqual(challenge['realm'], b'test realm')
+        self.assertEqual(challenge['algorithm'], b'md5')
         self.assertIn('nonce', challenge)
         self.assertIn('opaque', challenge)
 
 
 
-class UnauthorizedResourceTests(unittest.TestCase):
+class UnauthorizedResourceTests(RequestMixin, unittest.TestCase):
     """
     Tests for L{UnauthorizedResource}.
     """
@@ -232,21 +239,41 @@ class UnauthorizedResourceTests(unittest.TestCase):
             resource.getChildWithDefault("bar", None), resource)
 
 
+    def _unauthorizedRenderTest(self, request):
+        """
+        Render L{UnauthorizedResource} for the given request object and verify
+        that the response code is I{Unauthorized} and that a I{WWW-Authenticate}
+        header is set in the response containing a challenge.
+        """
+        resource = UnauthorizedResource([
+                BasicCredentialFactory('example.com')])
+        request.render(resource)
+        self.assertEqual(request.responseCode, 401)
+        self.assertEqual(
+            request.responseHeaders.getRawHeaders(b'www-authenticate'),
+            [b'basic realm="example.com"'])
+
+
     def test_render(self):
         """
         L{UnauthorizedResource} renders with a 401 response code and a
         I{WWW-Authenticate} header and puts a simple unauthorized message
         into the response body.
         """
-        resource = UnauthorizedResource([
-                BasicCredentialFactory('example.com')])
-        request = DummyRequest([''])
-        request.render(resource)
-        self.assertEqual(request.responseCode, 401)
-        self.assertEqual(
-            request.responseHeaders.getRawHeaders('www-authenticate'),
-            ['basic realm="example.com"'])
-        self.assertEqual(request.written, ['Unauthorized'])
+        request = self.makeRequest()
+        self._unauthorizedRenderTest(request)
+        self.assertEqual(b'Unauthorized', b''.join(request.written))
+
+
+    def test_renderHEAD(self):
+        """
+        The rendering behavior of L{UnauthorizedResource} for a I{HEAD} request
+        is like its handling of a I{GET} request, but no response body is
+        written.
+        """
+        request = self.makeRequest(method=b'HEAD')
+        self._unauthorizedRenderTest(request)
+        self.assertEqual(b'', b''.join(request.written))
 
 
     def test_renderQuotesRealm(self):
@@ -257,14 +284,32 @@ class UnauthorizedResourceTests(unittest.TestCase):
         """
         resource = UnauthorizedResource([
                 BasicCredentialFactory('example\\"foo')])
-        request = DummyRequest([''])
+        request = self.makeRequest()
         request.render(resource)
         self.assertEqual(
-            request.responseHeaders.getRawHeaders('www-authenticate'),
-            ['basic realm="example\\\\\\"foo"'])
+            request.responseHeaders.getRawHeaders(b'www-authenticate'),
+            [b'basic realm="example\\\\\\"foo"'])
+
+
+    def test_renderQuotesDigest(self):
+        """
+        The digest value included in the I{WWW-Authenticate} header
+        set in the response when L{UnauthorizedResource} is rendered
+        has quotes and backslashes escaped.
+        """
+        resource = UnauthorizedResource([
+                digest.DigestCredentialFactory(b'md5', b'example\\"foo')])
+        request = self.makeRequest()
+        request.render(resource)
+        authHeader = request.responseHeaders.getRawHeaders(
+            b'www-authenticate'
+        )[0]
+        self.assertIn(b'realm="example\\\\\\"foo"', authHeader)
+        self.assertIn(b'hm="md5', authHeader)
 
 
 
+implementer(portal.IRealm)
 class Realm(object):
     """
     A simple L{IRealm} implementation which gives out L{WebAvatar} for any
@@ -277,7 +322,6 @@ class Realm(object):
     @type loggedOut: C{int}
     @ivar loggedOut: The number of times the logout callback has been invoked.
     """
-    implements(portal.IRealm)
 
     def __init__(self, avatarFactory):
         self.loggedOut = 0
@@ -307,11 +351,11 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         """
         Create a realm, portal, and L{HTTPAuthSessionWrapper} to use in the tests.
         """
-        self.username = 'foo bar'
-        self.password = 'bar baz'
-        self.avatarContent = "contents of the avatar resource itself"
-        self.childName = "foo-child"
-        self.childContent = "contents of the foo child of the avatar"
+        self.username = b'foo bar'
+        self.password = b'bar baz'
+        self.avatarContent = b"contents of the avatar resource itself"
+        self.childName = b"foo-child"
+        self.childContent = b"contents of the foo child of the avatar"
         self.checker = InMemoryUsernamePasswordDatabaseDontUse()
         self.checker.addUser(self.username, self.password)
         self.avatar = Data(self.avatarContent, 'text/plain')
@@ -331,8 +375,9 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         dispatch it, starting from C{self.wrapper} and returning the resulting
         L{IResource}.
         """
-        authorization = b64encode(self.username + ':' + self.password)
-        request.headers['authorization'] = 'Basic ' + authorization
+        authorization = b64encode(self.username + b':' + self.password)
+        request.requestHeaders.addRawHeader(b'authorization',
+                                            b'Basic ' + authorization)
         return getChildForRequest(self.wrapper, request)
 
 
@@ -361,7 +406,7 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         """
         self.credentialFactories.append(BasicCredentialFactory('example.com'))
         request = self.makeRequest([self.childName])
-        request.headers['authorization'] = response
+        request.requestHeaders.addRawHeader(b'authorization', response)
         child = getChildForRequest(self.wrapper, request)
         d = request.notifyFinish()
         def cbFinished(result):
@@ -377,7 +422,8 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         results in an L{UnauthorizedResource} when the request has an
         I{Authorization} header with a user which does not exist.
         """
-        return self._invalidAuthorizationTest('Basic ' + b64encode('foo:bar'))
+        return self._invalidAuthorizationTest(
+            b'Basic ' + b64encode(b'foo:bar'))
 
 
     def test_getChildWithDefaultUnauthorizedPassword(self):
@@ -388,7 +434,7 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         password.
         """
         return self._invalidAuthorizationTest(
-            'Basic ' + b64encode(self.username + ':bar'))
+            b'Basic ' + b64encode(self.username + b':bar'))
 
 
     def test_getChildWithDefaultUnrecognizedScheme(self):
@@ -397,7 +443,7 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         results in an L{UnauthorizedResource} when the request has an
         I{Authorization} header with an unrecognized scheme.
         """
-        return self._invalidAuthorizationTest('Quux foo bar baz')
+        return self._invalidAuthorizationTest(b'Quux foo bar baz')
 
 
     def test_getChildWithDefaultAuthorized(self):
@@ -443,9 +489,9 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         a challenge, it calls the C{getChallenge} method with the request as an
         argument.
         """
+        @implementer(ICredentialFactory)
         class DumbCredentialFactory(object):
-            implements(ICredentialFactory)
-            scheme = 'dumb'
+            scheme = b'dumb'
 
             def __init__(self):
                 self.requests = []
@@ -518,7 +564,7 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         """
         self.credentialFactories.append(BasicCredentialFactory('example.com'))
         request = self.makeRequest([self.childName])
-        request.headers['authorization'] = 'Basic decode should fail'
+        request.requestHeaders.addRawHeader(b'authorization', b'Basic decode should fail')
         child = getChildForRequest(self.wrapper, request)
         self.assertIsInstance(child, UnauthorizedResource)
 
@@ -529,7 +575,7 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         the L{ICredentialFactory} to use to parse the header and a string
         containing the portion of the header which remains to be parsed.
         """
-        basicAuthorization = 'Basic abcdef123456'
+        basicAuthorization = b'Basic abcdef123456'
         self.assertEqual(
             self.wrapper._selectParseHeader(basicAuthorization),
             (None, None))
@@ -537,7 +583,7 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         self.credentialFactories.append(factory)
         self.assertEqual(
             self.wrapper._selectParseHeader(basicAuthorization),
-            (factory, 'abcdef123456'))
+            (factory, b'abcdef123456'))
 
 
     def test_unexpectedDecodeError(self):
@@ -546,11 +592,15 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         method results in a 500 response code and causes the exception to be
         logged.
         """
+        logObserver = EventLoggingObserver.createWithCleanup(
+            self,
+            globalLogPublisher
+        )
         class UnexpectedException(Exception):
             pass
 
         class BadFactory(object):
-            scheme = 'bad'
+            scheme = b'bad'
 
             def getChallenge(self, client):
                 return {}
@@ -560,10 +610,15 @@ class HTTPAuthHeaderTests(unittest.TestCase):
 
         self.credentialFactories.append(BadFactory())
         request = self.makeRequest([self.childName])
-        request.headers['authorization'] = 'Bad abc'
+        request.requestHeaders.addRawHeader(b'authorization', b'Bad abc')
         child = getChildForRequest(self.wrapper, request)
         request.render(child)
         self.assertEqual(request.responseCode, 500)
+        self.assertEquals(1, len(logObserver))
+        self.assertIsInstance(
+            logObserver[0]["log_failure"].value,
+            UnexpectedException
+        )
         self.assertEqual(len(self.flushLoggedErrors(UnexpectedException)), 1)
 
 
@@ -572,6 +627,10 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         Any unexpected failure from L{Portal.login} results in a 500 response
         code and causes the failure to be logged.
         """
+        logObserver = EventLoggingObserver.createWithCleanup(
+            self,
+            globalLogPublisher
+        )
         class UnexpectedException(Exception):
             pass
 
@@ -587,6 +646,11 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         child = self._authorizedBasicLogin(request)
         request.render(child)
         self.assertEqual(request.responseCode, 500)
+        self.assertEquals(1, len(logObserver))
+        self.assertIsInstance(
+            logObserver[0]["log_failure"].value,
+            UnexpectedException
+        )
         self.assertEqual(len(self.flushLoggedErrors(UnexpectedException)), 1)
 
 
@@ -595,7 +659,7 @@ class HTTPAuthHeaderTests(unittest.TestCase):
         Anonymous requests are allowed if a L{Portal} has an anonymous checker
         registered.
         """
-        unprotectedContents = "contents of the unprotected child resource"
+        unprotectedContents = b"contents of the unprotected child resource"
 
         self.avatars[ANONYMOUS] = Resource()
         self.avatars[ANONYMOUS].putChild(

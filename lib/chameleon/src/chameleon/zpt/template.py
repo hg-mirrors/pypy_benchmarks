@@ -1,12 +1,13 @@
 try:
     import ast
 except ImportError:
-    from chameleon import ast24 as ast
+    from chameleon import ast25 as ast
 
 from functools import partial
 from os.path import dirname
+from hashlib import md5
 
-from ..i18n import fast_translate
+from ..i18n import simple_translate
 from ..tales import PythonExpr
 from ..tales import StringExpr
 from ..tales import NotExpr
@@ -24,6 +25,8 @@ from ..compiler import ExpressionEngine
 from ..loader import TemplateLoader
 from ..astutil import Builtin
 from ..utils import decode_string
+from ..utils import string_type
+from ..utils import unicode_string
 
 from .program import MacroProgram
 
@@ -41,6 +44,12 @@ class PageTemplate(BaseTemplate):
       template = PageTemplate("<div>Hello, ${name}.</div>")
 
     Configuration (keyword arguments):
+
+      ``auto_reload``
+
+        Enables automatic reload of templates. This is mostly useful
+        in a development mode since it takes a significant performance
+        hit.
 
       ``default_expression``
 
@@ -88,14 +97,67 @@ class PageTemplate(BaseTemplate):
 
         Example::
 
-          def translate(msgid, domain=None, mapping=None, default=None):
+          def translate(msgid, domain=None, mapping=None, default=None, context=None):
               ...
               return translation
 
         Note that if ``target_language`` is provided at render time,
         the translation function must support this argument.
 
+      ``implicit_i18n_translate``
+
+        Enables implicit translation for text appearing inside
+        elements. Default setting is ``False``.
+
+        While implicit translation does work for text that includes
+        expression interpolation, each expression must be simply a
+        variable name (e.g. ``${foo}``); otherwise, the text will not
+        be marked for translation.
+
+      ``implicit_i18n_attributes``
+
+        Any attribute contained in this set will be marked for
+        implicit translation. Each entry must be a lowercase string.
+
+        Example::
+
+          implicit_i18n_attributes = set(['alt', 'title'])
+
+      ``on_error_handler``
+
+        This is an optional exception handler that is invoked during the
+        "on-error" fallback block.
+
+      ``strict``
+
+        Enabled by default. If disabled, expressions are only required
+        to be valid at evaluation time.
+
+        This setting exists to provide compatibility with the
+        reference implementation which compiles expressions at
+        evaluation time.
+
+      ``trim_attribute_space``
+
+        If set, additional attribute whitespace will be stripped.
+
+      ``restricted_namespace``
+
+        True by default. If set False, ignored all namespace except chameleon default namespaces. It will be useful working with attributes based javascript template renderer like VueJS.
+
+        Example:
+
+          <div v-bind:id="dynamicId"></div>
+          <button v-on:click="greet">Greet</button>
+          <button @click="greet">Greet</button>
+
+      ``tokenizer``
+
+        None by default. If provided, this tokenizer is used instead of the default
+        (which is selected based on the template mode parameter.)
+
     Output is unicode on Python 2 and string on Python 3.
+
     """
 
     expression_types = {
@@ -109,7 +171,7 @@ class PageTemplate(BaseTemplate):
 
     default_expression = 'python'
 
-    translate = staticmethod(fast_translate)
+    translate = staticmethod(simple_translate)
 
     encoding = None
 
@@ -119,9 +181,26 @@ class PageTemplate(BaseTemplate):
 
     mode = "xml"
 
+    implicit_i18n_translate = False
+
+    implicit_i18n_attributes = set()
+
+    trim_attribute_space = False
+
+    enable_data_attributes = False
+
+    on_error_handler = None
+
+    restricted_namespace = True
+
+    tokenizer = None
+
     def __init__(self, body, **config):
         self.macros = Macros(self)
         super(PageTemplate, self).__init__(body, **config)
+
+    def __getitem__(self, name):
+        return self.macros[name]
 
     @property
     def builtins(self):
@@ -130,7 +209,7 @@ class PageTemplate(BaseTemplate):
     @property
     def engine(self):
         if self.literal_false:
-            default_marker = ast.Str(s="__default__")
+            default_marker = Builtin("__default")
         else:
             default_marker = Builtin("False")
 
@@ -146,7 +225,7 @@ class PageTemplate(BaseTemplate):
 
     def parse(self, body):
         if self.literal_false:
-            default_marker = ast.Str(s="__default__")
+            default_marker = Builtin("__default")
         else:
             default_marker = Builtin("False")
 
@@ -155,62 +234,100 @@ class PageTemplate(BaseTemplate):
             escape=True if self.mode == "xml" else False,
             default_marker=default_marker,
             boolean_attributes=self.boolean_attributes,
-            )
+            implicit_i18n_translate=self.implicit_i18n_translate,
+            implicit_i18n_attributes=self.implicit_i18n_attributes,
+            trim_attribute_space=self.trim_attribute_space,
+            enable_data_attributes=self.enable_data_attributes,
+            restricted_namespace=self.restricted_namespace,
+            tokenizer=self.tokenizer
+        )
 
-    def render(self, encoding=None, translate=None, target_language=None, **vars):
+    def render(self, encoding=None, **_kw):
         """Render template to string.
 
-        The ``encoding`` and ``translate`` arguments are documented in
-        the template class constructor. If passed to this method, they
-        are used instead of the class defaults.
+        If providd, the ``encoding`` argument overrides the template
+        default value.
 
-        Additional arguments:
+        Additional keyword arguments are passed as template variables.
+
+        In addition, some also have a special meaning:
+
+          ``translate``
+
+            This keyword argument will override the default template
+            translate function.
 
           ``target_language``
 
-            This argument will be partially applied to the translation
-            function.
+            This will be used as the default argument to the translate
+            function if no `i18n:target` value is provided.
 
-            An alternative is thus to simply provide a custom
-            translation function which includes this information or
-            relies on a different mechanism.
-
+            If not provided, the `translate` function will need to
+            negotiate a language based on the provided context.
         """
 
-        translate = translate if translate is not None else self.translate or \
-                    type(self).translate
+        translate = _kw.get('translate')
+        if translate is not None:
+            has_translate = True
+        else:
+            has_translate = False
+            translate = self.translate
 
-        # Curry language parameter if non-trivial
-        if target_language is not None:
-            translate = partial(translate, target_language=target_language)
+            # This should not be necessary, but we include it for
+            # backward compatibility.
+            if translate is None:
+                translate = type(self).translate
 
         encoding = encoding if encoding is not None else self.encoding
         if encoding is not None:
-            txl = translate
-
-            def translate(msgid, **kwargs):
+            def translate(msgid, txl=translate, encoding=encoding, **kwargs):
                 if isinstance(msgid, bytes):
                     msgid = decode_string(msgid, encoding)
                 return txl(msgid, **kwargs)
 
-            def decode(inst):
+            def decode(inst, encoding=encoding):
                 return decode_string(inst, encoding, 'ignore')
         else:
             decode = decode_string
 
-        setdefault = vars.setdefault
-        setdefault("translate", translate)
-        setdefault("convert", translate)
-        setdefault("decode", decode)
+        target_language = _kw.get('target_language')
+
+        setdefault = _kw.setdefault
+        setdefault("__translate", translate)
+        setdefault("__convert",
+                   partial(translate, target_language=target_language))
+        setdefault("__decode", decode)
+        setdefault("target_language", None)
+        setdefault("__on_error_handler", self.on_error_handler)
 
         # Make sure we have a repeat dictionary
-        if 'repeat' not in vars: vars['repeat'] = RepeatDict({})
+        if 'repeat' not in _kw: _kw['repeat'] = RepeatDict({})
 
-        return super(PageTemplate, self).render(**vars)
+        return super(PageTemplate, self).render(**_kw)
 
     def include(self, *args, **kwargs):
         self.cook_check()
         self._render(*args, **kwargs)
+
+    def digest(self, body, names):
+        hex = super(PageTemplate, self).digest(body, names)
+        if isinstance(hex, unicode_string):
+            hex = hex.encode('utf-8')
+        digest = md5(hex)
+        digest.update(';'.join(names).encode('utf-8'))
+
+        for attr in (
+            'trim_attribute_space',
+            'implicit_i18n_translate',
+            'literal_false',
+            'strict'
+        ):
+            v = getattr(self, attr)
+            digest.update(
+                (";%s=%s" % (attr, str(v))).encode('ascii')
+            )
+
+        return digest.hexdigest()
 
     def _builtins(self):
         return {
@@ -230,16 +347,66 @@ class PageTemplateFile(PageTemplate, BaseTemplateFile):
     Note that the file-based template class comes with the expression
     type ``load`` which loads templates relative to the provided
     filename.
+
+    Below are listed the configuration arguments specific to
+    file-based templates; see the string-based template class for
+    general options and documentation:
+
+    Configuration (keyword arguments):
+
+      ``loader_class``
+
+        The provided class will be used to create the template loader
+        object. The default implementation supports relative and
+        absolute path specs.
+
+        The class must accept keyword arguments ``search_path``
+        (sequence of paths to search for relative a path spec) and
+        ``default_extension`` (if provided, this should be added to
+        any path spec).
+
+      ``prepend_relative_search_path``
+
+        Inserts the path relative to the provided template file path
+        into the template search path.
+
+        The default setting is ``True``.
+
+      ``search_path``
+
+        If provided, this is used as the search path for the ``load:``
+        expression. It must be a string or an iterable yielding a
+        sequence of strings.
+
     """
 
     expression_types = PageTemplate.expression_types.copy()
-    expression_types['load'] = partial(ProxyExpr, '__loader')
+    expression_types['load'] = partial(
+        ProxyExpr, '__loader',
+        ignore_prefix=False
+    )
 
-    def __init__(self, filename, **config):
+    prepend_relative_search_path = True
+
+    def __init__(self, filename, search_path=None, loader_class=TemplateLoader,
+                 **config):
         super(PageTemplateFile, self).__init__(filename, **config)
 
-        path = dirname(self.filename)
-        loader = TemplateLoader(search_path=path, **config)
+        if search_path is None:
+            search_path = []
+        else:
+            if isinstance(search_path, string_type):
+                search_path = [search_path]
+            else:
+                search_path = list(search_path)
+
+        # If the flag is set (this is the default), prepend the path
+        # relative to the template file to the search path
+        if self.prepend_relative_search_path:
+            path = dirname(self.filename)
+            search_path.insert(0, path)
+
+        loader = loader_class(search_path=search_path, **config)
         template_class = type(self)
 
         # Bind relative template loader instance to the same template

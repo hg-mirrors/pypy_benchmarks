@@ -1,4 +1,4 @@
-# -*- test-case-name: twisted.test.test_pb -*-
+# -*- test-case-name: twisted.spread.test.test_pb -*-
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
@@ -9,6 +9,8 @@ Maintainer: Glyph Lefkowitz
 
 Future Plans: None known.
 """
+
+from __future__ import absolute_import, division
 
 import time
 
@@ -71,9 +73,8 @@ class RemotePublished(flavors.RemoteCache):
         self.__dict__.update(state)
         self._activationListeners = []
         try:
-            dataFile = file(self.getFileName(), "rb")
-            data = dataFile.read()
-            dataFile.close()
+            with open(self.getFileName(), "rb") as dataFile:
+                data = dataFile.read()
         except IOError:
             recent = 0
         else:
@@ -104,9 +105,8 @@ class RemotePublished(flavors.RemoteCache):
             listener(self)
         self._activationListeners = []
         self.activated()
-        dataFile = file(self.getFileName(), "wb")
-        dataFile.write(banana.encode(jelly.jelly(self)))
-        dataFile.close()
+        with open(self.getFileName(), "wb") as dataFile:
+            dataFile.write(banana.encode(jelly.jelly(self)))
 
 
     def activated(self):

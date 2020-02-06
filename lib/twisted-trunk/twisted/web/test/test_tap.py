@@ -5,26 +5,30 @@
 Tests for L{twisted.web.tap}.
 """
 
-import os, stat
+from __future__ import absolute_import, division
 
-from twisted.python.usage import UsageError
-from twisted.python.filepath import FilePath
+import os
+import stat
+
+from twisted.internet import reactor, endpoints
 from twisted.internet.interfaces import IReactorUNIX
-from twisted.internet import reactor
+from twisted.python.filepath import FilePath
+from twisted.python.reflect import requireModule
 from twisted.python.threadpool import ThreadPool
+from twisted.python.usage import UsageError
+from twisted.spread.pb import PBServerFactory
 from twisted.trial.unittest import TestCase
-from twisted.application import strports
-
+from twisted.web import demo
+from twisted.web.distrib import ResourcePublisher, UserDirectory
+from twisted.web.script import PythonScript
 from twisted.web.server import Site
 from twisted.web.static import Data, File
-from twisted.web.distrib import ResourcePublisher, UserDirectory
+from twisted.web.tap import Options, makeService
+from twisted.web.tap import makePersonalServerFactory, _AddHeadersResource
+from twisted.web.test.requesthelper import DummyRequest
+from twisted.web.twcgi import CGIScript
 from twisted.web.wsgi import WSGIResource
-from twisted.web.tap import Options, makePersonalServerFactory, makeService
-from twisted.web.twcgi import CGIScript, PHP3Script, PHPScript
-from twisted.web.script import PythonScript
 
-
-from twisted.spread.pb import PBServerFactory
 
 application = object()
 
@@ -60,34 +64,37 @@ class ServiceTests(TestCase):
         self.assertEqual(root.path, path.path)
 
 
+    def test_pathServer(self):
+        """
+        The I{--path} option to L{makeService} causes it to return a service
+        which will listen on the server address given by the I{--port} option.
+        """
+        path = FilePath(self.mktemp())
+        path.makedirs()
+        port = self.mktemp()
+        options = Options()
+        options.parseOptions(['--port', 'unix:' + port, '--path', path.path])
+        service = makeService(options)
+        service.startService()
+        self.addCleanup(service.stopService)
+        self.assertIsInstance(service.services[0].factory.resource, File)
+        self.assertEqual(service.services[0].factory.resource.path, path.path)
+        self.assertTrue(os.path.exists(port))
+        self.assertTrue(stat.S_ISSOCK(os.stat(port).st_mode))
+
+    if not IReactorUNIX.providedBy(reactor):
+        test_pathServer.skip = (
+            "The reactor does not support UNIX domain sockets")
+
+
     def test_cgiProcessor(self):
         """
         The I{--path} option creates a root resource which serves a
         L{CGIScript} instance for any child with the C{".cgi"} extension.
         """
         path, root = self._pathOption()
-        path.child("foo.cgi").setContent("")
+        path.child("foo.cgi").setContent(b"")
         self.assertIsInstance(root.getChild("foo.cgi", None), CGIScript)
-
-
-    def test_php3Processor(self):
-        """
-        The I{--path} option creates a root resource which serves a
-        L{PHP3Script} instance for any child with the C{".php3"} extension.
-        """
-        path, root = self._pathOption()
-        path.child("foo.php3").setContent("")
-        self.assertIsInstance(root.getChild("foo.php3", None), PHP3Script)
-
-
-    def test_phpProcessor(self):
-        """
-        The I{--path} option creates a root resource which serves a
-        L{PHPScript} instance for any child with the C{".php"} extension.
-        """
-        path, root = self._pathOption()
-        path.child("foo.php").setContent("")
-        self.assertIsInstance(root.getChild("foo.php", None), PHPScript)
 
 
     def test_epyProcessor(self):
@@ -96,7 +103,7 @@ class ServiceTests(TestCase):
         L{PythonScript} instance for any child with the C{".epy"} extension.
         """
         path, root = self._pathOption()
-        path.child("foo.epy").setContent("")
+        path.child("foo.epy").setContent(b"")
         self.assertIsInstance(root.getChild("foo.epy", None), PythonScript)
 
 
@@ -108,8 +115,8 @@ class ServiceTests(TestCase):
         """
         path, root = self._pathOption()
         path.child("foo.rpy").setContent(
-            "from twisted.web.static import Data\n"
-            "resource = Data('content', 'major/minor')\n")
+            b"from twisted.web.static import Data\n"
+            b"resource = Data('content', 'major/minor')\n")
         child = root.getChild("foo.rpy", None)
         self.assertIsInstance(child, Data)
         self.assertEqual(child.data, 'content')
@@ -123,7 +130,7 @@ class ServiceTests(TestCase):
         """
         # The fact that this pile of objects can actually be used somehow is
         # verified by twisted.web.test.test_distrib.
-        site = Site(Data("foo bar", "text/plain"))
+        site = Site(Data(b"foo bar", "text/plain"))
         serverFactory = makePersonalServerFactory(site)
         self.assertIsInstance(serverFactory, PBServerFactory)
         self.assertIsInstance(serverFactory.root, ResourcePublisher)
@@ -160,9 +167,8 @@ class ServiceTests(TestCase):
         options.parseOptions(['--personal'])
         path = os.path.expanduser(
             os.path.join('~', UserDirectory.userSocketName))
-        self.assertEqual(
-            strports.parse(options['port'], None)[:2],
-            ('UNIX', (path, None)))
+        self.assertEqual(options['ports'][0],
+                         'unix:{}'.format(path))
 
     if not IReactorUNIX.providedBy(reactor):
         test_defaultPersonalPath.skip = (
@@ -177,8 +183,18 @@ class ServiceTests(TestCase):
         options = Options()
         options.parseOptions([])
         self.assertEqual(
-            strports.parse(options['port'], None)[:2],
+            endpoints._parseServer(options['ports'][0], None)[:2],
             ('TCP', (8080, None)))
+
+
+    def test_twoPorts(self):
+        """
+        If the I{--http} option is given twice, there are two listeners
+        """
+        options = Options()
+        options.parseOptions(['--listen', 'tcp:8001', '--listen', 'tcp:8002'])
+        self.assertIn('8001', options['ports'][0])
+        self.assertIn('8002', options['ports'][1])
 
 
     def test_wsgi(self):
@@ -213,4 +229,118 @@ class ServiceTests(TestCase):
         for name in [__name__ + '.nosuchthing', 'foo.']:
             exc = self.assertRaises(
                 UsageError, options.parseOptions, ['--wsgi', name])
-            self.assertEqual(str(exc), "No such WSGI application: %r" % (name,))
+            self.assertEqual(str(exc),
+                             "No such WSGI application: %r" % (name,))
+
+
+    def test_HTTPSFailureOnMissingSSL(self):
+        """
+        An L{UsageError} is raised when C{https} is requested but there is no
+        support for SSL.
+        """
+        options = Options()
+
+        exception = self.assertRaises(
+            UsageError, options.parseOptions, ['--https=443'])
+
+        self.assertEqual('SSL support not installed', exception.args[0])
+
+    if requireModule('OpenSSL.SSL') is not None:
+        test_HTTPSFailureOnMissingSSL.skip = 'SSL module is available.'
+
+
+    def test_HTTPSAcceptedOnAvailableSSL(self):
+        """
+        When SSL support is present, it accepts the --https option.
+        """
+        options = Options()
+
+        options.parseOptions(['--https=443'])
+
+        self.assertIn('ssl', options['ports'][0])
+        self.assertIn('443', options['ports'][0])
+
+    if requireModule('OpenSSL.SSL') is None:
+        test_HTTPSAcceptedOnAvailableSSL.skip = 'SSL module is not available.'
+
+
+    def test_add_header_parsing(self):
+        """
+        When --add-header is specific, the value is parsed.
+        """
+        options = Options()
+        options.parseOptions(
+            ['--add-header', 'K1: V1', '--add-header', 'K2: V2']
+        )
+        self.assertEqual(options['extraHeaders'], [('K1', 'V1'), ('K2', 'V2')])
+
+
+    def test_add_header_resource(self):
+        """
+        When --add-header is specified, the resource is a composition that adds
+        headers.
+        """
+        options = Options()
+        options.parseOptions(
+            ['--add-header', 'K1: V1', '--add-header', 'K2: V2']
+        )
+        service = makeService(options)
+        resource = service.services[0].factory.resource
+        self.assertIsInstance(resource, _AddHeadersResource)
+        self.assertEqual(resource._headers, [('K1', 'V1'), ('K2', 'V2')])
+        self.assertIsInstance(resource._originalResource, demo.Test)
+
+
+    def test_noTracebacksDeprecation(self):
+        """
+        Passing --notracebacks is deprecated.
+        """
+        options = Options()
+        options.parseOptions(["--notracebacks"])
+        makeService(options)
+
+        warnings = self.flushWarnings([self.test_noTracebacksDeprecation])
+        self.assertEqual(warnings[0]['category'], DeprecationWarning)
+        self.assertEqual(
+            warnings[0]['message'],
+            "--notracebacks was deprecated in Twisted 19.7.0"
+        )
+        self.assertEqual(len(warnings), 1)
+
+
+    def test_displayTracebacks(self):
+        """
+        Passing --display-tracebacks will enable traceback rendering on the
+        generated Site.
+        """
+        options = Options()
+        options.parseOptions(["--display-tracebacks"])
+        service = makeService(options)
+        self.assertTrue(service.services[0].factory.displayTracebacks)
+
+
+    def test_displayTracebacksNotGiven(self):
+        """
+        Not passing --display-tracebacks will leave traceback rendering on the
+        generated Site off.
+        """
+        options = Options()
+        options.parseOptions([])
+        service = makeService(options)
+        self.assertFalse(service.services[0].factory.displayTracebacks)
+
+
+
+class AddHeadersResourceTests(TestCase):
+    def test_getChildWithDefault(self):
+        """
+        When getChildWithDefault is invoked, it adds the headers to the
+        response.
+        """
+        resource = _AddHeadersResource(
+            demo.Test(), [("K1", "V1"), ("K2", "V2"), ("K1", "V3")])
+        request = DummyRequest([])
+        resource.getChildWithDefault("", request)
+        self.assertEqual(
+            request.responseHeaders.getRawHeaders("K1"), ["V1", "V3"])
+        self.assertEqual(request.responseHeaders.getRawHeaders("K2"), ["V2"])

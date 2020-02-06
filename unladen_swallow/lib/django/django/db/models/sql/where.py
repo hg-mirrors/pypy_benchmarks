@@ -1,17 +1,15 @@
 """
 Code to manage the creation and SQL rendering of 'where' constraints.
 """
-import datetime
 
+from django.core.exceptions import EmptyResultSet
 from django.utils import tree
-from django.db import connection
-from django.db.models.fields import Field
-from django.db.models.query_utils import QueryWrapper
-from datastructures import EmptyResultSet, FullResultSet
+from django.utils.functional import cached_property
 
 # Connection types
 AND = 'AND'
 OR = 'OR'
+
 
 class WhereNode(tree.Node):
     """
@@ -20,194 +18,196 @@ class WhereNode(tree.Node):
     The class is tied to the Query class that created it (in order to create
     the correct SQL).
 
-    The children in this tree are usually either Q-like objects or lists of
-    [table_alias, field_name, db_type, lookup_type, value_annotation,
-    params]. However, a child could also be any class with as_sql() and
-    relabel_aliases() methods.
+    A child is usually an expression producing boolean values. Most likely the
+    expression is a Lookup instance.
+
+    However, a child could also be any class with as_sql() and either
+    relabeled_clone() method or relabel_aliases() and clone() methods and
+    contains_aggregate attribute.
     """
     default = AND
 
-    def add(self, data, connector):
+    def split_having(self, negated=False):
         """
-        Add a node to the where-tree. If the data is a list or tuple, it is
-        expected to be of the form (alias, col_name, field_obj, lookup_type,
-        value), which is then slightly munged before being stored (to avoid
-        storing any reference to field objects). Otherwise, the 'data' is
-        stored unchanged and can be anything with an 'as_sql()' method.
+        Returns two possibly None nodes: one for those parts of self that
+        should be included in the WHERE clause and one for those parts of
+        self that must be included in the HAVING clause.
         """
-        # Because of circular imports, we need to import this here.
-        from django.db.models.base import ObjectDoesNotExist
-
-        if not isinstance(data, (list, tuple)):
-            super(WhereNode, self).add(data, connector)
-            return
-
-        alias, col, field, lookup_type, value = data
-        try:
-            if field:
-                params = field.get_db_prep_lookup(lookup_type, value)
-                db_type = field.db_type()
+        if not self.contains_aggregate:
+            return self, None
+        in_negated = negated ^ self.negated
+        # If the effective connector is OR and this node contains an aggregate,
+        # then we need to push the whole branch to HAVING clause.
+        may_need_split = (
+            (in_negated and self.connector == AND) or
+            (not in_negated and self.connector == OR))
+        if may_need_split and self.contains_aggregate:
+            return None, self
+        where_parts = []
+        having_parts = []
+        for c in self.children:
+            if hasattr(c, 'split_having'):
+                where_part, having_part = c.split_having(in_negated)
+                if where_part is not None:
+                    where_parts.append(where_part)
+                if having_part is not None:
+                    having_parts.append(having_part)
+            elif c.contains_aggregate:
+                having_parts.append(c)
             else:
-                # This is possible when we add a comparison to NULL sometimes
-                # (we don't really need to waste time looking up the associated
-                # field object).
-                params = Field().get_db_prep_lookup(lookup_type, value)
-                db_type = None
-        except ObjectDoesNotExist:
-            # This can happen when trying to insert a reference to a null pk.
-            # We break out of the normal path and indicate there's nothing to
-            # match.
-            super(WhereNode, self).add(NothingNode(), connector)
-            return
-        if isinstance(value, datetime.datetime):
-            annotation = datetime.datetime
-        else:
-            annotation = bool(value)
-        super(WhereNode, self).add((alias, col, db_type, lookup_type,
-                annotation, params), connector)
+                where_parts.append(c)
+        having_node = self.__class__(having_parts, self.connector, self.negated) if having_parts else None
+        where_node = self.__class__(where_parts, self.connector, self.negated) if where_parts else None
+        return where_node, having_node
 
-    def as_sql(self, qn=None):
+    def as_sql(self, compiler, connection):
         """
         Returns the SQL version of the where clause and the value to be
-        substituted in. Returns None, None if this node is empty.
-
-        If 'node' is provided, that is the root of the SQL generation
-        (generally not needed except by the internal implementation for
-        recursion).
+        substituted in. Returns '', [] if this node matches everything,
+        None, [] if this node is empty, and raises EmptyResultSet if this
+        node can't match anything.
         """
-        if not qn:
-            qn = connection.ops.quote_name
-        if not self.children:
-            return None, []
         result = []
         result_params = []
-        empty = True
+        if self.connector == AND:
+            full_needed, empty_needed = len(self.children), 1
+        else:
+            full_needed, empty_needed = 1, len(self.children)
+
         for child in self.children:
             try:
-                if hasattr(child, 'as_sql'):
-                    sql, params = child.as_sql(qn=qn)
-                else:
-                    # A leaf node in the tree.
-                    sql, params = self.make_atom(child, qn)
+                sql, params = compiler.compile(child)
             except EmptyResultSet:
-                if self.connector == AND and not self.negated:
-                    # We can bail out early in this particular case (only).
-                    raise
-                elif self.negated:
-                    empty = False
-                continue
-            except FullResultSet:
-                if self.connector == OR:
-                    if self.negated:
-                        empty = True
-                        break
-                    # We match everything. No need for any constraints.
-                    return '', []
+                empty_needed -= 1
+            else:
+                if sql:
+                    result.append(sql)
+                    result_params.extend(params)
+                else:
+                    full_needed -= 1
+            # Check if this node matches nothing or everything.
+            # First check the amount of full nodes and empty nodes
+            # to make this node empty/full.
+            # Now, check if this node is full/empty using the
+            # counts.
+            if empty_needed == 0:
                 if self.negated:
-                    empty = True
-                continue
-            empty = False
-            if sql:
-                result.append(sql)
-                result_params.extend(params)
-        if empty:
-            raise EmptyResultSet
-
+                    return '', []
+                else:
+                    raise EmptyResultSet
+            if full_needed == 0:
+                if self.negated:
+                    raise EmptyResultSet
+                else:
+                    return '', []
         conn = ' %s ' % self.connector
         sql_string = conn.join(result)
         if sql_string:
             if self.negated:
+                # Some backends (Oracle at least) need parentheses
+                # around the inner SQL in the negated case, even if the
+                # inner SQL contains just a single expression.
                 sql_string = 'NOT (%s)' % sql_string
-            elif len(self.children) != 1:
+            elif len(result) > 1:
                 sql_string = '(%s)' % sql_string
         return sql_string, result_params
 
-    def make_atom(self, child, qn):
-        """
-        Turn a tuple (table_alias, column_name, db_type, lookup_type,
-        value_annot, params) into valid SQL.
+    def get_group_by_cols(self):
+        cols = []
+        for child in self.children:
+            cols.extend(child.get_group_by_cols())
+        return cols
 
-        Returns the string for the SQL fragment and the parameters to use for
-        it.
-        """
-        table_alias, name, db_type, lookup_type, value_annot, params = child
-        if table_alias:
-            lhs = '%s.%s' % (qn(table_alias), qn(name))
-        else:
-            lhs = qn(name)
-        field_sql = connection.ops.field_cast_sql(db_type) % lhs
+    def get_source_expressions(self):
+        return self.children[:]
 
-        if value_annot is datetime.datetime:
-            cast_sql = connection.ops.datetime_cast_sql()
-        else:
-            cast_sql = '%s'
+    def set_source_expressions(self, children):
+        assert len(children) == len(self.children)
+        self.children = children
 
-        if isinstance(params, QueryWrapper):
-            extra, params = params.data
-        else:
-            extra = ''
-
-        if lookup_type in connection.operators:
-            format = "%s %%s %s" % (connection.ops.lookup_cast(lookup_type),
-                    extra)
-            return (format % (field_sql,
-                    connection.operators[lookup_type] % cast_sql), params)
-
-        if lookup_type == 'in':
-            if not value_annot:
-                raise EmptyResultSet
-            if extra:
-                return ('%s IN %s' % (field_sql, extra), params)
-            return ('%s IN (%s)' % (field_sql, ', '.join(['%s'] * len(params))),
-                    params)
-        elif lookup_type in ('range', 'year'):
-            return ('%s BETWEEN %%s and %%s' % field_sql, params)
-        elif lookup_type in ('month', 'day'):
-            return ('%s = %%s' % connection.ops.date_extract_sql(lookup_type,
-                    field_sql), params)
-        elif lookup_type == 'isnull':
-            return ('%s IS %sNULL' % (field_sql,
-                (not value_annot and 'NOT ' or '')), ())
-        elif lookup_type == 'search':
-            return (connection.ops.fulltext_search_sql(field_sql), params)
-        elif lookup_type in ('regex', 'iregex'):
-            return connection.ops.regex_lookup(lookup_type) % (field_sql, cast_sql), params
-
-        raise TypeError('Invalid lookup_type: %r' % lookup_type)
-
-    def relabel_aliases(self, change_map, node=None):
+    def relabel_aliases(self, change_map):
         """
         Relabels the alias values of any children. 'change_map' is a dictionary
         mapping old (current) alias values to the new values.
         """
-        if not node:
-            node = self
-        for pos, child in enumerate(node.children):
+        for pos, child in enumerate(self.children):
             if hasattr(child, 'relabel_aliases'):
+                # For example another WhereNode
                 child.relabel_aliases(change_map)
-            elif isinstance(child, tree.Node):
-                self.relabel_aliases(change_map, child)
+            elif hasattr(child, 'relabeled_clone'):
+                self.children[pos] = child.relabeled_clone(change_map)
+
+    def clone(self):
+        """
+        Creates a clone of the tree. Must only be called on root nodes (nodes
+        with empty subtree_parents). Childs must be either (Contraint, lookup,
+        value) tuples, or objects supporting .clone().
+        """
+        clone = self.__class__._new_instance(
+            children=[], connector=self.connector, negated=self.negated)
+        for child in self.children:
+            if hasattr(child, 'clone'):
+                clone.children.append(child.clone())
             else:
-                if child[0] in change_map:
-                    node.children[pos] = (change_map[child[0]],) + child[1:]
+                clone.children.append(child)
+        return clone
 
-class EverythingNode(object):
-    """
-    A node that matches everything.
-    """
-    def as_sql(self, qn=None):
-        raise FullResultSet
+    def relabeled_clone(self, change_map):
+        clone = self.clone()
+        clone.relabel_aliases(change_map)
+        return clone
 
-    def relabel_aliases(self, change_map, node=None):
-        return
+    @classmethod
+    def _contains_aggregate(cls, obj):
+        if isinstance(obj, tree.Node):
+            return any(cls._contains_aggregate(c) for c in obj.children)
+        return obj.contains_aggregate
+
+    @cached_property
+    def contains_aggregate(self):
+        return self._contains_aggregate(self)
+
+    @property
+    def is_summary(self):
+        return any(child.is_summary for child in self.children)
+
 
 class NothingNode(object):
     """
     A node that matches nothing.
     """
-    def as_sql(self, qn=None):
+    contains_aggregate = False
+
+    def as_sql(self, compiler=None, connection=None):
         raise EmptyResultSet
 
-    def relabel_aliases(self, change_map, node=None):
-        return
 
+class ExtraWhere(object):
+    # The contents are a black box - assume no aggregates are used.
+    contains_aggregate = False
+
+    def __init__(self, sqls, params):
+        self.sqls = sqls
+        self.params = params
+
+    def as_sql(self, compiler=None, connection=None):
+        sqls = ["(%s)" % sql for sql in self.sqls]
+        return " AND ".join(sqls), list(self.params or ())
+
+
+class SubqueryConstraint(object):
+    # Even if aggregates would be used in a subquery, the outer query isn't
+    # interested about those.
+    contains_aggregate = False
+
+    def __init__(self, alias, columns, targets, query_object):
+        self.alias = alias
+        self.columns = columns
+        self.targets = targets
+        self.query_object = query_object
+
+    def as_sql(self, compiler, connection):
+        query = self.query_object
+        query.set_values(self.targets)
+        query_compiler = query.get_compiler(connection=connection)
+        return query_compiler.as_subquery_condition(self.alias, self.columns, compiler)

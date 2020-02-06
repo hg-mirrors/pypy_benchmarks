@@ -1,56 +1,62 @@
+from __future__ import unicode_literals
+
 import os
+from io import BytesIO, StringIO, UnsupportedOperation
 
-from django.utils.encoding import smart_str, smart_unicode
+from django.core.files.utils import FileProxyMixin
+from django.utils import six
+from django.utils.encoding import (
+    force_bytes, force_str, force_text, python_2_unicode_compatible,
+)
 
-try:
-    from cStringIO import StringIO
-except ImportError:
-    from StringIO import StringIO
 
-class File(object):
-    DEFAULT_CHUNK_SIZE = 64 * 2**10
+@python_2_unicode_compatible
+class File(FileProxyMixin):
+    DEFAULT_CHUNK_SIZE = 64 * 2 ** 10
 
-    def __init__(self, file):
+    def __init__(self, file, name=None):
         self.file = file
-        self._name = file.name
-        self._mode = file.mode
-        self._closed = False
+        if name is None:
+            name = getattr(file, 'name', None)
+        self.name = name
+        if hasattr(file, 'mode'):
+            self.mode = file.mode
 
     def __str__(self):
-        return smart_str(self.name or '')
-
-    def __unicode__(self):
-        return smart_unicode(self.name or u'')
+        return force_text(self.name or '')
 
     def __repr__(self):
-        return "<%s: %s>" % (self.__class__.__name__, self or "None")
+        return force_str("<%s: %s>" % (self.__class__.__name__, self or "None"))
 
-    def __nonzero__(self):
-        return not not self.name
+    def __bool__(self):
+        return bool(self.name)
+
+    def __nonzero__(self):      # Python 2 compatibility
+        return type(self).__bool__(self)
 
     def __len__(self):
         return self.size
 
-    def _get_name(self):
-        return self._name
-    name = property(_get_name)
-
-    def _get_mode(self):
-        return self._mode
-    mode = property(_get_mode)
-
-    def _get_closed(self):
-        return self._closed
-    closed = property(_get_closed)
+    def _get_size_from_underlying_file(self):
+        if hasattr(self.file, 'size'):
+            return self.file.size
+        if hasattr(self.file, 'name'):
+            try:
+                return os.path.getsize(self.file.name)
+            except (OSError, TypeError):
+                pass
+        if hasattr(self.file, 'tell') and hasattr(self.file, 'seek'):
+            pos = self.file.tell()
+            self.file.seek(0, os.SEEK_END)
+            size = self.file.tell()
+            self.file.seek(pos)
+            return size
+        raise AttributeError("Unable to determine the file's size.")
 
     def _get_size(self):
-        if not hasattr(self, '_size'):
-            if hasattr(self.file, 'size'):
-                self._size = self.file.size
-            elif os.path.exists(self.file.name):
-                self._size = os.path.getsize(self.file.name)
-            else:
-                raise AttributeError("Unable to determine the file's size.")
+        if hasattr(self, '_size'):
+            return self._size
+        self._size = self._get_size_from_underlying_file()
         return self._size
 
     def _set_size(self, size):
@@ -60,20 +66,22 @@ class File(object):
 
     def chunks(self, chunk_size=None):
         """
-        Read the file and yield chucks of ``chunk_size`` bytes (defaults to
+        Read the file and yield chunks of ``chunk_size`` bytes (defaults to
         ``UploadedFile.DEFAULT_CHUNK_SIZE``).
         """
         if not chunk_size:
-            chunk_size = self.__class__.DEFAULT_CHUNK_SIZE
+            chunk_size = self.DEFAULT_CHUNK_SIZE
 
-        if hasattr(self, 'seek'):
+        try:
             self.seek(0)
-        # Assume the pointer is at zero...
-        counter = self.size
+        except (AttributeError, UnsupportedOperation):
+            pass
 
-        while counter > 0:
-            yield self.read(chunk_size)
-            counter -= chunk_size
+        while True:
+            data = self.read(chunk_size)
+            if not data:
+                break
+            yield data
 
     def multiple_chunks(self, chunk_size=None):
         """
@@ -87,26 +95,26 @@ class File(object):
             chunk_size = self.DEFAULT_CHUNK_SIZE
         return self.size > chunk_size
 
-    def xreadlines(self):
-        return iter(self)
-
-    def readlines(self):
-        return list(self.xreadlines())
-
     def __iter__(self):
         # Iterate over this file-like object by newlines
         buffer_ = None
         for chunk in self.chunks():
-            chunk_buffer = StringIO(chunk)
-
-            for line in chunk_buffer:
+            for line in chunk.splitlines(True):
                 if buffer_:
-                    line = buffer_ + line
+                    if endswith_cr(buffer_) and not equals_lf(line):
+                        # Line split after a \r newline; yield buffer_.
+                        yield buffer_
+                        # Continue with line.
+                    else:
+                        # Line either split without a newline (line
+                        # continues after buffer_) or with \r\n
+                        # newline (line == b'\n').
+                        line = buffer_ + line
+                    # buffer_ handled, clear it.
                     buffer_ = None
 
-                # If this is the end of a line, yield
-                # otherwise, wait for the next round
-                if line[-1] in ('\n', '\r'):
+                # If this is the end of a \n or \r\n line, yield.
+                if endswith_lf(line):
                     yield line
                 else:
                     buffer_ = line
@@ -114,56 +122,70 @@ class File(object):
         if buffer_ is not None:
             yield buffer_
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, tb):
+        self.close()
+
     def open(self, mode=None):
         if not self.closed:
             self.seek(0)
-        elif os.path.exists(self.file.name):
-            self.file = open(self.file.name, mode or self.file.mode)
+        elif self.name and os.path.exists(self.name):
+            self.file = open(self.name, mode or self.mode)
         else:
             raise ValueError("The file cannot be reopened.")
 
-    def seek(self, position):
-        self.file.seek(position)
-
-    def tell(self):
-        return self.file.tell()
-
-    def read(self, num_bytes=None):
-        if num_bytes is None:
-            return self.file.read()
-        return self.file.read(num_bytes)
-
-    def write(self, content):
-        if not self.mode.startswith('w'):
-            raise IOError("File was not opened with write access.")
-        self.file.write(content)
-
-    def flush(self):
-        if not self.mode.startswith('w'):
-            raise IOError("File was not opened with write access.")
-        self.file.flush()
-
     def close(self):
         self.file.close()
-        self._closed = True
 
+
+@python_2_unicode_compatible
 class ContentFile(File):
     """
     A File-like object that takes just raw content, rather than an actual file.
     """
-    def __init__(self, content):
-        self.file = StringIO(content or '')
-        self.size = len(content or '')
-        self.file.seek(0)
-        self._closed = False
+    def __init__(self, content, name=None):
+        if six.PY3:
+            stream_class = StringIO if isinstance(content, six.text_type) else BytesIO
+        else:
+            stream_class = BytesIO
+            content = force_bytes(content)
+        super(ContentFile, self).__init__(stream_class(content), name=name)
+        self.size = len(content)
 
     def __str__(self):
         return 'Raw content'
 
-    def __nonzero__(self):
+    def __bool__(self):
         return True
 
+    def __nonzero__(self):      # Python 2 compatibility
+        return type(self).__bool__(self)
+
     def open(self, mode=None):
-        if self._closed:
-            self._closed = False
         self.seek(0)
+
+    def close(self):
+        pass
+
+
+def endswith_cr(line):
+    """
+    Return True if line (a text or byte string) ends with '\r'.
+    """
+    return line.endswith('\r' if isinstance(line, six.text_type) else b'\r')
+
+
+def endswith_lf(line):
+    """
+    Return True if line (a text or byte string) ends with '\n'.
+    """
+    return line.endswith('\n' if isinstance(line, six.text_type) else b'\n')
+
+
+def equals_lf(line):
+    """
+    Return True if line (a text or byte string) equals '\n'.
+    """
+    return line == ('\n' if isinstance(line, six.text_type) else b'\n')

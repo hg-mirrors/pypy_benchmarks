@@ -6,24 +6,36 @@ Tests for L{twisted.application} and its interaction with
 L{twisted.persisted.sob}.
 """
 
-import copy, os, pickle
-from StringIO import StringIO
+from __future__ import absolute_import, division
 
-from twisted.trial import unittest, util
-from twisted.application import service, internet, app
+import copy
+import os
+import pickle
+
+try:
+    import asyncio
+except ImportError:
+    asyncio = None
+
+from twisted.application import service, internet, app, reactors
+from twisted.application.internet import backoffPolicy
+from twisted.internet import interfaces, defer, protocol, reactor
 from twisted.persisted import sob
-from twisted.python import usage
-from twisted.internet import interfaces, defer
+from twisted.plugins import twisted_reactors
 from twisted.protocols import wire, basic
-from twisted.internet import protocol, reactor
-from twisted.application import reactors
+from twisted.python import usage
+from twisted.python.compat import NativeStringIO
+from twisted.python.runtime import platformType
+from twisted.python.test.modules_helpers import TwistedModulesMixin
 from twisted.test.proto_helpers import MemoryReactor
+from twisted.trial import unittest
+
 
 
 class Dummy:
     processName=None
 
-class TestService(unittest.TestCase):
+class ServiceTests(unittest.TestCase):
 
     def testName(self):
         s = service.Service()
@@ -58,7 +70,7 @@ class TestService(unittest.TestCase):
         p = service.MultiService()
         s.setName("hello")
         s.setServiceParent(p)
-        self.failUnlessRaises(RuntimeError, s.setName, "lala")
+        self.assertRaises(RuntimeError, s.setName, "lala")
 
     def testDuplicateNamedChild(self):
         s = service.Service()
@@ -67,7 +79,7 @@ class TestService(unittest.TestCase):
         s.setServiceParent(p)
         s = service.Service()
         s.setName("hello")
-        self.failUnlessRaises(RuntimeError, s.setServiceParent, p)
+        self.assertRaises(RuntimeError, s.setServiceParent, p)
 
     def testDisowning(self):
         s = service.Service()
@@ -77,33 +89,33 @@ class TestService(unittest.TestCase):
         self.assertEqual(s.parent, p)
         s.disownServiceParent()
         self.assertEqual(list(p), [])
-        self.assertEqual(s.parent, None)
+        self.assertIsNone(s.parent)
 
     def testRunning(self):
         s = service.Service()
-        self.assert_(not s.running)
+        self.assertFalse(s.running)
         s.startService()
-        self.assert_(s.running)
+        self.assertTrue(s.running)
         s.stopService()
-        self.assert_(not s.running)
+        self.assertFalse(s.running)
 
     def testRunningChildren1(self):
         s = service.Service()
         p = service.MultiService()
         s.setServiceParent(p)
-        self.assert_(not s.running)
-        self.assert_(not p.running)
+        self.assertFalse(s.running)
+        self.assertFalse(p.running)
         p.startService()
-        self.assert_(s.running)
-        self.assert_(p.running)
+        self.assertTrue(s.running)
+        self.assertTrue(p.running)
         p.stopService()
-        self.assert_(not s.running)
-        self.assert_(not p.running)
+        self.assertFalse(s.running)
+        self.assertFalse(p.running)
 
     def testRunningChildren2(self):
         s = service.Service()
         def checkRunning():
-            self.assert_(s.running)
+            self.assertTrue(s.running)
         t = service.Service()
         t.stopService = checkRunning
         t.startService = checkRunning
@@ -117,11 +129,11 @@ class TestService(unittest.TestCase):
         p = service.MultiService()
         p.startService()
         s = service.Service()
-        self.assert_(not s.running)
+        self.assertFalse(s.running)
         s.setServiceParent(p)
-        self.assert_(s.running)
+        self.assertTrue(s.running)
         s.disownServiceParent()
-        self.assert_(not s.running)
+        self.assertFalse(s.running)
 
     def testPrivileged(self):
         s = service.Service()
@@ -133,14 +145,14 @@ class TestService(unittest.TestCase):
         s.setServiceParent(p)
         s1.setServiceParent(p)
         p.privilegedStartService()
-        self.assert_(s.privilegedStarted)
+        self.assertTrue(s.privilegedStarted)
 
     def testCopying(self):
         s = service.Service()
         s.startService()
         s1 = copy.copy(s)
-        self.assert_(not s1.running)
-        self.assert_(s.running)
+        self.assertFalse(s1.running)
+        self.assertTrue(s.running)
 
 
 if hasattr(os, "getuid"):
@@ -150,7 +162,7 @@ else:
     curuid = curgid = 0
 
 
-class TestProcess(unittest.TestCase):
+class ProcessTests(unittest.TestCase):
 
     def testID(self):
         p = service.Process(5, 6)
@@ -160,35 +172,36 @@ class TestProcess(unittest.TestCase):
     def testDefaults(self):
         p = service.Process(5)
         self.assertEqual(p.uid, 5)
-        self.assertEqual(p.gid, None)
+        self.assertIsNone(p.gid)
         p = service.Process(gid=5)
-        self.assertEqual(p.uid, None)
+        self.assertIsNone(p.uid)
         self.assertEqual(p.gid, 5)
         p = service.Process()
-        self.assertEqual(p.uid, None)
-        self.assertEqual(p.gid, None)
+        self.assertIsNone(p.uid)
+        self.assertIsNone(p.gid)
 
     def testProcessName(self):
         p = service.Process()
-        self.assertEqual(p.processName, None)
+        self.assertIsNone(p.processName)
         p.processName = 'hello'
         self.assertEqual(p.processName, 'hello')
 
 
-class TestInterfaces(unittest.TestCase):
+class InterfacesTests(unittest.TestCase):
 
     def testService(self):
-        self.assert_(service.IService.providedBy(service.Service()))
+        self.assertTrue(service.IService.providedBy(service.Service()))
 
     def testMultiService(self):
-        self.assert_(service.IService.providedBy(service.MultiService()))
-        self.assert_(service.IServiceCollection.providedBy(service.MultiService()))
+        self.assertTrue(service.IService.providedBy(service.MultiService()))
+        self.assertTrue(service.IServiceCollection.providedBy(
+                        service.MultiService()))
 
     def testProcess(self):
-        self.assert_(service.IProcess.providedBy(service.Process()))
+        self.assertTrue(service.IProcess.providedBy(service.Process()))
 
 
-class TestApplication(unittest.TestCase):
+class ApplicationTests(unittest.TestCase):
 
     def testConstructor(self):
         service.Application("hello")
@@ -197,29 +210,29 @@ class TestApplication(unittest.TestCase):
 
     def testProcessComponent(self):
         a = service.Application("hello")
-        self.assertEqual(service.IProcess(a).uid, None)
-        self.assertEqual(service.IProcess(a).gid, None)
+        self.assertIsNone(service.IProcess(a).uid)
+        self.assertIsNone(service.IProcess(a).gid)
         a = service.Application("hello", 5)
         self.assertEqual(service.IProcess(a).uid, 5)
-        self.assertEqual(service.IProcess(a).gid, None)
+        self.assertIsNone(service.IProcess(a).gid)
         a = service.Application("hello", 5, 6)
         self.assertEqual(service.IProcess(a).uid, 5)
         self.assertEqual(service.IProcess(a).gid, 6)
 
     def testServiceComponent(self):
         a = service.Application("hello")
-        self.assert_(service.IService(a) is service.IServiceCollection(a))
+        self.assertIs(service.IService(a), service.IServiceCollection(a))
         self.assertEqual(service.IService(a).name, "hello")
-        self.assertEqual(service.IService(a).parent, None)
+        self.assertIsNone(service.IService(a).parent)
 
     def testPersistableComponent(self):
         a = service.Application("hello")
         p = sob.IPersistable(a)
         self.assertEqual(p.style, 'pickle')
         self.assertEqual(p.name, 'hello')
-        self.assert_(p.original is a)
+        self.assertIs(p.original, a)
 
-class TestLoading(unittest.TestCase):
+class LoadingTests(unittest.TestCase):
 
     def test_simpleStoreAndLoad(self):
         a = service.Application("hello")
@@ -229,21 +242,20 @@ class TestLoading(unittest.TestCase):
             p.save()
             a1 = service.loadApplication("hello.ta"+style[0], style)
             self.assertEqual(service.IService(a1).name, "hello")
-        f = open("hello.tac", 'w')
-        f.writelines([
-        "from twisted.application import service\n",
-        "application = service.Application('hello')\n",
-        ])
-        f.close()
+        with open("hello.tac", 'w') as f:
+            f.writelines([
+                "from twisted.application import service\n",
+                "application = service.Application('hello')\n",
+            ])
         a1 = service.loadApplication("hello.tac", 'python')
         self.assertEqual(service.IService(a1).name, "hello")
 
 
 
-class TestAppSupport(unittest.TestCase):
+class AppSupportTests(unittest.TestCase):
 
     def testPassphrase(self):
-        self.assertEqual(app.getPassphrase(0), None)
+        self.assertIsNone(app.getPassphrase(0))
 
     def testLoadApplication(self):
         """
@@ -260,12 +272,11 @@ class TestAppSupport(unittest.TestCase):
             self.assertEqual(service.IService(a1).name, "hello")
         config = baseconfig.copy()
         config['python'] = 'helloapplication'
-        f = open("helloapplication", 'w')
-        f.writelines([
-        "from twisted.application import service\n",
-        "application = service.Application('hello')\n",
-        ])
-        f.close()
+        with open("helloapplication", 'w') as f:
+            f.writelines([
+                "from twisted.application import service\n",
+                "application = service.Application('hello')\n",
+            ])
         a1 = app.getApplication(config, None)
         self.assertEqual(service.IService(a1).name, "hello")
 
@@ -284,12 +295,12 @@ class TestAppSupport(unittest.TestCase):
     def test_startApplication(self):
         appl = service.Application("lala")
         app.startApplication(appl, 0)
-        self.assert_(service.IService(appl).running)
+        self.assertTrue(service.IService(appl).running)
 
 
 class Foo(basic.LineReceiver):
     def connectionMade(self):
-        self.transport.write('lalala\r\n')
+        self.transport.write(b'lalala\r\n')
     def lineReceived(self, line):
         self.factory.line = line
         self.transport.loseConnection()
@@ -311,11 +322,15 @@ class TimerTarget:
     def append(self, what):
         self.l.append(what)
 
+
+
 class TestEcho(wire.Echo):
     def connectionLost(self, reason):
         self.d.callback(True)
 
-class TestInternet2(unittest.TestCase):
+
+
+class InternetTests(unittest.TestCase):
 
     def testTCP(self):
         s = service.MultiService()
@@ -331,7 +346,7 @@ class TestInternet2(unittest.TestCase):
         factory.protocol = Foo
         factory.line = None
         internet.TCPClient('127.0.0.1', num, factory).setServiceParent(s)
-        factory.d.addCallback(self.assertEqual, 'lalala')
+        factory.d.addCallback(self.assertEqual, b'lalala')
         factory.d.addCallback(lambda x : s.stopService())
         factory.d.addCallback(lambda x : TestEcho.d)
         return factory.d
@@ -349,7 +364,7 @@ class TestInternet2(unittest.TestCase):
         t = internet.UDPServer(0, p)
         t.startService()
         num = t._port.getHost().port
-        self.assertNotEquals(num, 0)
+        self.assertNotEqual(num, 0)
         def onStop(ignored):
             t = internet.UDPServer(num, p)
             t.startService()
@@ -371,7 +386,7 @@ class TestInternet2(unittest.TestCase):
         factory.line = None
         c = internet.TCPClient('127.0.0.1', num, factory)
         c.startService()
-        factory.d.addCallback(self.assertEqual, 'lalala')
+        factory.d.addCallback(self.assertEqual, b'lalala')
         factory.d.addCallback(lambda x : c.stopService())
         factory.d.addCallback(lambda x : t.stopService())
         factory.d.addCallback(lambda x : TestEcho.d)
@@ -394,8 +409,6 @@ class TestInternet2(unittest.TestCase):
     def testUNIX(self):
         # FIXME: This test is far too dense.  It needs comments.
         #  -- spiv, 2004-11-07
-        if not interfaces.IReactorUNIX(reactor, None):
-            raise unittest.SkipTest, "This reactor does not support UNIX domain sockets"
         s = service.MultiService()
         s.startService()
         factory = protocol.ServerFactory()
@@ -408,35 +421,34 @@ class TestInternet2(unittest.TestCase):
         factory.d = defer.Deferred()
         factory.line = None
         internet.UNIXClient('echo.skt', factory).setServiceParent(s)
-        factory.d.addCallback(self.assertEqual, 'lalala')
+        factory.d.addCallback(self.assertEqual, b'lalala')
         factory.d.addCallback(lambda x : s.stopService())
         factory.d.addCallback(lambda x : TestEcho.d)
         factory.d.addCallback(self._cbTestUnix, factory, s)
         return factory.d
+
 
     def _cbTestUnix(self, ignored, factory, s):
         TestEcho.d = defer.Deferred()
         factory.line = None
         factory.d = defer.Deferred()
         s.startService()
-        factory.d.addCallback(self.assertEqual, 'lalala')
+        factory.d.addCallback(self.assertEqual, b'lalala')
         factory.d.addCallback(lambda x : s.stopService())
         factory.d.addCallback(lambda x : TestEcho.d)
         return factory.d
 
     def testVolatile(self):
-        if not interfaces.IReactorUNIX(reactor, None):
-            raise unittest.SkipTest, "This reactor does not support UNIX domain sockets"
         factory = protocol.ServerFactory()
         factory.protocol = wire.Echo
         t = internet.UNIXServer('echo.skt', factory)
         t.startService()
         self.failIfIdentical(t._port, None)
         t1 = copy.copy(t)
-        self.assertIdentical(t1._port, None)
+        self.assertIsNone(t1._port)
         t.stopService()
-        self.assertIdentical(t._port, None)
-        self.failIf(t.running)
+        self.assertIsNone(t._port)
+        self.assertFalse(t.running)
 
         factory = protocol.ClientFactory()
         factory.protocol = wire.Echo
@@ -444,25 +456,30 @@ class TestInternet2(unittest.TestCase):
         t.startService()
         self.failIfIdentical(t._connection, None)
         t1 = copy.copy(t)
-        self.assertIdentical(t1._connection, None)
+        self.assertIsNone(t1._connection)
         t.stopService()
-        self.assertIdentical(t._connection, None)
-        self.failIf(t.running)
+        self.assertIsNone(t._connection)
+        self.assertFalse(t.running)
 
     def testStoppingServer(self):
-        if not interfaces.IReactorUNIX(reactor, None):
-            raise unittest.SkipTest, "This reactor does not support UNIX domain sockets"
         factory = protocol.ServerFactory()
         factory.protocol = wire.Echo
         t = internet.UNIXServer('echo.skt', factory)
         t.startService()
         t.stopService()
-        self.failIf(t.running)
+        self.assertFalse(t.running)
         factory = protocol.ClientFactory()
         d = defer.Deferred()
         factory.clientConnectionFailed = lambda *args: d.callback(None)
         reactor.connectUNIX('echo.skt', factory)
         return d
+
+    if not interfaces.IReactorUNIX(reactor, None):
+        _skipMsg = "This reactor does not support UNIX domain sockets"
+        testUNIX.skip = _skipMsg
+        testVolatile.skip = _skipMsg
+        testStoppingServer.skip = _skipMsg
+
 
     def testPickledTimer(self):
         target = TimerTarget()
@@ -472,11 +489,11 @@ class TestInternet2(unittest.TestCase):
         t0.stopService()
 
         t = pickle.loads(s)
-        self.failIf(t.running)
+        self.assertFalse(t.running)
 
     def testBrokenTimer(self):
         d = defer.Deferred()
-        t = internet.TimerService(1, lambda: 1 / 0)
+        t = internet.TimerService(1, lambda: 1 // 0)
         oldFailed = t._failed
         def _failed(why):
             oldFailed(why)
@@ -490,34 +507,6 @@ class TestInternet2(unittest.TestCase):
         return d
 
 
-    def test_genericServerDeprecated(self):
-        """
-        Instantiating L{GenericServer} emits a deprecation warning.
-        """
-        internet.GenericServer()
-        warnings = self.flushWarnings(
-            offendingFunctions=[self.test_genericServerDeprecated])
-        self.assertEqual(
-            warnings[0]['message'],
-            'GenericServer was deprecated in Twisted 10.1.')
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertEqual(len(warnings), 1)
-
-
-    def test_genericClientDeprecated(self):
-        """
-        Instantiating L{GenericClient} emits a deprecation warning.
-        """
-        internet.GenericClient()
-        warnings = self.flushWarnings(
-            offendingFunctions=[self.test_genericClientDeprecated])
-        self.assertEqual(
-            warnings[0]['message'],
-            'GenericClient was deprecated in Twisted 10.1.')
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertEqual(len(warnings), 1)
-
-
     def test_everythingThere(self):
         """
         L{twisted.application.internet} dynamically defines a set of
@@ -528,11 +517,11 @@ class TestInternet2(unittest.TestCase):
         for tran in trans[:]:
             if not getattr(interfaces, "IReactor" + tran)(reactor, None):
                 trans.remove(tran)
-        if interfaces.IReactorArbitrary(reactor, None) is not None:
-            trans.insert(0, "Generic")
         for tran in trans:
             for side in 'Server Client'.split():
                 if tran == "Multicast" and side == "Client":
+                    continue
+                if tran == "UDP" and side == "Client":
                     continue
                 self.assertTrue(hasattr(internet, tran + side))
                 method = getattr(internet, tran + side).method
@@ -541,13 +530,6 @@ class TestInternet2(unittest.TestCase):
                         (prefix == "connect" and method == "UDP"))
                 o = getattr(internet, tran + side)()
                 self.assertEqual(service.IService(o), o)
-    test_everythingThere.suppress = [
-        util.suppress(message='GenericServer was deprecated in Twisted 10.1.',
-                      category=DeprecationWarning),
-        util.suppress(message='GenericClient was deprecated in Twisted 10.1.',
-                      category=DeprecationWarning),
-        util.suppress(message='twisted.internet.interfaces.IReactorArbitrary was '
-                      'deprecated in Twisted 10.1.0: See IReactorFDSet.')]
 
 
     def test_importAll(self):
@@ -584,7 +566,7 @@ class TestInternet2(unittest.TestCase):
         """
         reactor = MemoryReactor()
 
-        factory = object()
+        factory = protocol.ClientFactory()
         t = internet.TCPClient('127.0.0.1', 1234, factory, reactor=reactor)
         t.startService()
         self.assertEqual(
@@ -598,7 +580,7 @@ class TestInternet2(unittest.TestCase):
         """
         reactor = MemoryReactor()
 
-        factory = object()
+        factory = protocol.Factory()
         t = internet.TCPServer(1234, factory, reactor=reactor)
         t.startService()
         self.assertEqual(reactor.tcpServers.pop()[:2], (1234, factory))
@@ -614,7 +596,7 @@ class TestInternet2(unittest.TestCase):
         """
         reactor = MemoryReactor()
 
-        factory = object()
+        factory = protocol.ClientFactory()
         t = internet.TCPClient('127.0.0.1', 1234, factory, reactor=reactor)
         t.startService()
         self.assertEqual(
@@ -626,7 +608,7 @@ class TestInternet2(unittest.TestCase):
 
 
 
-class TestTimerBasic(unittest.TestCase):
+class TimerBasicTests(unittest.TestCase):
 
     def testTimerRuns(self):
         d = defer.Deferred()
@@ -634,7 +616,7 @@ class TestTimerBasic(unittest.TestCase):
         self.t.startService()
         d.addCallback(self.assertEqual, 'hello')
         d.addCallback(lambda x : self.t.stopService())
-        d.addCallback(lambda x : self.failIf(self.t.running))
+        d.addCallback(lambda x : self.assertFalse(self.t.running))
         return d
 
     def tearDown(self):
@@ -654,7 +636,7 @@ class TestTimerBasic(unittest.TestCase):
             self.assertEqual(result, 'foo')
             return self.t.stopService()
         def onFirstStop(ignored):
-            self.failIf(self.t.running)
+            self.assertFalse(self.t.running)
             self.t.startService()
             return d2
         def onSecondResult(result):
@@ -694,7 +676,7 @@ class FakeReactor(reactors.Reactor):
 
 
 
-class PluggableReactorTestCase(unittest.TestCase):
+class PluggableReactorTests(TwistedModulesMixin, unittest.TestCase):
     """
     Tests for the reactor discovery/inspection APIs.
     """
@@ -760,8 +742,11 @@ class PluggableReactorTestCase(unittest.TestCase):
         installed = []
         def install():
             installed.append(True)
-        installer = FakeReactor(install,
-                                'fakereactortest', __name__, 'described')
+        fakeReactor = FakeReactor(install,
+                                  'fakereactortest', __name__, 'described')
+        modules = {'fakereactortest': fakeReactor}
+        self.replaceSysModules(modules)
+        installer = reactors.Reactor('fakereactor', 'fakereactortest', 'described')
         installer.install()
         self.assertEqual(installed, [True])
 
@@ -778,6 +763,42 @@ class PluggableReactorTestCase(unittest.TestCase):
         package = __name__
         description = 'description'
         self.pluginResults = [FakeReactor(install, name, package, description)]
+        reactors.installReactor(name)
+        self.assertEqual(installed, [True])
+
+
+    def test_installReactorReturnsReactor(self):
+        """
+        Test that the L{reactors.installReactor} function correctly returns
+        the installed reactor.
+        """
+        reactor = object()
+        def install():
+            from twisted import internet
+            self.patch(internet, 'reactor', reactor)
+        name = 'fakereactortest'
+        package = __name__
+        description = 'description'
+        self.pluginResults = [FakeReactor(install, name, package, description)]
+        installed = reactors.installReactor(name)
+        self.assertIs(installed, reactor)
+
+
+    def test_installReactorMultiplePlugins(self):
+        """
+        Test that the L{reactors.installReactor} function correctly installs
+        the specified reactor when there are multiple reactor plugins.
+        """
+        installed = []
+        def install():
+            installed.append(True)
+        name = 'fakereactortest'
+        package = __name__
+        description = 'description'
+        fakeReactor = FakeReactor(install, name, package, description)
+        otherReactor = FakeReactor(lambda: None,
+                                   "otherreactor", package, description)
+        self.pluginResults = [otherReactor, fakeReactor]
         reactors.installReactor(name)
         self.assertEqual(installed, [True])
 
@@ -846,7 +867,7 @@ class PluggableReactorTestCase(unittest.TestCase):
         self.pluginResults = []
 
         options = ReactorSelectionOptions()
-        options.messageOutput = StringIO()
+        options.messageOutput = NativeStringIO()
         e = self.assertRaises(usage.UsageError, options.parseOptions,
                               ['--reactor', 'fakereactortest', 'subcommand'])
         self.assertIn("fakereactortest", e.args[0])
@@ -871,8 +892,117 @@ class PluggableReactorTestCase(unittest.TestCase):
         self.pluginResults = [FakeReactor(install, name, package, description)]
 
         options = ReactorSelectionOptions()
-        options.messageOutput = StringIO()
+        options.messageOutput = NativeStringIO()
         e =  self.assertRaises(usage.UsageError, options.parseOptions,
                                ['--reactor', 'fakereactortest', 'subcommand'])
         self.assertIn(message, e.args[0])
         self.assertIn("help-reactors", e.args[0])
+
+
+
+class HelpReactorsTests(unittest.TestCase):
+    """
+    --help-reactors lists the available reactors
+    """
+    def setUp(self):
+        """
+        Get the text from --help-reactors
+        """
+        self.options = app.ReactorSelectionMixin()
+        self.options.messageOutput = NativeStringIO()
+        self.assertRaises(SystemExit, self.options.opt_help_reactors)
+        self.message = self.options.messageOutput.getvalue()
+
+
+    def test_lacksAsyncIO(self):
+        """
+        --help-reactors should NOT display the asyncio reactor on Python < 3.4
+        """
+        self.assertIn(twisted_reactors.asyncio.description, self.message)
+        self.assertIn("!" + twisted_reactors.asyncio.shortName, self.message)
+    if asyncio:
+        test_lacksAsyncIO.skip = "Not applicable, asyncio is available"
+
+
+    def test_hasAsyncIO(self):
+        """
+        --help-reactors should display the asyncio reactor on Python >= 3.4
+        """
+        self.assertIn(twisted_reactors.asyncio.description, self.message)
+        self.assertNotIn(
+            "!" + twisted_reactors.asyncio.shortName, self.message)
+    if not asyncio:
+        test_hasAsyncIO.skip = "asyncio library not available"
+
+
+    def test_iocpWin32(self):
+        """
+        --help-reactors should display the iocp reactor on Windows
+        """
+        self.assertIn(twisted_reactors.iocp.description, self.message)
+        self.assertNotIn("!" + twisted_reactors.iocp.shortName, self.message)
+    if platformType != "win32":
+        test_iocpWin32.skip = "Test only applicable on Windows"
+
+
+    def test_iocpNotWin32(self):
+        """
+        --help-reactors should NOT display the iocp reactor on Windows
+        """
+        self.assertIn(twisted_reactors.iocp.description, self.message)
+        self.assertIn("!" + twisted_reactors.iocp.shortName, self.message)
+    if platformType == "win32":
+        test_iocpNotWin32.skip = "Test only applicable on Windows"
+
+
+    def test_onlySupportedReactors(self):
+        """
+        --help-reactors with only supported reactors
+        """
+        def getReactorTypes():
+            yield twisted_reactors.default
+
+        options = app.ReactorSelectionMixin()
+        options._getReactorTypes = getReactorTypes
+        options.messageOutput = NativeStringIO()
+        self.assertRaises(SystemExit, options.opt_help_reactors)
+        message = options.messageOutput.getvalue()
+        self.assertNotIn("reactors not available", message)
+
+
+
+class BackoffPolicyTests(unittest.TestCase):
+    """
+    Tests of L{twisted.application.internet.backoffPolicy}
+    """
+    def test_calculates_correct_values(self):
+        """
+        Test that L{backoffPolicy()} calculates expected values
+        """
+        pol = backoffPolicy(1.0, 60.0, 1.5, jitter=lambda: 1)
+        self.assertAlmostEqual(pol(0), 2)
+        self.assertAlmostEqual(pol(1), 2.5)
+        self.assertAlmostEqual(pol(10), 58.6650390625)
+        self.assertEqual(pol(20), 61)
+        self.assertEqual(pol(100), 61)
+
+    def test_does_not_overflow_on_high_attempts(self):
+        """
+        L{backoffPolicy()} does not fail for large values of the attempt
+        parameter. In previous versions, this test failed when attempt was
+        larger than 1750.
+
+        See https://twistedmatrix.com/trac/ticket/9476
+        """
+        pol = backoffPolicy(1.0, 60.0, 1.5, jitter=lambda: 1)
+        self.assertEqual(pol(1751), 61)
+        self.assertEqual(pol(1000000), 61)
+
+    def test_does_not_overflow_with_large_factor_value(self):
+        """
+        Even with unusual parameters, any L{OverflowError} within
+        L{backoffPolicy()} will be caught and L{maxDelay} will be returned
+        instead
+        """
+        pol = backoffPolicy(1.0, 60.0, 1E10, jitter=lambda: 1)
+        self.assertEqual(pol(1751), 61)

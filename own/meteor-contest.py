@@ -3,17 +3,20 @@
 # http://shootout.alioth.debian.org/
 #
 # contributed by Daniel Nanz, 2008-08-21
+from __future__ import division, print_function
 
 import optparse
 import util
 import sys
 import time
 from bisect import bisect
+if sys.version_info[0] > 2:
+    xrange = range
 
 w, h = 5, 10
 dir_no = 6
 S, E = w * h, 2
-SE = S + (E / 2)
+SE = S + (E // 2)
 SW = SE - E
 W, NW, NE = -E, -SE, -SW
 
@@ -31,7 +34,7 @@ def permute(ido, r_ido, rotate=rotate, flip=flip):
     for r in xrange(dir_no - 1):
         ps.append(rotate(ps[-1]))
         if ido == r_ido:                 # C2-symmetry
-            ps = ps[0:dir_no/2]
+            ps = ps[0:dir_no//2]
     for pp in ps[:]:
         ps.append(flip(pp))
     return ps
@@ -91,11 +94,11 @@ def print_board(board, w=w, h=h):
 
     for y in xrange(h):
         for x in xrange(w):
-            print board[x + y * w],
-        print ''
+            print(board[x + y * w], end='')
+        print('')
         if y % 2 == 0:
-            print '',
-    print
+            print('', end='')
+    print()
 
 
 board, cti, pieces = get_puzzle()
@@ -118,7 +121,7 @@ def solve(n, i_min, free, curr_board, pieces_left, solutions,
                     n_free = free - fp
                     n_i_min = min(n_free)
                     if len(n_free & se_nh[n_i_min]) > 0:
-                        n_pieces_left = pieces_left[:]
+                        n_pieces_left = list(pieces_left)[:]
                         n_pieces_left.remove(p)
                         solve(n, n_i_min, n_free, n_curr_board,
                               n_pieces_left, solutions)
@@ -144,7 +147,7 @@ def main(n):
         pieces_left = range(len(pieces))
         solutions = []
         solve(SOLVE_ARG, 0, free, curr_board, pieces_left, solutions)
-        #print len(solutions),  'solutions found\n'
+        #print(len(solutions),  'solutions found\n')
         #for i in (0, -1): print_board(solutions[i])
         tk = time.time()
         times.append(tk - t0)

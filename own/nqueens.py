@@ -1,5 +1,10 @@
 # From: https://mail.python.org/pipermail/pypy-dev/2014-August/012695.html
 
+import sys
+if sys.version_info[0] > 2:
+    xrange = range
+
+
 
 L = 10
 
@@ -26,10 +31,10 @@ posgaid = [[(g + h, h) for h in range(L) if -1 < g + h < L] for g in range(-L + 
 
 def attacks(pos):
     """ all attacked positions """
-    row = filter(lambda r: pos in r, posrows)
-    col = filter(lambda c: pos in c, poscols)
-    dia = filter(lambda d: pos in d, posdiag)
-    gai = filter(lambda g: pos in g, posgaid)
+    row = list(filter(lambda r: pos in r, posrows))
+    col = list(filter(lambda c: pos in c, poscols))
+    dia = list(filter(lambda d: pos in d, posdiag))
+    gai = list(filter(lambda g: pos in g, posgaid))
     assert len(row) == len(col) == len(dia) == len(gai) == 1
     return frozenset(row[0]), frozenset(col[0]), frozenset(dia[0]), frozenset(gai[0])
 

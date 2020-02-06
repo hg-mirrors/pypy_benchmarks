@@ -4,7 +4,7 @@
 # http://www.opensource.org/licenses/mit-license.php
 
 # from http://www.lshift.net/blog/2008/10/29/toy-raytracer-in-python
-from __future__ import with_statement
+from __future__ import division
 
 import math
 
@@ -147,7 +147,7 @@ class Halfspace(object):
     def intersectionTime(self, ray):
         v = ray.vector.dot(self.normal)
         if v:
-            return 1 / -v
+            return 1.0 / -v
         else:
             return None
 
@@ -188,7 +188,7 @@ class PpmCanvas(object):
 
     def save(self):
         with open(self.filenameBase + '.ppm', 'wb') as f:
-            f.write('P6 %d %d 255\n' % (self.width, self.height))
+            f.write(b'P6 %d %d 255\n' % (self.width, self.height))
             f.write(self.bytes.tostring())
 
 def firstIntersection(intersections):
@@ -222,7 +222,7 @@ class Scene(object):
         self.lightPoints.append(p)
 
     def render(self, canvas):
-        #print 'Computing field of view'
+        #print('Computing field of view')
         fovRadians = math.pi * (self.fieldOfView / 2.0) / 180.0
         halfWidth = math.tan(fovRadians)
         halfHeight = 0.75 * halfWidth
@@ -235,13 +235,13 @@ class Scene(object):
         vpRight = eye.vector.cross(Vector.UP).normalized()
         vpUp = vpRight.cross(eye.vector).normalized()
 
-        #print 'Looping over pixels'
+        #print('Looping over pixels')
         previousfraction = 0
         for y in range(canvas.height):
             currentfraction = float(y) / canvas.height
             if currentfraction - previousfraction > 0.05:
                 canvas.save()
-                #print '%d%% complete' % (currentfraction * 100)
+                #print('%d%% complete' % (currentfraction * 100))
                 previousfraction = currentfraction
             for x in range(canvas.width):
                 xcomp = vpRight.scale(x * pixelWidth - halfWidth)
@@ -250,7 +250,7 @@ class Scene(object):
                 colour = self.rayColour(ray)
                 canvas.plot(x,y,*colour)
 
-        #print 'Complete.'
+        #print('Complete.')
 
     def rayColour(self, ray):
         if self.recursionDepth > 3:
@@ -303,7 +303,7 @@ class SimpleSurface(object):
         c = (0,0,0)
         if self.specularCoefficient > 0:
             reflectedRay = Ray(p, ray.vector.reflectThrough(normal))
-            #print p, normal, ray.vector, reflectedRay.vector
+            #print(p, normal, ray.vector, reflectedRay.vector)
             reflectedColour = scene.rayColour(reflectedRay)
             c = addColours(c, self.specularCoefficient, reflectedColour)
 

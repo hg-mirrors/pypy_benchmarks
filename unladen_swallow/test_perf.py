@@ -114,7 +114,7 @@ class TestMisc(unittest.TestCase):
         # perf.py, no -b option.
         should_run = perf.ParseBenchmarksOption("")
         self.assertEqual(should_run, set(["2to3", "django", "slowpickle",
-                                          "slowspitfire", "slowunpickle"]))
+                                          "spitfire", "slowunpickle"]))
 
         # perf.py -b 2to3
         should_run = perf.ParseBenchmarksOption("2to3")
@@ -126,7 +126,7 @@ class TestMisc(unittest.TestCase):
 
         # perf.py -b -2to3
         should_run = perf.ParseBenchmarksOption("-2to3")
-        self.assertEqual(should_run, set(["django", "slowspitfire",
+        self.assertEqual(should_run, set(["django", "spitfire",
                                           "slowpickle", "slowunpickle"]))
 
         # perf.py -b all

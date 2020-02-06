@@ -1,3 +1,51 @@
+0.7.15 - 2012-02-09
+add ability to restrict searchlist access in library templates by adding
+#global declarations.
+add ability to blow up on nested #defs.
+fix escaping in i18n blocks.
+fix some library function calls.
+
+0.7.14 - 2011-07-12
+added "library" implementation. this allows template code to be reused
+without relying on class hierarchy.
+includes fixes for optional whitespace.
+
+0.7.13 - 2011-02-02 - Groundhog Day
+unskew the implementation of udn/_udn modules, particularly the handling
+of missing attributes.
+
+
+0.7.12 - 2010-06-21
+added #strip_lines directive. it strips leading and trailing whitespace
+from each output line at compile time. this should improve readability of
+certain complex templates where spaces must be removed. logicially, it performs
+a .strip() on each line between #strip_lines and #end strip_lines before
+sending it through the compiler. actually, the implementations much more
+(needlessly?) complex.  Noted that other people aren't filling out the change
+log. :(
+
+
+0.7.7 - 2009-04-23
+fixed a bug in checking when function has literal-only arguments
+changed filter handling to generate better code, since the majority case
+involves having a filter more often than not.
+
+
+0.7.6 - 2009-02-22
+added _udn module to accelerate resolving functions
+restructure a number of calls to facilitate testing and acceleration
+added escaping for literal $.
+remove dopey argument structure for custom filters, this makes it much
+easier to reuse a text formatting function as a filter.
+
+
+0.7.5 - 2009-02-03
+fix spurious print
+raise an exception when $i18n macros do not have string args
+fix dependency analysis - loop-variant identifiers were not correctly
+resolved leading to bad code generation.
+
+
 0.7.4 - 2008-12-01
 fixed a parsing ambiguity with text placeholders followed by white space
 and parens such as this:

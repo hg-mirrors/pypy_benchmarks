@@ -1,88 +1,93 @@
-from gettext import gettext
-_ = gettext
+from __future__ import absolute_import, division, unicode_literals
 
-import _base
-from html5lib.constants import cdataElements, rcdataElements, voidElements
+from six import text_type
 
-from html5lib.constants import spaceCharacters
-spaceCharacters = u"".join(spaceCharacters)
+from . import base
+from ..constants import namespaces, voidElements
 
-class LintError(Exception): pass
+from ..constants import spaceCharacters
+spaceCharacters = "".join(spaceCharacters)
 
-class Filter(_base.Filter):
+
+class Filter(base.Filter):
+    """Lints the token stream for errors
+
+    If it finds any errors, it'll raise an ``AssertionError``.
+
+    """
+    def __init__(self, source, require_matching_tags=True):
+        """Creates a Filter
+
+        :arg source: the source token stream
+
+        :arg require_matching_tags: whether or not to require matching tags
+
+        """
+        super(Filter, self).__init__(source)
+        self.require_matching_tags = require_matching_tags
+
     def __iter__(self):
         open_elements = []
-        contentModelFlag = "PCDATA"
-        for token in _base.Filter.__iter__(self):
+        for token in base.Filter.__iter__(self):
             type = token["type"]
             if type in ("StartTag", "EmptyTag"):
+                namespace = token["namespace"]
                 name = token["name"]
-                if contentModelFlag != "PCDATA":
-                    raise LintError(_("StartTag not in PCDATA content model flag: %s") % name)
-                if not isinstance(name, unicode):
-                    raise LintError(_(u"Tag name is not a string: %r") % name)
-                if not name:
-                    raise LintError(_(u"Empty tag name"))
-                if type == "StartTag" and name in voidElements:
-                    raise LintError(_(u"Void element reported as StartTag token: %s") % name)
-                elif type == "EmptyTag" and name not in voidElements:
-                    raise LintError(_(u"Non-void element reported as EmptyTag token: %s") % token["name"])
-                if type == "StartTag":
-                    open_elements.append(name)
-                for name, value in token["data"]:
-                    if not isinstance(name, unicode):
-                        raise LintError(_("Attribute name is not a string: %r") % name)
-                    if not name:
-                        raise LintError(_(u"Empty attribute name"))
-                    if not isinstance(value, unicode):
-                        raise LintError(_("Attribute value is not a string: %r") % value)
-                if name in cdataElements:
-                    contentModelFlag = "CDATA"
-                elif name in rcdataElements:
-                    contentModelFlag = "RCDATA"
-                elif name == "plaintext":
-                    contentModelFlag = "PLAINTEXT"
+                assert namespace is None or isinstance(namespace, text_type)
+                assert namespace != ""
+                assert isinstance(name, text_type)
+                assert name != ""
+                assert isinstance(token["data"], dict)
+                if (not namespace or namespace == namespaces["html"]) and name in voidElements:
+                    assert type == "EmptyTag"
+                else:
+                    assert type == "StartTag"
+                if type == "StartTag" and self.require_matching_tags:
+                    open_elements.append((namespace, name))
+                for (namespace, name), value in token["data"].items():
+                    assert namespace is None or isinstance(namespace, text_type)
+                    assert namespace != ""
+                    assert isinstance(name, text_type)
+                    assert name != ""
+                    assert isinstance(value, text_type)
 
             elif type == "EndTag":
+                namespace = token["namespace"]
                 name = token["name"]
-                if not isinstance(name, unicode):
-                    raise LintError(_(u"Tag name is not a string: %r") % name)
-                if not name:
-                    raise LintError(_(u"Empty tag name"))
-                if name in voidElements:
-                    raise LintError(_(u"Void element reported as EndTag token: %s") % name)
-                start_name = open_elements.pop()
-                if start_name != name:
-                    raise LintError(_(u"EndTag (%s) does not match StartTag (%s)") % (name, start_name))
-                contentModelFlag = "PCDATA"
+                assert namespace is None or isinstance(namespace, text_type)
+                assert namespace != ""
+                assert isinstance(name, text_type)
+                assert name != ""
+                if (not namespace or namespace == namespaces["html"]) and name in voidElements:
+                    assert False, "Void element reported as EndTag token: %(tag)s" % {"tag": name}
+                elif self.require_matching_tags:
+                    start = open_elements.pop()
+                    assert start == (namespace, name)
 
             elif type == "Comment":
-                if contentModelFlag != "PCDATA":
-                    raise LintError(_("Comment not in PCDATA content model flag"))
+                data = token["data"]
+                assert isinstance(data, text_type)
 
             elif type in ("Characters", "SpaceCharacters"):
                 data = token["data"]
-                if not isinstance(data, unicode):
-                    raise LintError(_("Attribute name is not a string: %r") % data)
-                if not data:
-                    raise LintError(_(u"%s token with empty data") % type)
+                assert isinstance(data, text_type)
+                assert data != ""
                 if type == "SpaceCharacters":
-                    data = data.strip(spaceCharacters)
-                    if data:
-                        raise LintError(_(u"Non-space character(s) found in SpaceCharacters token: ") % data)
+                    assert data.strip(spaceCharacters) == ""
 
             elif type == "Doctype":
                 name = token["name"]
-                if contentModelFlag != "PCDATA":
-                    raise LintError(_("Doctype not in PCDATA content model flag: %s") % name)
-                if not isinstance(name, unicode):
-                    raise LintError(_(u"Tag name is not a string: %r") % name)
-                # XXX: what to do with token["data"] ?
+                assert name is None or isinstance(name, text_type)
+                assert token["publicId"] is None or isinstance(name, text_type)
+                assert token["systemId"] is None or isinstance(name, text_type)
 
-            elif type in ("ParseError", "SerializeError"):
-                pass
+            elif type == "Entity":
+                assert isinstance(token["name"], text_type)
+
+            elif type == "SerializerError":
+                assert isinstance(token["data"], text_type)
 
             else:
-                raise LintError(_(u"Unknown token type: %s") % type)
+                assert False, "Unknown token type: %(type)s" % {"type": type}
 
             yield token

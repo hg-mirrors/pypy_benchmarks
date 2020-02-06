@@ -7,8 +7,11 @@
 XMPP Error support.
 """
 
+from __future__ import absolute_import, division
+
 import copy
 
+from twisted.python.compat import unicode
 from twisted.words.xish import domish
 
 NS_XML = "http://www.w3.org/XML/1998/namespace"
@@ -229,14 +232,6 @@ class StanzaError(BaseError):
         return response
 
 
-def _getText(element):
-    for child in element.children:
-        if isinstance(child, basestring):
-            return unicode(child)
-
-    return None
-
-
 
 def _parseError(error, errorNamespace):
     """
@@ -250,7 +245,7 @@ def _parseError(error, errorNamespace):
     @return: Dictionary with extracted error information. If present, keys
              C{condition}, C{text}, C{textLang} have a string value,
              and C{appCondition} has an L{domish.Element} value.
-    @rtype: L{dict}
+    @rtype: C{dict}
     """
     condition = None
     text = None
@@ -260,7 +255,7 @@ def _parseError(error, errorNamespace):
     for element in error.elements():
         if element.uri == errorNamespace:
             if element.name == 'text':
-                text = _getText(element)
+                text = unicode(element)
                 textLang = element.getAttribute((NS_XML, 'lang'))
             else:
                 condition = element.name
@@ -320,7 +315,7 @@ def exceptionFromStanza(stanza):
 
             if not condition and code:
                condition, type = CODES_TO_CONDITIONS[code]
-               text = _getText(stanza.error)
+               text = unicode(stanza.error)
         else:
             children.append(element)
 

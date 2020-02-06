@@ -4,29 +4,24 @@
 """
 Tests for L{twisted.conch.ssh.agent}.
 """
+from __future__ import absolute_import, division
 
 import struct
 
 from twisted.trial import unittest
+from twisted.test import iosim
 
 try:
-    import OpenSSL
+    import cryptography
 except ImportError:
-    iosim = None
-else:
-    from twisted.test import iosim
-
-try:
-    import Crypto.Cipher.DES3
-except ImportError:
-    Crypto = None
+    cryptography = None
 
 try:
     import pyasn1
 except ImportError:
     pyasn1 = None
 
-if Crypto and pyasn1:
+if cryptography and pyasn1:
     from twisted.conch.ssh import keys, agent
 else:
     keys = agent = None
@@ -52,7 +47,7 @@ class AgentTestBase(unittest.TestCase):
     if iosim is None:
         skip = "iosim requires SSL, but SSL is not available"
     elif agent is None or keys is None:
-        skip = "Cannot run without PyCrypto or PyASN1"
+        skip = "Cannot run without cryptography or PyASN1"
 
     def setUp(self):
         # wire up our client <-> server
@@ -72,7 +67,7 @@ class AgentTestBase(unittest.TestCase):
 
 
 
-class TestServerProtocolContractWithFactory(AgentTestBase):
+class ServerProtocolContractWithFactoryTests(AgentTestBase):
     """
     The server protocol is stateful and so uses its factory to track state
     across requests.  This test asserts that the protocol raises if its factory
@@ -87,7 +82,7 @@ class TestServerProtocolContractWithFactory(AgentTestBase):
 
 
 
-class TestUnimplementedVersionOneServer(AgentTestBase):
+class UnimplementedVersionOneServerTests(AgentTestBase):
     """
     Tests for methods with no-op implementations on the server. We need these
     for clients, such as openssh, that try v1 methods before going to v2.
@@ -100,11 +95,11 @@ class TestUnimplementedVersionOneServer(AgentTestBase):
         """
         assert that we get the correct op code for an RSA identities request
         """
-        d = self.client.sendRequest(agent.AGENTC_REQUEST_RSA_IDENTITIES, '')
+        d = self.client.sendRequest(agent.AGENTC_REQUEST_RSA_IDENTITIES, b'')
         self.pump.flush()
         def _cb(packet):
             self.assertEqual(
-                agent.AGENT_RSA_IDENTITIES_ANSWER, ord(packet[0]))
+                agent.AGENT_RSA_IDENTITIES_ANSWER, ord(packet[0:1]))
         return d.addCallback(_cb)
 
 
@@ -112,9 +107,9 @@ class TestUnimplementedVersionOneServer(AgentTestBase):
         """
         assert that we get the correct op code for an RSA remove identity request
         """
-        d = self.client.sendRequest(agent.AGENTC_REMOVE_RSA_IDENTITY, '')
+        d = self.client.sendRequest(agent.AGENTC_REMOVE_RSA_IDENTITY, b'')
         self.pump.flush()
-        return d.addCallback(self.assertEqual, '')
+        return d.addCallback(self.assertEqual, b'')
 
 
     def test_agentc_REMOVE_ALL_RSA_IDENTITIES(self):
@@ -122,9 +117,9 @@ class TestUnimplementedVersionOneServer(AgentTestBase):
         assert that we get the correct op code for an RSA remove all identities
         request.
         """
-        d = self.client.sendRequest(agent.AGENTC_REMOVE_ALL_RSA_IDENTITIES, '')
+        d = self.client.sendRequest(agent.AGENTC_REMOVE_ALL_RSA_IDENTITIES, b'')
         self.pump.flush()
-        return d.addCallback(self.assertEqual, '')
+        return d.addCallback(self.assertEqual, b'')
 
 
 
@@ -136,15 +131,15 @@ if agent is not None:
         miscreants.
         """
         def agentc_REQUEST_IDENTITIES(self, data):
-            self.sendResponse(254, '')
+            self.sendResponse(254, b'')
 
 
         def agentc_SIGN_REQUEST(self, data):
-            self.sendResponse(254, '')
+            self.sendResponse(254, b'')
 
 
 
-class TestClientWithBrokenServer(AgentTestBase):
+class ClientWithBrokenServerTests(AgentTestBase):
     """
     verify error handling code in the client using a misbehaving server
     """
@@ -164,7 +159,7 @@ class TestClientWithBrokenServer(AgentTestBase):
         if we get a response from the server whose opcode doesn't match
         the protocol for data signing requests.
         """
-        d = self.client.signData(self.rsaPublic.blob(), "John Hancock")
+        d = self.client.signData(self.rsaPublic.blob(), b"John Hancock")
         self.pump.flush()
         return self.assertFailure(d, ConchError)
 
@@ -181,7 +176,7 @@ class TestClientWithBrokenServer(AgentTestBase):
 
 
 
-class TestAgentKeyAddition(AgentTestBase):
+class AgentKeyAdditionTests(AgentTestBase):
     """
     Test adding different flavors of keys to an agent.
     """
@@ -192,7 +187,7 @@ class TestAgentKeyAddition(AgentTestBase):
         with to the SSH agent server to which it is connected, associating
         it with the comment it is called with.
 
-        This test asserts that ommitting the comment produces an
+        This test asserts that omitting the comment produces an
         empty string for the comment on the server.
         """
         d = self.client.addIdentity(self.rsaPrivate.privateBlob())
@@ -200,7 +195,7 @@ class TestAgentKeyAddition(AgentTestBase):
         def _check(ignored):
             serverKey = self.server.factory.keys[self.rsaPrivate.blob()]
             self.assertEqual(self.rsaPrivate, serverKey[0])
-            self.assertEqual('', serverKey[1])
+            self.assertEqual(b'', serverKey[1])
         return d.addCallback(_check)
 
 
@@ -210,7 +205,7 @@ class TestAgentKeyAddition(AgentTestBase):
         with to the SSH agent server to which it is connected, associating
         it with the comment it is called with.
 
-        This test asserts that ommitting the comment produces an
+        This test asserts that omitting the comment produces an
         empty string for the comment on the server.
         """
         d = self.client.addIdentity(self.dsaPrivate.privateBlob())
@@ -218,7 +213,7 @@ class TestAgentKeyAddition(AgentTestBase):
         def _check(ignored):
             serverKey = self.server.factory.keys[self.dsaPrivate.blob()]
             self.assertEqual(self.dsaPrivate, serverKey[0])
-            self.assertEqual('', serverKey[1])
+            self.assertEqual(b'', serverKey[1])
         return d.addCallback(_check)
 
 
@@ -232,12 +227,12 @@ class TestAgentKeyAddition(AgentTestBase):
         as sent by the client.
         """
         d = self.client.addIdentity(
-            self.rsaPrivate.privateBlob(), comment='My special key')
+            self.rsaPrivate.privateBlob(), comment=b'My special key')
         self.pump.flush()
         def _check(ignored):
             serverKey = self.server.factory.keys[self.rsaPrivate.blob()]
             self.assertEqual(self.rsaPrivate, serverKey[0])
-            self.assertEqual('My special key', serverKey[1])
+            self.assertEqual(b'My special key', serverKey[1])
         return d.addCallback(_check)
 
 
@@ -251,28 +246,28 @@ class TestAgentKeyAddition(AgentTestBase):
         as sent by the client.
         """
         d = self.client.addIdentity(
-            self.dsaPrivate.privateBlob(), comment='My special key')
+            self.dsaPrivate.privateBlob(), comment=b'My special key')
         self.pump.flush()
         def _check(ignored):
             serverKey = self.server.factory.keys[self.dsaPrivate.blob()]
             self.assertEqual(self.dsaPrivate, serverKey[0])
-            self.assertEqual('My special key', serverKey[1])
+            self.assertEqual(b'My special key', serverKey[1])
         return d.addCallback(_check)
 
 
 
-class TestAgentClientFailure(AgentTestBase):
+class AgentClientFailureTests(AgentTestBase):
     def test_agentFailure(self):
         """
         verify that the client raises ConchError on AGENT_FAILURE
         """
-        d = self.client.sendRequest(254, '')
+        d = self.client.sendRequest(254, b'')
         self.pump.flush()
         return self.assertFailure(d, ConchError)
 
 
 
-class TestAgentIdentityRequests(AgentTestBase):
+class AgentIdentityRequestsTests(AgentTestBase):
     """
     Test operations against a server with identities already loaded.
     """
@@ -280,9 +275,9 @@ class TestAgentIdentityRequests(AgentTestBase):
     def setUp(self):
         AgentTestBase.setUp(self)
         self.server.factory.keys[self.dsaPrivate.blob()] = (
-            self.dsaPrivate, 'a comment')
+            self.dsaPrivate, b'a comment')
         self.server.factory.keys[self.rsaPrivate.blob()] = (
-            self.rsaPrivate, 'another comment')
+            self.rsaPrivate, b'another comment')
 
 
     def test_signDataRSA(self):
@@ -290,13 +285,13 @@ class TestAgentIdentityRequests(AgentTestBase):
         Sign data with an RSA private key and then verify it with the public
         key.
         """
-        d = self.client.signData(self.rsaPublic.blob(), "John Hancock")
+        d = self.client.signData(self.rsaPublic.blob(), b"John Hancock")
         self.pump.flush()
-        def _check(sig):
-            expected = self.rsaPrivate.sign("John Hancock")
-            self.assertEqual(expected, sig)
-            self.assertTrue(self.rsaPublic.verify(sig, "John Hancock"))
-        return d.addCallback(_check)
+        signature = self.successResultOf(d)
+
+        expected = self.rsaPrivate.sign(b"John Hancock")
+        self.assertEqual(expected, signature)
+        self.assertTrue(self.rsaPublic.verify(signature, b"John Hancock"))
 
 
     def test_signDataDSA(self):
@@ -304,13 +299,13 @@ class TestAgentIdentityRequests(AgentTestBase):
         Sign data with a DSA private key and then verify it with the public
         key.
         """
-        d = self.client.signData(self.dsaPublic.blob(), "John Hancock")
+        d = self.client.signData(self.dsaPublic.blob(), b"John Hancock")
         self.pump.flush()
         def _check(sig):
             # Cannot do this b/c DSA uses random numbers when signing
             #   expected = self.dsaPrivate.sign("John Hancock")
             #   self.assertEqual(expected, sig)
-            self.assertTrue(self.dsaPublic.verify(sig, "John Hancock"))
+            self.assertTrue(self.dsaPublic.verify(sig, b"John Hancock"))
         return d.addCallback(_check)
 
 
@@ -320,7 +315,7 @@ class TestAgentIdentityRequests(AgentTestBase):
         wasn't added.
         """
         del self.server.factory.keys[self.rsaPublic.blob()]
-        d = self.client.signData(self.rsaPublic.blob(), "John Hancock")
+        d = self.client.signData(self.rsaPublic.blob(), b"John Hancock")
         self.pump.flush()
         return self.assertFailure(d, ConchError)
 
@@ -334,8 +329,8 @@ class TestAgentIdentityRequests(AgentTestBase):
         self.pump.flush()
         def _check(keyt):
             expected = {}
-            expected[self.dsaPublic.blob()] = 'a comment'
-            expected[self.rsaPublic.blob()] = 'another comment'
+            expected[self.dsaPublic.blob()] = b'a comment'
+            expected[self.rsaPublic.blob()] = b'another comment'
 
             received = {}
             for k in keyt:
@@ -345,7 +340,7 @@ class TestAgentIdentityRequests(AgentTestBase):
 
 
 
-class TestAgentKeyRemoval(AgentTestBase):
+class AgentKeyRemovalTests(AgentTestBase):
     """
     Test support for removing keys in a remote server.
     """
@@ -353,9 +348,9 @@ class TestAgentKeyRemoval(AgentTestBase):
     def setUp(self):
         AgentTestBase.setUp(self)
         self.server.factory.keys[self.dsaPrivate.blob()] = (
-            self.dsaPrivate, 'a comment')
+            self.dsaPrivate, b'a comment')
         self.server.factory.keys[self.rsaPrivate.blob()] = (
-            self.rsaPrivate, 'another comment')
+            self.rsaPrivate, b'another comment')
 
 
     def test_removeRSAIdentity(self):

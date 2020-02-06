@@ -5,167 +5,81 @@
 
     Set up math support in source files and LaTeX/text output.
 
-    :copyright: Copyright 2007-2011 by the Sphinx team, see AUTHORS.
+    :copyright: Copyright 2007-2019 by the Sphinx team, see AUTHORS.
     :license: BSD, see LICENSE for details.
 """
 
-from docutils import nodes, utils
-from docutils.parsers.rst import directives
+import warnings
 
-from sphinx.util.compat import Directive
+from docutils import nodes
+from docutils.parsers.rst.roles import math_role as math_role_base
+
+from sphinx.addnodes import math, math_block as displaymath  # NOQA  # to keep compatibility
+from sphinx.builders.latex.nodes import math_reference as eqref  # NOQA  # to keep compatibility
+from sphinx.deprecation import RemovedInSphinx30Warning
+from sphinx.directives.patches import MathDirective as MathDirectiveBase
+from sphinx.domains.math import MathDomain  # NOQA  # to keep compatibility
+from sphinx.domains.math import MathReferenceRole as EqXRefRole  # NOQA  # to keep compatibility
+
+if False:
+    # For type annotation
+    from typing import Any, Callable, List, Tuple  # NOQA
+    from docutils.writers.html4css1 import Writer  # NOQA
+    from sphinx.application import Sphinx  # NOQA
 
 
-class math(nodes.Inline, nodes.TextElement):
-    pass
-
-class displaymath(nodes.Part, nodes.Element):
-    pass
-
-class eqref(nodes.Inline, nodes.TextElement):
-    pass
-
-
-def wrap_displaymath(math, label):
-    parts = math.split('\n\n')
-    ret = []
-    for i, part in enumerate(parts):
-        if label is not None and i == 0:
-            ret.append('\\begin{split}%s\\end{split}' % part +
-                       (label and '\\label{'+label+'}' or ''))
-        else:
-            ret.append('\\begin{split}%s\\end{split}\\notag' % part)
-    return '\\begin{gather}\n' + '\\\\'.join(ret) + '\n\\end{gather}'
+class MathDirective(MathDirectiveBase):
+    def run(self):
+        warnings.warn('sphinx.ext.mathbase.MathDirective is moved to '
+                      'sphinx.directives.patches package.',
+                      RemovedInSphinx30Warning, stacklevel=2)
+        return super(MathDirective, self).run()
 
 
 def math_role(role, rawtext, text, lineno, inliner, options={}, content=[]):
-    latex = utils.unescape(text, restore_backslashes=True)
-    return [math(latex=latex)], []
-
-def eq_role(role, rawtext, text, lineno, inliner, options={}, content=[]):
-    text = utils.unescape(text)
-    node = eqref('(?)', '(?)', target=text)
-    node['docname'] = inliner.document.settings.env.docname
-    return [node], []
+    warnings.warn('sphinx.ext.mathbase.math_role() is deprecated. '
+                  'Please use docutils.parsers.rst.roles.math_role() instead.',
+                  RemovedInSphinx30Warning, stacklevel=2)
+    return math_role_base(role, rawtext, text, lineno, inliner, options, content)
 
 
-class MathDirective(Directive):
-
-    has_content = True
-    required_arguments = 0
-    optional_arguments = 1
-    final_argument_whitespace = True
-    option_spec = {
-        'label': directives.unchanged,
-        'nowrap': directives.flag,
-    }
-
-    def run(self):
-        latex = '\n'.join(self.content)
-        if self.arguments and self.arguments[0]:
-            latex = self.arguments[0] + '\n\n' + latex
-        node = displaymath()
-        node['latex'] = latex
-        node['label'] = self.options.get('label', None)
-        node['nowrap'] = 'nowrap' in self.options
-        node['docname'] = self.state.document.settings.env.docname
-        ret = [node]
-        node.line = self.lineno
-        if hasattr(self, 'src'):
-            node.source = self.src
-        if node['label']:
-            tnode = nodes.target('', '', ids=['equation-' + node['label']])
-            self.state.document.note_explicit_target(tnode)
-            ret.insert(0, tnode)
-        return ret
+def get_node_equation_number(writer, node):
+    # type: (Writer, nodes.Node) -> unicode
+    warnings.warn('sphinx.ext.mathbase.get_node_equation_number() is moved to '
+                  'sphinx.util.math package.',
+                  RemovedInSphinx30Warning, stacklevel=2)
+    from sphinx.util.math import get_node_equation_number
+    return get_node_equation_number(writer, node)
 
 
-def latex_visit_math(self, node):
-    self.body.append('$' + node['latex'] + '$')
-    raise nodes.SkipNode
-
-def latex_visit_displaymath(self, node):
-    if node['nowrap']:
-        self.body.append(node['latex'])
-    else:
-        label = node['label'] and node['docname'] + '-' + node['label'] or None
-        self.body.append(wrap_displaymath(node['latex'], label))
-    raise nodes.SkipNode
-
-def latex_visit_eqref(self, node):
-    self.body.append('\\eqref{%s-%s}' % (node['docname'], node['target']))
-    raise nodes.SkipNode
+def wrap_displaymath(text, label, numbering):
+    # type: (unicode, unicode, bool) -> unicode
+    warnings.warn('sphinx.ext.mathbase.wrap_displaymath() is moved to '
+                  'sphinx.util.math package.',
+                  RemovedInSphinx30Warning, stacklevel=2)
+    from sphinx.util.math import wrap_displaymath
+    return wrap_displaymath(text, label, numbering)
 
 
-def text_visit_math(self, node):
-    self.add_text(node['latex'])
-    raise nodes.SkipNode
+def is_in_section_title(node):
+    # type: (nodes.Node) -> bool
+    """Determine whether the node is in a section title"""
+    from sphinx.util.nodes import traverse_parent
 
-def text_visit_displaymath(self, node):
-    self.new_state()
-    self.add_text(node['latex'])
-    self.end_state()
-    raise nodes.SkipNode
+    warnings.warn('is_in_section_title() is deprecated.',
+                  RemovedInSphinx30Warning, stacklevel=2)
 
-def text_visit_eqref(self, node):
-    self.add_text(node['target'])
-    raise nodes.SkipNode
-
-
-def man_visit_math(self, node):
-    self.body.append(node['latex'])
-    raise nodes.SkipNode
-
-def man_visit_displaymath(self, node):
-    self.visit_centered(node)
-def man_depart_displaymath(self, node):
-    self.depart_centered(node)
-
-def man_visit_eqref(self, node):
-    self.body.append(node['target'])
-    raise nodes.SkipNode
-
-
-def html_visit_eqref(self, node):
-    self.body.append('<a href="#equation-%s">' % node['target'])
-
-def html_depart_eqref(self, node):
-    self.body.append('</a>')
-
-
-def number_equations(app, doctree, docname):
-    num = 0
-    numbers = {}
-    for node in doctree.traverse(displaymath):
-        if node['label'] is not None:
-            num += 1
-            node['number'] = num
-            numbers[node['label']] = num
-        else:
-            node['number'] = None
-    for node in doctree.traverse(eqref):
-        if node['target'] not in numbers:
-            continue
-        num = '(%d)' % numbers[node['target']]
-        node[0] = nodes.Text(num, num)
+    for ancestor in traverse_parent(node):
+        if isinstance(ancestor, nodes.title) and \
+           isinstance(ancestor.parent, nodes.section):
+            return True
+    return False
 
 
 def setup_math(app, htmlinlinevisitors, htmldisplayvisitors):
-    app.add_node(math,
-                 latex=(latex_visit_math, None),
-                 text=(text_visit_math, None),
-                 man=(man_visit_math, None),
-                 html=htmlinlinevisitors)
-    app.add_node(displaymath,
-                 latex=(latex_visit_displaymath, None),
-                 text=(text_visit_displaymath, None),
-                 man=(man_visit_displaymath, man_depart_displaymath),
-                 html=htmldisplayvisitors)
-    app.add_node(eqref,
-                 latex=(latex_visit_eqref, None),
-                 text=(text_visit_eqref, None),
-                 man=(man_visit_eqref, None),
-                 html=(html_visit_eqref, html_depart_eqref))
-    app.add_role('math', math_role)
-    app.add_role('eq', eq_role)
-    app.add_directive('math', MathDirective)
-    app.connect('doctree-resolved', number_equations)
+    # type: (Sphinx, Tuple[Callable, Callable], Tuple[Callable, Callable]) -> None
+    warnings.warn('setup_math() is deprecated. '
+                  'Please use app.add_html_math_renderer() instead.',
+                  RemovedInSphinx30Warning, stacklevel=2)
+
+    app.add_html_math_renderer('unknown', htmlinlinevisitors, htmldisplayvisitors)

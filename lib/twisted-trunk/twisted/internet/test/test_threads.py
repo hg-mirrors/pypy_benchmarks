@@ -5,20 +5,25 @@
 Tests for implementations of L{IReactorThreads}.
 """
 
+from __future__ import division, absolute_import
+
 __metaclass__ = type
 
 from weakref import ref
-import gc
+import gc, threading
 
 from twisted.python.threadable import isInIOThread
 from twisted.internet.test.reactormixins import ReactorBuilder
 from twisted.python.threadpool import ThreadPool
+from twisted.internet.interfaces import IReactorThreads
 
 
 class ThreadTestsBuilder(ReactorBuilder):
     """
     Builder for defining tests relating to L{IReactorThreads}.
     """
+    requiredInterfaces = (IReactorThreads,)
+
     def test_getThreadPool(self):
         """
         C{reactor.getThreadPool()} returns an instance of L{ThreadPool} which
@@ -69,7 +74,7 @@ class ThreadTestsBuilder(ReactorBuilder):
         When invoked from the reactor thread, previous implementations of
         L{IReactorThreads.callFromThread} would skip the pipe/socket based wake
         up step, assuming the reactor would wake up on its own.  However, this
-        resulted in the reactor not noticing a insert into the thread queue at
+        resulted in the reactor not noticing an insert into the thread queue at
         the right time (in this case, after the thread queue has been processed
         for that reactor iteration).
         """
@@ -104,6 +109,24 @@ class ThreadTestsBuilder(ReactorBuilder):
         self.assertTrue(after - before < 30)
 
 
+    def test_callFromThread(self):
+        """
+        A function scheduled with L{IReactorThreads.callFromThread} invoked
+        from another thread is run in the reactor thread.
+        """
+        reactor = self.buildReactor()
+        result = []
+
+        def threadCall():
+            result.append(threading.currentThread())
+            reactor.stop()
+        reactor.callLater(0, reactor.callInThread,
+                          reactor.callFromThread, threadCall)
+        self.runReactor(reactor, 5)
+
+        self.assertEqual(result, [threading.currentThread()])
+
+
     def test_stopThreadPool(self):
         """
         When the reactor stops, L{ReactorBase._stopThreadPool} drops the
@@ -118,7 +141,7 @@ class ThreadTestsBuilder(ReactorBuilder):
         reactor.callWhenRunning(reactor.stop)
         self.runReactor(reactor)
         gc.collect()
-        self.assertIdentical(threadpool(), None)
+        self.assertIsNone(threadpool())
 
 
     def test_stopThreadPoolWhenStartedAfterReactorRan(self):
@@ -141,7 +164,7 @@ class ThreadTestsBuilder(ReactorBuilder):
         reactor.callWhenRunning(acquireThreadPool)
         self.runReactor(reactor)
         gc.collect()
-        self.assertIdentical(threadPoolRefs[0](), None)
+        self.assertIsNone(threadPoolRefs[0]())
 
 
     def test_cleanUpThreadPoolEvenBeforeReactorIsRun(self):
@@ -158,8 +181,20 @@ class ThreadTestsBuilder(ReactorBuilder):
         reactor = self.buildReactor()
         threadPoolRef = ref(reactor.getThreadPool())
         reactor.fireSystemEvent("shutdown")
-        gc.collect()
-        self.assertIdentical(threadPoolRef(), None)
+
+        if reactor.__class__.__name__ == "AsyncioSelectorReactor":
+            self.assertIsNone(reactor.threadpool)
+            # ReactorBase.__init__ sets self.crash as a 'shutdown'
+            # event, which in turn calls stop on the underlying
+            # asyncio event loop, which in turn sets a _stopping
+            # attribute on it that's only unset after an iteration of
+            # the loop.  Subsequent tests can only reuse the asyncio
+            # loop if it's allowed to run and unset that _stopping
+            # attribute.
+            self.runReactor(reactor)
+        else:
+            gc.collect()
+            self.assertIsNone(threadPoolRef())
 
 
     def test_isInIOThread(self):

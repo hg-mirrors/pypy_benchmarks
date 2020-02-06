@@ -10,8 +10,22 @@ Do NOT use this module directly - use reactor.spawnProcess() instead.
 Maintainer: Itamar Shtull-Trauring
 """
 
-# System Imports
-import gc, os, sys, stat, traceback, select, signal, errno
+from __future__ import division, absolute_import, print_function
+
+from twisted.python.runtime import platform
+
+if platform.isWindows():
+    raise ImportError(("twisted.internet.process does not work on Windows. "
+                       "Use the reactor.spawnProcess() API instead."))
+
+import errno
+import gc
+import os
+import io
+import signal
+import stat
+import sys
+import traceback
 
 try:
     import pty
@@ -23,10 +37,11 @@ try:
 except ImportError:
     fcntl = None
 
-from zope.interface import implements
+from zope.interface import implementer
 
 from twisted.python import log, failure
 from twisted.python.util import switchUID
+from twisted.python.compat import items, range, _PY3
 from twisted.internet import fdesc, abstract, error
 from twisted.internet.main import CONNECTION_LOST, CONNECTION_DONE
 from twisted.internet._baseprocess import BaseProcess
@@ -42,8 +57,11 @@ def reapAllProcesses():
     """
     Reap all registered processes.
     """
-    for process in reapProcessHandlers.values():
+    # Coerce this to a list, as reaping the process changes the dictionary and
+    # causes a "size changed during iteration" exception
+    for process in list(reapProcessHandlers.values()):
         process.reapProcess()
+
 
 
 def registerReapProcessHandler(pid, process):
@@ -69,6 +87,7 @@ def registerReapProcessHandler(pid, process):
         reapProcessHandlers[pid] = process
 
 
+
 def unregisterReapProcessHandler(pid, process):
     """
     Unregister a process handler previously registered with
@@ -79,28 +98,6 @@ def unregisterReapProcessHandler(pid, process):
         raise RuntimeError("Try to unregister a process not registered.")
     del reapProcessHandlers[pid]
 
-
-def detectLinuxBrokenPipeBehavior():
-    """
-    On some Linux version, write-only pipe are detected as readable. This
-    function is here to check if this bug is present or not.
-
-    See L{ProcessWriter.doRead} for a more detailed explanation.
-    """
-    global brokenLinuxPipeBehavior
-    r, w = os.pipe()
-    os.write(w, 'a')
-    reads, writes, exes = select.select([w], [], [], 0)
-    if reads:
-        # Linux < 2.6.11 says a write-only pipe is readable.
-        brokenLinuxPipeBehavior = True
-    else:
-        brokenLinuxPipeBehavior = False
-    os.close(r)
-    os.close(w)
-
-# Call at import time
-detectLinuxBrokenPipeBehavior()
 
 
 class ProcessWriter(abstract.FileDescriptor):
@@ -151,11 +148,13 @@ class ProcessWriter(abstract.FileDescriptor):
         if self.enableReadHack:
             self.startReading()
 
+
     def fileno(self):
         """
         Return the fileno() of my process's stdin.
         """
         return self.fd
+
 
     def writeSomeData(self, data):
         """
@@ -169,9 +168,11 @@ class ProcessWriter(abstract.FileDescriptor):
             self.startReading()
         return rv
 
+
     def write(self, data):
         self.stopReading()
         abstract.FileDescriptor.write(self, data)
+
 
     def doRead(self):
         """
@@ -187,27 +188,18 @@ class ProcessWriter(abstract.FileDescriptor):
 
         That's what this funky code is for. If linux was not broken, this
         function could be simply "return CONNECTION_LOST".
-
-        BUG: We call select no matter what the reactor.
-        If the reactor is pollreactor, and the fd is > 1024, this will fail.
-        (only occurs on broken versions of linux, though).
         """
         if self.enableReadHack:
-            if brokenLinuxPipeBehavior:
-                fd = self.fd
-                r, w, x = select.select([fd], [fd], [], 0)
-                if r and w:
-                    return CONNECTION_LOST
-            else:
-                return CONNECTION_LOST
+            return CONNECTION_LOST
         else:
             self.stopReading()
+
 
     def connectionLost(self, reason):
         """
         See abstract.FileDescriptor.connectionLost.
         """
-        # At least on OS X 10.4, exiting while stdout is non-blocking can
+        # At least on macOS 10.4, exiting while stdout is non-blocking can
         # result in data loss.  For some reason putting the file descriptor
         # back into blocking mode seems to resolve this issue.
         fdesc.setBlocking(self.fd)
@@ -224,7 +216,7 @@ class ProcessReader(abstract.FileDescriptor):
     I am a selectable representation of a process's output pipe, such as
     stdout and stderr.
     """
-    connected = 1
+    connected = True
 
     def __init__(self, reactor, proc, name, fileno):
         """
@@ -237,18 +229,21 @@ class ProcessReader(abstract.FileDescriptor):
         self.fd = fileno
         self.startReading()
 
+
     def fileno(self):
         """
         Return the fileno() of my process's stderr.
         """
         return self.fd
 
+
     def writeSomeData(self, data):
         # the only time this is actually called is after .loseConnection Any
         # actual write attempt would fail, so we must avoid that. This hack
         # allows us to use .loseConnection on both readers and writers.
-        assert data == ""
+        assert data == b""
         return CONNECTION_LOST
+
 
     def doRead(self):
         """
@@ -256,8 +251,10 @@ class ProcessReader(abstract.FileDescriptor):
         """
         return fdesc.readFromFD(self.fd, self.dataReceived)
 
+
     def dataReceived(self, data):
         self.proc.childDataReceived(self.name, data)
+
 
     def loseConnection(self):
         if self.connected and not self.disconnecting:
@@ -266,6 +263,7 @@ class ProcessReader(abstract.FileDescriptor):
             self.reactor.callLater(0, self.connectionLost,
                                    failure.Failure(CONNECTION_DONE))
 
+
     def connectionLost(self, reason):
         """
         Close my end of the pipe, signal the Process (which signals the
@@ -273,6 +271,7 @@ class ProcessReader(abstract.FileDescriptor):
         """
         abstract.FileDescriptor.connectionLost(self, reason)
         self.proc.childConnectionLost(self.name, reason)
+
 
 
 class _BaseProcess(BaseProcess, object):
@@ -298,7 +297,7 @@ class _BaseProcess(BaseProcess, object):
         try:
             try:
                 pid, status = os.waitpid(self.pid, os.WNOHANG)
-            except OSError, e:
+            except OSError as e:
                 if e.errno == errno.ECHILD:
                     # no child process
                     pid = None
@@ -337,7 +336,13 @@ class _BaseProcess(BaseProcess, object):
             signalID = getattr(signal, 'SIG%s' % (signalID,))
         if self.pid is None:
             raise ProcessExitedAlready()
-        os.kill(self.pid, signalID)
+        try:
+            os.kill(self.pid, signalID)
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                raise ProcessExitedAlready()
+            else:
+                raise
 
 
     def _resetSignalDisposition(self):
@@ -357,89 +362,102 @@ class _BaseProcess(BaseProcess, object):
         Fork and then exec sub-process.
 
         @param path: the path where to run the new process.
-        @type path: C{str}
+        @type path: L{bytes} or L{unicode}
         @param uid: if defined, the uid used to run the new process.
-        @type uid: C{int}
+        @type uid: L{int}
         @param gid: if defined, the gid used to run the new process.
-        @type gid: C{int}
+        @type gid: L{int}
         @param executable: the executable to run in a new process.
-        @type executable: C{str}
+        @type executable: L{str}
         @param args: arguments used to create the new process.
-        @type args: C{list}.
+        @type args: L{list}.
         @param environment: environment used for the new process.
-        @type environment: C{dict}.
+        @type environment: L{dict}.
         @param kwargs: keyword arguments to L{_setupChild} method.
         """
-        settingUID = (uid is not None) or (gid is not None)
-        if settingUID:
-            curegid = os.getegid()
-            currgid = os.getgid()
-            cureuid = os.geteuid()
-            curruid = os.getuid()
-            if uid is None:
-                uid = cureuid
-            if gid is None:
-                gid = curegid
-            # prepare to change UID in subprocess
-            os.setuid(0)
-            os.setgid(0)
-
         collectorEnabled = gc.isenabled()
         gc.disable()
         try:
             self.pid = os.fork()
         except:
             # Still in the parent process
-            if settingUID:
-                os.setregid(currgid, curegid)
-                os.setreuid(curruid, cureuid)
             if collectorEnabled:
                 gc.enable()
             raise
         else:
-            if self.pid == 0: # pid is 0 in the child process
-                # do not put *ANY* code outside the try block. The child process
-                # must either exec or _exit. If it gets outside this block (due
-                # to an exception that is not handled here, but which might be
-                # handled higher up), there will be two copies of the parent
-                # running in parallel, doing all kinds of damage.
+            if self.pid == 0:
+                # A return value of 0 from fork() indicates that we are now
+                # executing in the child process.
+
+                # Do not put *ANY* code outside the try block. The child
+                # process must either exec or _exit. If it gets outside this
+                # block (due to an exception that is not handled here, but
+                # which might be handled higher up), there will be two copies
+                # of the parent running in parallel, doing all kinds of damage.
 
                 # After each change to this code, review it to make sure there
                 # are no exit paths.
+
                 try:
                     # Stop debugging. If I am, I don't care anymore.
                     sys.settrace(None)
                     self._setupChild(**kwargs)
-                    self._execChild(path, settingUID, uid, gid,
-                                    executable, args, environment)
+                    self._execChild(path, uid, gid, executable, args,
+                                    environment)
                 except:
-                    # If there are errors, bail and try to write something
-                    # descriptive to stderr.
-                    # XXX: The parent's stderr isn't necessarily fd 2 anymore, or
-                    #      even still available
-                    # XXXX: however even libc assumes write(2, err) is a useful
-                    #       thing to attempt
+                    # If there are errors, try to write something descriptive
+                    # to stderr before exiting.
+
+                    # The parent's stderr isn't *necessarily* fd 2 anymore, or
+                    # even still available; however, even libc assumes that
+                    # write(2, err) is a useful thing to attempt.
+
                     try:
-                        stderr = os.fdopen(2, 'w')
-                        stderr.write("Upon execvpe %s %s in environment %s\n:" %
-                                     (executable, str(args),
-                                      "id %s" % id(environment)))
+                        stderr = os.fdopen(2, 'wb')
+                        msg = ("Upon execvpe {0} {1} in environment id {2}"
+                               "\n:").format(executable, str(args),
+                                             id(environment))
+
+                        if _PY3:
+
+                            # On Python 3, print_exc takes a text stream, but
+                            # on Python 2 it still takes a byte stream.  So on
+                            # Python 3 we will wrap up the byte stream returned
+                            # by os.fdopen using TextIOWrapper.
+
+                            # We hard-code UTF-8 as the encoding here, rather
+                            # than looking at something like
+                            # getfilesystemencoding() or sys.stderr.encoding,
+                            # because we want an encoding that will be able to
+                            # encode the full range of code points.  We are
+                            # (most likely) talking to the parent process on
+                            # the other end of this pipe and not the filesystem
+                            # or the original sys.stderr, so there's no point
+                            # in trying to match the encoding of one of those
+                            # objects.
+
+                            stderr = io.TextIOWrapper(stderr, encoding="utf-8")
+
+                        stderr.write(msg)
                         traceback.print_exc(file=stderr)
                         stderr.flush()
+
                         for fd in range(3):
                             os.close(fd)
                     except:
-                        pass # make *sure* the child terminates
-                # Did you read the comment about not adding code here?
+                        # Handle all errors during the error-reporting process
+                        # silently to ensure that the child terminates.
+                        pass
+
+                # See comment above about making sure that we reach this line
+                # of code.
                 os._exit(1)
 
         # we are now in parent process
-        if settingUID:
-            os.setregid(currgid, curegid)
-            os.setreuid(curruid, cureuid)
         if collectorEnabled:
             gc.enable()
         self.status = -1 # this records the exit status of the child
+
 
     def _setupChild(self, *args, **kwargs):
         """
@@ -447,17 +465,24 @@ class _BaseProcess(BaseProcess, object):
         """
         raise NotImplementedError()
 
-    def _execChild(self, path, settingUID, uid, gid,
-                   executable, args, environment):
+
+    def _execChild(self, path, uid, gid, executable, args, environment):
         """
         The exec() which is done in the forked child.
         """
         if path:
             os.chdir(path)
-        # set the UID before I actually exec the process
-        if settingUID:
+        if uid is not None or gid is not None:
+            if uid is None:
+                uid = os.geteuid()
+            if gid is None:
+                gid = os.getegid()
+            # set the UID before I actually exec the process
+            os.setuid(0)
+            os.setgid(0)
             switchUID(uid, gid)
         os.execvpe(executable, args, environment)
+
 
     def __repr__(self):
         """
@@ -465,6 +490,7 @@ class _BaseProcess(BaseProcess, object):
         """
         return "<%s pid=%s status=%s>" % (self.__class__.__name__,
                                           self.pid, self.status)
+
 
 
 class _FDDetector(object):
@@ -475,11 +501,11 @@ class _FDDetector(object):
     _listOpenFDs method of this class so that the detection only needs to occur
     once.
 
-    @ivars listdir: The implementation of listdir to use. This gets overwritten
+    @ivar listdir: The implementation of listdir to use. This gets overwritten
         by the test cases.
-    @ivars getpid: The implementation of getpid to use, returns the PID of the
+    @ivar getpid: The implementation of getpid to use, returns the PID of the
         running process.
-    @ivars openfile: The implementation of open() to use, by default the Python
+    @ivar openfile: The implementation of open() to use, by default the Python
         builtin.
     """
     # So that we can unit test this
@@ -487,10 +513,19 @@ class _FDDetector(object):
     getpid = os.getpid
     openfile = open
 
+    def __init__(self):
+        self._implementations = [
+            self._procFDImplementation, self._devFDImplementation,
+            self._fallbackFDImplementation]
+
 
     def _listOpenFDs(self):
         """
-        Figure out which implementation to use, then run it.
+        Return an iterable of file descriptors which I{may} be open in this
+        process.
+
+        This will try to return the fewest possible descriptors without missing
+        any.
         """
         self._listOpenFDs = self._getImplementation()
         return self._listOpenFDs()
@@ -498,40 +533,32 @@ class _FDDetector(object):
 
     def _getImplementation(self):
         """
-        Check if /dev/fd works, if so, use that.  Otherwise, check if
-        /proc/%d/fd exists, if so use that.
-        
-        Otherwise, ask resource.getrlimit, if that throws an exception, then
-        fallback to _fallbackFDImplementation.
+        Pick a method which gives correct results for C{_listOpenFDs} in this
+        runtime environment.
+
+        This involves a lot of very platform-specific checks, some of which may
+        be relatively expensive.  Therefore the returned method should be saved
+        and re-used, rather than always calling this method to determine what it
+        is.
+
+        See the implementation for the details of how a method is selected.
         """
-        try:
-            self.listdir("/dev/fd")
-            if self._checkDevFDSanity(): # FreeBSD support :-)
-                return self._devFDImplementation
-            else:
-                return self._fallbackFDImplementation
-        except:
+        for impl in self._implementations:
             try:
-                self.listdir("/proc/%d/fd" % (self.getpid(),))
-                return self._procFDImplementation
+                before = impl()
             except:
-                try:
-                    self._resourceFDImplementation() # Imports resource
-                    return self._resourceFDImplementation
-                except:
-                    return self._fallbackFDImplementation
-
-
-    def _checkDevFDSanity(self):
-        """
-        Returns true iff opening a file modifies the fds visible
-        in /dev/fd, as it should on a sane platform.
-        """
-        start = self.listdir("/dev/fd")
-        fp = self.openfile("/dev/null", "r")
-        end = self.listdir("/dev/fd")
-        fp.close()
-        return start != end
+                continue
+            with self.openfile("/dev/null", "r"):
+                after = impl()
+            if before != after:
+                return impl
+        # If no implementation can detect the newly opened file above, then just
+        # return the last one.  The last one should therefore always be one
+        # which makes a simple static guess which includes all possible open
+        # file descriptors, but perhaps also many other values which do not
+        # correspond to file descriptors.  For example, the scheme implemented
+        # by _fallbackFDImplementation is suitable to be the last entry.
+        return impl
 
 
     def _devFDImplementation(self):
@@ -540,7 +567,7 @@ class _FDDetector(object):
         See: http://www.freebsd.org/cgi/man.cgi?fdescfs
         """
         dname = "/dev/fd"
-        result = [int(fd) for fd in os.listdir(dname)]
+        result = [int(fd) for fd in self.listdir(dname)]
         return result
 
 
@@ -549,33 +576,30 @@ class _FDDetector(object):
         Simple implementation for systems where /proc/pid/fd exists (we assume
         it works).
         """
-        dname = "/proc/%d/fd" % (os.getpid(),)
-        return [int(fd) for fd in os.listdir(dname)]
-
-
-    def _resourceFDImplementation(self):
-        """
-        Fallback implementation where the resource module can inform us about
-        how many FDs we can expect.
-
-        Note that on OS-X we expect to be using the /dev/fd implementation.
-        """
-        import resource
-        maxfds = resource.getrlimit(resource.RLIMIT_NOFILE)[1] + 1
-        # OS-X reports 9223372036854775808. That's a lot of fds
-        # to close
-        if maxfds > 1024:
-            maxfds = 1024
-        return xrange(maxfds)
+        dname = "/proc/%d/fd" % (self.getpid(),)
+        return [int(fd) for fd in self.listdir(dname)]
 
 
     def _fallbackFDImplementation(self):
         """
-        Fallback-fallback implementation where we just assume that we need to
-        close 256 FDs.
+        Fallback implementation where either the resource module can inform us
+        about the upper bound of how many FDs to expect, or where we just guess
+        a constant maximum if there is no resource module.
+
+        All possible file descriptors from 0 to that upper bound are returned
+        with no attempt to exclude invalid file descriptor values.
         """
-        maxfds = 256
-        return xrange(maxfds)
+        try:
+            import resource
+        except ImportError:
+            maxfds = 1024
+        else:
+            # OS-X reports 9223372036854775808. That's a lot of fds to close.
+            # OS-X should get the /dev/fd implementation instead, so mostly
+            # this check probably isn't necessary.
+            maxfds = min(1024, resource.getrlimit(resource.RLIMIT_NOFILE)[1])
+        return range(maxfds)
+
 
 
 detector = _FDDetector()
@@ -588,6 +612,8 @@ def _listOpenFDs():
     return detector._listOpenFDs()
 
 
+
+@implementer(IProcessTransport)
 class Process(_BaseProcess):
     """
     An operating-system Process.
@@ -601,8 +627,6 @@ class Process(_BaseProcess):
     code is not cross-platform. (also, windows can only select
     on sockets...)
     """
-    implements(IProcessTransport)
-
     debug = False
     debug_child = False
 
@@ -647,7 +671,7 @@ class Process(_BaseProcess):
                         }
 
         debug = self.debug
-        if debug: print "childFDs", childFDs
+        if debug: print("childFDs", childFDs)
 
         _openedPipes = []
         def pipe():
@@ -658,39 +682,39 @@ class Process(_BaseProcess):
         # fdmap.keys() are filenos of pipes that are used by the child.
         fdmap = {} # maps childFD to parentFD
         try:
-            for childFD, target in childFDs.items():
-                if debug: print "[%d]" % childFD, target
+            for childFD, target in items(childFDs):
+                if debug: print("[%d]" % childFD, target)
                 if target == "r":
                     # we need a pipe that the parent can read from
                     readFD, writeFD = pipe()
-                    if debug: print "readFD=%d, writeFD=%d" % (readFD, writeFD)
+                    if debug: print("readFD=%d, writeFD=%d" % (readFD, writeFD))
                     fdmap[childFD] = writeFD     # child writes to this
                     helpers[childFD] = readFD    # parent reads from this
                 elif target == "w":
                     # we need a pipe that the parent can write to
                     readFD, writeFD = pipe()
-                    if debug: print "readFD=%d, writeFD=%d" % (readFD, writeFD)
+                    if debug: print("readFD=%d, writeFD=%d" % (readFD, writeFD))
                     fdmap[childFD] = readFD      # child reads from this
                     helpers[childFD] = writeFD   # parent writes to this
                 else:
                     assert type(target) == int, '%r should be an int' % (target,)
                     fdmap[childFD] = target      # parent ignores this
-            if debug: print "fdmap", fdmap
-            if debug: print "helpers", helpers
+            if debug: print("fdmap", fdmap)
+            if debug: print("helpers", helpers)
             # the child only cares about fdmap.values()
 
             self._fork(path, uid, gid, executable, args, environment, fdmap=fdmap)
         except:
-            map(os.close, _openedPipes)
+            for pipe in _openedPipes:
+                os.close(pipe)
             raise
 
         # we are the parent process:
         self.proto = proto
 
         # arrange for the parent-side pipes to be read and written
-        for childFD, parentFD in helpers.items():
+        for childFD, parentFD in items(helpers):
             os.close(fdmap[childFD])
-
             if childFDs[childFD] == "r":
                 reader = self.processReaderFactory(reactor, self, childFD,
                                         parentFD)
@@ -745,7 +769,6 @@ class Process(_BaseProcess):
                    Use os.dup2() to move it to the right place, then close the
                    original.
         """
-
         debug = self.debug_child
         if debug:
             errfd = sys.stderr
@@ -766,15 +789,12 @@ class Process(_BaseProcess):
         # be moved to their appropriate positions in the child (the targets
         # of fdmap, i.e. fdmap.values() )
 
-        if debug: print >>errfd, "fdmap", fdmap
-        childlist = fdmap.keys()
-        childlist.sort()
-
-        for child in childlist:
+        if debug: print("fdmap", fdmap, file=errfd)
+        for child in sorted(fdmap.keys()):
             target = fdmap[child]
             if target == child:
                 # fd is already in place
-                if debug: print >>errfd, "%d already in place" % target
+                if debug: print("%d already in place" % target, file=errfd)
                 fdesc._unsetCloseOnExec(child)
             else:
                 if child in fdmap.values():
@@ -782,14 +802,14 @@ class Process(_BaseProcess):
                     # still needs the fd it wants to target. We must preserve
                     # that old fd by duping it to a new home.
                     newtarget = os.dup(child) # give it a safe home
-                    if debug: print >>errfd, "os.dup(%d) -> %d" % (child,
-                                                                   newtarget)
+                    if debug: print("os.dup(%d) -> %d" % (child, newtarget),
+                                    file=errfd)
                     os.close(child) # close the original
-                    for c, p in fdmap.items():
+                    for c, p in items(fdmap):
                         if p == child:
                             fdmap[c] = newtarget # update all pointers
                 # now it should be available
-                if debug: print >>errfd, "os.dup2(%d,%d)" % (target, child)
+                if debug: print("os.dup2(%d,%d)" % (target, child), file=errfd)
                 os.dup2(target, child)
 
         # At this point, the child has everything it needs. We want to close
@@ -805,7 +825,7 @@ class Process(_BaseProcess):
             if not fd in old:
                 if not fd in fdmap.keys():
                     old.append(fd)
-        if debug: print >>errfd, "old", old
+        if debug: print("old", old, file=errfd)
         for fd in old:
             os.close(fd)
 
@@ -815,6 +835,7 @@ class Process(_BaseProcess):
     def writeToChild(self, childFD, data):
         self.pipes[childFD].write(data)
 
+
     def closeChildFD(self, childFD):
         # for writer pipes, loseConnection tries to write the remaining data
         # out to the pipe before closing it
@@ -823,10 +844,12 @@ class Process(_BaseProcess):
         if childFD in self.pipes:
             self.pipes[childFD].loseConnection()
 
+
     def pauseProducing(self):
         for p in self.pipes.itervalues():
             if isinstance(p, ProcessReader):
                 p.stopReading()
+
 
     def resumeProducing(self):
         for p in self.pipes.itervalues():
@@ -840,16 +863,20 @@ class Process(_BaseProcess):
         """
         self.closeChildFD(0)
 
+
     def closeStdout(self):
         self.closeChildFD(1)
 
+
     def closeStderr(self):
         self.closeChildFD(2)
+
 
     def loseConnection(self):
         self.closeStdin()
         self.closeStderr()
         self.closeStdout()
+
 
     def write(self, data):
         """
@@ -859,6 +886,7 @@ class Process(_BaseProcess):
         """
         if 0 in self.pipes:
             self.pipes[0].write(data)
+
 
     def registerProducer(self, producer, streaming):
         """
@@ -872,11 +900,13 @@ class Process(_BaseProcess):
         else:
             producer.stopProducing()
 
+
     def unregisterProducer(self):
         """
         Call this to unregister producer for standard input."""
         if 0 in self.pipes:
             self.pipes[0].unregisterProducer()
+
 
     def writeSequence(self, seq):
         """
@@ -903,6 +933,7 @@ class Process(_BaseProcess):
             log.err()
         self.maybeCallProcessEnded()
 
+
     def maybeCallProcessEnded(self):
         # we don't call ProcessProtocol.processEnded until:
         #  the child has terminated, AND
@@ -918,11 +949,11 @@ class Process(_BaseProcess):
 
 
 
+@implementer(IProcessTransport)
 class PTYProcess(abstract.FileDescriptor, _BaseProcess):
     """
     An operating-system Process that uses PTY support.
     """
-    implements(IProcessTransport)
 
     status = -1
     pid = None
@@ -949,10 +980,9 @@ class PTYProcess(abstract.FileDescriptor, _BaseProcess):
         _BaseProcess.__init__(self, proto)
 
         if isinstance(usePTY, (tuple, list)):
-            masterfd, slavefd, ttyname = usePTY
+            masterfd, slavefd, _ = usePTY
         else:
             masterfd, slavefd = pty.openpty()
-            ttyname = os.ttyname(slavefd)
 
         try:
             self._fork(path, uid, gid, executable, args, environment,
@@ -976,27 +1006,37 @@ class PTYProcess(abstract.FileDescriptor, _BaseProcess):
             log.err()
         registerReapProcessHandler(self.pid, self)
 
+
     def _setupChild(self, masterfd, slavefd):
         """
-        Setup child process after fork() but before exec().
+        Set up child process after C{fork()} but before C{exec()}.
+
+        This involves:
+
+            - closing C{masterfd}, since it is not used in the subprocess
+
+            - creating a new session with C{os.setsid}
+
+            - changing the controlling terminal of the process (and the new
+              session) to point at C{slavefd}
+
+            - duplicating C{slavefd} to standard input, output, and error
+
+            - closing all other open file descriptors (according to
+              L{_listOpenFDs})
+
+            - re-setting all signal handlers to C{SIG_DFL}
+
+        @param masterfd: The master end of a PTY file descriptors opened with
+            C{openpty}.
+        @type masterfd: L{int}
+
+        @param slavefd: The slave end of a PTY opened with C{openpty}.
+        @type slavefd: L{int}
         """
         os.close(masterfd)
-        if hasattr(termios, 'TIOCNOTTY'):
-            try:
-                fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
-            except OSError:
-                pass
-            else:
-                try:
-                    fcntl.ioctl(fd, termios.TIOCNOTTY, '')
-                except:
-                    pass
-                os.close(fd)
-
         os.setsid()
-
-        if hasattr(termios, 'TIOCSCTTY'):
-            fcntl.ioctl(slavefd, termios.TIOCSCTTY, '')
+        fcntl.ioctl(slavefd, termios.TIOCSCTTY, '')
 
         for fd in range(3):
             if fd != slavefd:
@@ -1016,16 +1056,19 @@ class PTYProcess(abstract.FileDescriptor, _BaseProcess):
         self._resetSignalDisposition()
 
 
-    # PTYs do not have stdin/stdout/stderr. They only have in and out, just
-    # like sockets. You cannot close one without closing off the entire PTY.
     def closeStdin(self):
+        # PTYs do not have stdin/stdout/stderr. They only have in and out, just
+        # like sockets. You cannot close one without closing off the entire PTY
         pass
+
 
     def closeStdout(self):
         pass
 
+
     def closeStderr(self):
         pass
+
 
     def doRead(self):
         """
@@ -1035,11 +1078,13 @@ class PTYProcess(abstract.FileDescriptor, _BaseProcess):
             self.fd,
             lambda data: self.proto.childDataReceived(1, data))
 
+
     def fileno(self):
         """
         This returns the file number of standard output on this process.
         """
         return self.fd
+
 
     def maybeCallProcessEnded(self):
         # two things must happen before we call the ProcessProtocol's
@@ -1051,6 +1096,7 @@ class PTYProcess(abstract.FileDescriptor, _BaseProcess):
         if self.lostProcess == 2:
             _BaseProcess.maybeCallProcessEnded(self)
 
+
     def connectionLost(self, reason):
         """
         I call this to clean up when one or all of my connections has died.
@@ -1059,6 +1105,7 @@ class PTYProcess(abstract.FileDescriptor, _BaseProcess):
         os.close(self.fd)
         self.lostProcess += 1
         self.maybeCallProcessEnded()
+
 
     def writeSomeData(self, data):
         """

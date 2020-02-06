@@ -1,7 +1,9 @@
 import os
 import sys, time
+if sys.version_info[0] > 2:
+    xrange = range
 
-from pyxl.codec.register import pyxl_transform_string
+from pyxl.codec.transform import pyxl_transform_string
 
 def main(num_runs):
     l = []
@@ -17,7 +19,7 @@ def _main():
     for i in xrange(BASE):
         # pyxl/tests/test_if_1.py
         pyxl_transform_string(
-    '''
+    u'''
     from pyxl import html
 
     def test():
@@ -28,7 +30,7 @@ def _main():
     for i in xrange(BASE):
         # pyxl/tests/test_curlies_in_attrs_1.py
         pyxl_transform_string(
-    '''
+    u'''
     from pyxl import html
     def test():
         # kannan thinks this should be different
@@ -40,7 +42,7 @@ def _main():
     for i in xrange(BASE):
         # pyxl/tests/test_rss.py
         pyxl_transform_string(
-    '''
+    u'''
     import datetime
 
     from  unittest2 import TestCase

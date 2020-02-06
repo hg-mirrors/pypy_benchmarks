@@ -3,45 +3,62 @@
     sphinx.util.compat
     ~~~~~~~~~~~~~~~~~~
 
-    Stuff for docutils compatibility.
+    modules for backward compatibility
 
-    :copyright: Copyright 2007-2011 by the Sphinx team, see AUTHORS.
+    :copyright: Copyright 2007-2019 by the Sphinx team, see AUTHORS.
     :license: BSD, see LICENSE for details.
 """
 
-from docutils import nodes
+from __future__ import absolute_import
 
-# function missing in docutils 0.5
-def make_admonition(node_class, name, arguments, options, content, lineno,
-                    content_offset, block_text, state, state_machine):
-    #if not content:
-    #    error = state_machine.reporter.error(
-    #        'The "%s" admonition is empty; content required.' % (name),
-    #        nodes.literal_block(block_text, block_text), line=lineno)
-    #    return [error]
-    text = '\n'.join(content)
-    admonition_node = node_class(text)
-    if arguments:
-        title_text = arguments[0]
-        textnodes, messages = state.inline_text(title_text, lineno)
-        admonition_node += nodes.title(title_text, '', *textnodes)
-        admonition_node += messages
-        if 'class' in options:
-            classes = options['class']
-        else:
-            classes = ['admonition-' + nodes.make_id(title_text)]
-        admonition_node['classes'] += classes
-    state.nested_parse(content, content_offset, admonition_node)
-    return [admonition_node]
+import sys
+import warnings
+
+from six import string_types, iteritems
+
+from sphinx.deprecation import RemovedInSphinx30Warning
+from sphinx.util import import_object
+
+if False:
+    # For type annotation
+    from typing import Any, Dict  # NOQA
+    from sphinx.application import Sphinx  # NOQA
+    from sphinx.config import Config  # NOQA
 
 
-# backwards-compatibility aliases for helpers in older Sphinx versions that
-# supported the docutils 0.4 directive function interface
+def deprecate_source_parsers(app, config):
+    # type: (Sphinx, Config) -> None
+    if config.source_parsers:
+        warnings.warn('The config variable "source_parsers" is deprecated. '
+                      'Please use app.add_source_parser() API instead.',
+                      RemovedInSphinx30Warning)
+        for suffix, parser in iteritems(config.source_parsers):
+            if isinstance(parser, string_types):
+                parser = import_object(parser, 'source parser')  # type: ignore
+            app.add_source_parser(suffix, parser)
 
-from docutils.parsers.rst import Directive
 
-def directive_dwim(obj):
-    import warnings
-    warnings.warn('directive_dwim is deprecated and no longer needed',
-                  DeprecationWarning, stacklevel=2)
-    return obj
+def register_application_for_autosummary(app):
+    # type: (Sphinx) -> None
+    """Register application object to autosummary module.
+
+    Since Sphinx-1.7, documenters and attrgetters are registered into
+    applicaiton object.  As a result, the arguments of
+    ``get_documenter()`` has been changed.  To keep compatibility,
+    this handler registers application object to the module.
+    """
+    if 'sphinx.ext.autosummary' in sys.modules:
+        from sphinx.ext import autosummary
+        autosummary._app = app
+
+
+def setup(app):
+    # type: (Sphinx) -> Dict[unicode, Any]
+    app.connect('config-inited', deprecate_source_parsers)
+    app.connect('builder-inited', register_application_for_autosummary)
+
+    return {
+        'version': 'builtin',
+        'parallel_read_safe': True,
+        'parallel_write_safe': True,
+    }

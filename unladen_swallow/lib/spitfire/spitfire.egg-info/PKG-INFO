@@ -1,0 +1,19 @@
+Metadata-Version: 1.1
+Name: spitfire
+Version: 0.7.15
+Summary: text-to-python template language
+Home-page: UNKNOWN
+Author: Mike Solomon
+Author-email: <mas63 @t cornell d0t edu>
+License: BSD License
+Description: UNKNOWN
+Platform: Posix
+Platform: MacOS X
+Platform: Windows
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: BSD License
+Classifier: Programming Language :: Python
+Classifier: Topic :: Internet :: WWW/HTTP :: Dynamic Content
+Classifier: Topic :: Software Development :: Code Generators
+Classifier: Topic :: Text Processing

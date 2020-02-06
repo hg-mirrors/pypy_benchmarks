@@ -7,7 +7,7 @@ from datetime import datetime
 import optparse
 
 #SPEEDURL = 'http://127.0.0.1:8000/'
-SPEEDURL = 'http://speed.pypy.org/'
+SPEEDURL = 'https://speed.pypy.org/'
 
 def save(project, revision, results, options, executable, host, testing=False,
          base=False):
@@ -21,12 +21,20 @@ def save(project, revision, results, options, executable, host, testing=False,
         res_type = b[1]
         results = b[2]
         value = 0
-        if res_type == "SimpleComparisonResult" or res_type == 'RawResult':
+        if res_type == "SimpleComparisonResult"
+            if base:
+                value = results['base_time']
+            else:
+                value = results['changed_time']
+            if value is None:
+                continue
+            value = value[0]
+        elif res_type == 'RawResult':
             if base:
                 value = results['base_times']
             else:
                 value = results['changed_times']
-            if value is None:
+            if value is None or len(value) == 0:
                 continue
             value = value[0]
         elif res_type == "ComparisonResult":
@@ -37,21 +45,20 @@ def save(project, revision, results, options, executable, host, testing=False,
         else:
             print("ERROR: result type unknown " + b[1])
             return 1
-        data = {
+        data = [{
             'commitid': revision,
             'project': project,
             'executable': executable,
             'benchmark': bench_name,
             'environment': host,
             'result_value': value,
-            'result_date': current_date,
             'branch': 'default',
-        }
+        }]
         if res_type == "ComparisonResult":
             if base:
-                data['std_dev'] = results['std_base']
+                data[0]['std_dev'] = results['std_base']
             else:
-                data['std_dev'] = results['std_changed']
+                data[0]['std_dev'] = results['std_changed']
         if testing: testparams.append(data)
         else: send(data)
     if testing: return testparams
@@ -59,14 +66,14 @@ def save(project, revision, results, options, executable, host, testing=False,
     
 def send(data):
     #save results
-    params = urllib.urlencode(data)
+    params = urllib.urlencode({'json': json.dumps(data)})
     f = None
     response = "None"
-    info = str(datetime.today()) + ": Saving result for " + data['executable'] + " revision "
-    info += str(data['commitid']) + ", benchmark " + data['benchmark']
+    info = str(datetime.today()) + ": Saving result for " + data[0]['executable'] + " revision "
+    info += str(data[0]['commitid']) + ", benchmark " + data[0]['benchmark']
     print(info)
     try:
-        f = urllib2.urlopen(SPEEDURL + 'result/add/', params)
+        f = urllib2.urlopen(SPEEDURL + 'result/add/json/', params)
         response = f.read()
         f.close()
     except urllib2.URLError, e:
@@ -93,6 +100,6 @@ if __name__ == '__main__':
         print parser.usage
         sys.exit(1)
     results = json.load(open(args[1]))['results']
-    save('cpython', options.revision, results, None, 'cpython', 'tannit',
+    save('cpython', options.revision, results, None, 'cpython', 'benchmarker',
          testing=False,
          base=options.base)

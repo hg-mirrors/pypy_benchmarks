@@ -1,561 +1,40 @@
-from sympy import SYMPY_DEBUG
+from __future__ import print_function, division
+
+from collections import defaultdict
+
+from sympy.core import (Basic, S, Add, Mul, Pow, Symbol, sympify, expand_mul,
+                        expand_func, Function, Dummy, Expr, factor_terms,
+                        expand_power_exp, Eq)
+from sympy.core.compatibility import iterable, ordered, range, as_int
+from sympy.core.evaluate import global_evaluate
+from sympy.core.function import expand_log, count_ops, _mexpand, _coeff_isneg, \
+    nfloat, expand_mul, expand_multinomial
+from sympy.core.numbers import Float, I, pi, Rational, Integer
+from sympy.core.rules import Transform
+from sympy.core.sympify import _sympify
+from sympy.functions import gamma, exp, sqrt, log, exp_polar, re
+from sympy.functions.combinatorial.factorials import CombinatorialFunction
+from sympy.functions.elementary.complexes import unpolarify
+from sympy.functions.elementary.exponential import ExpBase
+from sympy.functions.elementary.hyperbolic import HyperbolicFunction
+from sympy.functions.elementary.integers import ceiling
+from sympy.functions.elementary.piecewise import Piecewise, piecewise_fold
+from sympy.functions.elementary.trigonometric import TrigonometricFunction
+from sympy.functions.special.bessel import besselj, besseli, besselk, jn, bessely
+from sympy.functions.special.tensor_functions import KroneckerDelta
+from sympy.polys import together, cancel, factor
+from sympy.simplify.combsimp import combsimp
+from sympy.simplify.cse_opts import sub_pre, sub_post
+from sympy.simplify.powsimp import powsimp
+from sympy.simplify.radsimp import radsimp, fraction, collect_abs
+from sympy.simplify.sqrtdenest import sqrtdenest
+from sympy.simplify.trigsimp import trigsimp, exptrigsimp
+from sympy.utilities.iterables import has_variety, sift
+
+
+import mpmath
 
-from sympy.core import (Basic, S, C, Add, Mul, Pow, Rational, Integer,
-    Derivative, Wild, Symbol, sympify, expand, expand_mul, expand_func,
-    Function, Equality, Dummy, Atom, count_ops)
 
-from sympy.core.compatibility import iterable
-from sympy.core.numbers import igcd
-from sympy.core.function import expand_log, count_ops
-
-from sympy.utilities import flatten, default_sort_key
-from sympy.functions import gamma, exp, sqrt, log
-
-from sympy.simplify.cse_main import cse
-
-from sympy.polys import (Poly, together, reduced, cancel, factor,
-    ComputationFailed, terms_gcd, lcm)
-
-from sympy.core.compatibility import reduce
-
-import sympy.mpmath as mpmath
-
-def fraction(expr, exact=False):
-    """Returns a pair with expression's numerator and denominator.
-       If the given expression is not a fraction then this function
-       will return the tuple (expr, 1).
-
-       This function will not make any attempt to simplify nested
-       fractions or to do any term rewriting at all.
-
-       If only one of the numerator/denominator pair is needed then
-       use numer(expr) or denom(expr) functions respectively.
-
-       >>> from sympy import fraction, Rational, Symbol
-       >>> from sympy.abc import x, y
-
-       >>> fraction(x/y)
-       (x, y)
-       >>> fraction(x)
-       (x, 1)
-
-       >>> fraction(1/y**2)
-       (1, y**2)
-
-       >>> fraction(x*y/2)
-       (x*y, 2)
-       >>> fraction(Rational(1, 2))
-       (1, 2)
-
-       This function will also work fine with assumptions:
-
-       >>> k = Symbol('k', negative=True)
-       >>> fraction(x * y**k)
-       (x, y**(-k))
-
-       If we know nothing about sign of some exponent and 'exact'
-       flag is unset, then structure this exponent's structure will
-       be analyzed and pretty fraction will be returned:
-
-       >>> from sympy import exp
-       >>> fraction(2*x**(-y))
-       (2, x**y)
-
-       >>> fraction(exp(-x))
-       (1, exp(x))
-
-       >>> fraction(exp(-x), exact=True)
-       (exp(-x), 1)
-
-    """
-    expr = sympify(expr)
-
-    numer, denom = [], []
-
-    for term in Mul.make_args(expr):
-        if term.is_commutative and (term.is_Pow or term.func is exp):
-            b, ex = term.as_base_exp()
-            if ex.is_negative:
-                if ex is S.NegativeOne:
-                    denom.append(b)
-                else:
-                    denom.append(Pow(b, -ex))
-            elif not exact and ex.is_Mul:
-                n, d = term.as_numer_denom()
-                numer.append(n)
-                denom.append(d)
-            else:
-                numer.append(term)
-        elif term.is_Rational:
-            n, d = term.as_numer_denom()
-            numer.append(n)
-            denom.append(d)
-        else:
-            numer.append(term)
-
-    return Mul(*numer), Mul(*denom)
-
-def numer(expr):
-    return fraction(expr)[0]
-
-def denom(expr):
-    return fraction(expr)[1]
-
-def fraction_expand(expr):
-    a, b = fraction(expr)
-    return a.expand() / b.expand()
-
-def numer_expand(expr):
-    a, b = fraction(expr)
-    return a.expand() / b
-
-def denom_expand(expr):
-    a, b = fraction(expr)
-    return a / b.expand()
-
-def separate(expr, deep=False, force=False):
-    """A wrapper to expand(power_base=True) which separates a power
-       with a base that is a Mul into a product of powers, without performing
-       any other expansions, provided that assumptions about the power's base
-       and exponent allow.
-
-       deep=True (default is False) will do separations inside functions.
-
-       force=True (default is False) will cause the expansion to ignore
-       assumptions about the base and exponent. When False, the expansion will
-       only happen if the base is non-negative or the exponent is an integer.
-
-       >>> from sympy.abc import x, y, z
-       >>> from sympy import separate, sin, cos, exp
-
-       >>> (x*y)**2
-       x**2*y**2
-
-       >>> (2*x)**y
-       (2*x)**y
-       >>> separate(_)
-       2**y*x**y
-
-       >>> separate((x*y)**z)
-       (x*y)**z
-       >>> separate((x*y)**z, force=True)
-       x**z*y**z
-       >>> separate(sin((x*y)**z))
-       sin((x*y)**z)
-       >>> separate(sin((x*y)**z), deep=True, force=True)
-       sin(x**z*y**z)
-
-       >>> separate((2*sin(x))**y + (2*cos(x))**y)
-       2**y*sin(x)**y + 2**y*cos(x)**y
-
-       >>> separate((2*exp(y))**x)
-       2**x*exp(x*y)
-
-       >>> separate((2*cos(x))**y)
-       2**y*cos(x)**y
-
-       Notice that summations are left untouched. If this is not the
-       desired behavior, apply 'expand' to the expression:
-
-       >>> separate(((x+y)*z)**2)
-       z**2*(x + y)**2
-       >>> (((x+y)*z)**2).expand()
-       x**2*z**2 + 2*x*y*z**2 + y**2*z**2
-
-       >>> separate((2*y)**(1+z))
-       2**(z + 1)*y**(z + 1)
-       >>> ((2*y)**(1+z)).expand()
-       2*2**z*y*y**z
-
-    """
-    return sympify(expr).expand(deep=deep, mul=False, power_exp=False,\
-    power_base=True, basic=False, multinomial=False, log=False, force=force)
-
-def collect(expr, syms, func=None, evaluate=True, exact=False):
-    """
-    Collect additive terms of an expression.
-
-    This function collects additive terms of an expression with respect
-    to a list of expression up to powers with rational exponents. By the
-    term symbol here are meant arbitrary expressions, which can contain
-    powers, products, sums etc. In other words symbol is a pattern which
-    will be searched for in the expression's terms.
-
-    The input expression is not expanded by :func:`collect`, so user is
-    expected to provide an expression is an appropriate form. This makes
-    :func:`collect` more predictable as there is no magic happening behind
-    the scenes. However, it is important to note, that powers of products
-    are converted to products of powers using :func:`separate` function.
-
-    There are two possible types of output. First, if ``evaluate`` flag is
-    set, this function will return an expression with collected terms or
-    else it will return a dictionary with expressions up to rational powers
-    as keys and collected coefficients as values.
-
-    **Examples**
-
-    >>> from sympy import S, collect, expand, factor, Wild
-    >>> from sympy.abc import a, b, c, x, y, z
-
-    This function can collect symbolic coefficients in polynomials or
-    rational expressions. It will manage to find all integer or rational
-    powers of collection variable::
-
-        >>> collect(a*x**2 + b*x**2 + a*x - b*x + c, x)
-        c + x**2*(a + b) + x*(a - b)
-
-    The same result can be achieved in dictionary form::
-
-        >>> d = collect(a*x**2 + b*x**2 + a*x - b*x + c, x, evaluate=False)
-        >>> d[x**2]
-        a + b
-        >>> d[x]
-        a - b
-        >>> d[S.One]
-        c
-
-    You can also work with multivariate polynomials. However, remember that
-    this function is greedy so it will care only about a single symbol at time,
-    in specification order::
-
-        >>> collect(x**2 + y*x**2 + x*y + y + a*y, [x, y])
-        x**2*(y + 1) + x*y + y*(a + 1)
-
-    Also more complicated expressions can be used as patterns::
-
-        >>> from sympy import sin, log
-        >>> collect(a*sin(2*x) + b*sin(2*x), sin(2*x))
-        (a + b)*sin(2*x)
-
-        >>> collect(a*x*log(x) + b*(x*log(x)), x*log(x))
-        x*(a + b)*log(x)
-
-    You can use wildcards in the pattern::
-
-        >>> w = Wild('w1')
-        >>> collect(a*x**y - b*x**y, w**y)
-        x**y*(a - b)
-
-    It is also possible to work with symbolic powers, although it has more
-    complicated behavior, because in this case power's base and symbolic part
-    of the exponent are treated as a single symbol::
-
-        >>> collect(a*x**c + b*x**c, x)
-        a*x**c + b*x**c
-        >>> collect(a*x**c + b*x**c, x**c)
-        x**c*(a + b)
-
-    However if you incorporate rationals to the exponents, then you will get
-    well known behavior::
-
-        >>> collect(a*x**(2*c) + b*x**(2*c), x**c)
-        (a + b)*(x**2)**c
-
-    Note also that all previously stated facts about :func:`collect` function
-    apply to the exponential function, so you can get::
-
-        >>> from sympy import exp
-        >>> collect(a*exp(2*x) + b*exp(2*x), exp(x))
-        (a + b)*exp(2*x)
-
-    If you are interested only in collecting specific powers of some symbols
-    then set ``exact`` flag in arguments::
-
-        >>> collect(a*x**7 + b*x**7, x, exact=True)
-        a*x**7 + b*x**7
-        >>> collect(a*x**7 + b*x**7, x**7, exact=True)
-        x**7*(a + b)
-
-    You can also apply this function to differential equations, where derivatives
-    of arbitrary order can be collected. Note that if you collect with respect
-    to a function or a derivative of a function, all derivatives of that function
-    will also be collected. Use ``exact=True`` to prevent this from happening::
-
-        >>> from sympy import Derivative as D, collect, Function
-        >>> f = Function('f') (x)
-
-        >>> collect(a*D(f,x) + b*D(f,x), D(f,x))
-        (a + b)*Derivative(f(x), x)
-
-        >>> collect(a*D(D(f,x),x) + b*D(D(f,x),x), f)
-        (a + b)*Derivative(f(x), x, x)
-
-        >>> collect(a*D(D(f,x),x) + b*D(D(f,x),x), D(f,x), exact=True)
-        a*Derivative(f(x), x, x) + b*Derivative(f(x), x, x)
-
-        >>> collect(a*D(f,x) + b*D(f,x) + a*f + b*f, f)
-        (a + b)*f(x) + (a + b)*Derivative(f(x), x)
-
-    Or you can even match both derivative order and exponent at the same time::
-
-        >>> collect(a*D(D(f,x),x)**2 + b*D(D(f,x),x)**2, D(f,x))
-        (a + b)*Derivative(f(x), x, x)**2
-
-    Finally, you can apply a function to each of the collected coefficients.
-    For example you can factorize symbolic coefficients of polynomial::
-
-        >>> f = expand((x + a + 1)**3)
-
-        >>> collect(f, x, factor)
-        x**3 + 3*x**2*(a + 1) + 3*x*(a + 1)**2 + (a + 1)**3
-
-    .. note:: Arguments are expected to be in expanded form, so you might have
-              to call :func:`expand` prior to calling this function.
-
-    """
-    def make_expression(terms):
-        product = []
-
-        for term, rat, sym, deriv in terms:
-            if deriv is not None:
-                var, order = deriv
-
-                while order > 0:
-                    term, order = Derivative(term, var), order-1
-
-            if sym is None:
-                if rat is S.One:
-                    product.append(term)
-                else:
-                    product.append(Pow(term, rat))
-            else:
-                product.append(Pow(term, rat*sym))
-
-        return Mul(*product)
-
-    def parse_derivative(deriv):
-        # scan derivatives tower in the input expression and return
-        # underlying function and maximal differentiation order
-        expr, sym, order = deriv.expr, deriv.variables[0], 1
-
-        for s in deriv.variables[1:]:
-            if s == sym:
-                order += 1
-            else:
-                raise NotImplementedError('Improve MV Derivative support in collect')
-
-        while isinstance(expr, Derivative):
-            s0 = expr.variables[0]
-
-            for s in expr.variables:
-                if s != s0:
-                    raise NotImplementedError('Improve MV Derivative support in collect')
-
-            if s0 == sym:
-                expr, order = expr.expr, order+len(expr.variables)
-            else:
-                break
-
-        return expr, (sym, Rational(order))
-
-    def parse_term(expr):
-        """Parses expression expr and outputs tuple (sexpr, rat_expo, sym_expo, deriv)
-        where:
-         - sexpr is the base expression
-         - rat_expo is the rational exponent that sexpr is raised to
-         - sym_expo is the symbolic exponent that sexpr is raised to
-         - deriv contains the derivatives the the expression
-
-         for example, the output of x would be (x, 1, None, None)
-         the output of 2**x would be (2, 1, x, None)
-        """
-        rat_expo, sym_expo = S.One, None
-        sexpr, deriv = expr, None
-
-        if expr.is_Pow:
-            if isinstance(expr.base, Derivative):
-                sexpr, deriv = parse_derivative(expr.base)
-            else:
-                sexpr = expr.base
-
-            if expr.exp.is_Rational:
-                rat_expo = expr.exp
-            elif expr.exp.is_Mul:
-                coeff, tail = expr.exp.as_coeff_mul()
-
-                if coeff.is_Rational:
-                    rat_expo, sym_expo = coeff, expr.exp._new_rawargs(*tail)
-                else:
-                    sym_expo = expr.exp
-            else:
-                sym_expo = expr.exp
-        elif expr.func is C.exp:
-            arg = expr.args[0]
-            if arg.is_Rational:
-                sexpr, rat_expo = S.Exp1, arg
-            elif arg.is_Mul:
-                coeff, tail = arg.as_coeff_mul()
-
-                if coeff.is_Rational:
-                    sexpr, rat_expo = C.exp(arg._new_rawargs(*tail)), coeff
-        elif isinstance(expr, Derivative):
-            sexpr, deriv = parse_derivative(expr)
-
-        return sexpr, rat_expo, sym_expo, deriv
-
-    def parse_expression(terms, pattern):
-        """Parse terms searching for a pattern.
-        terms is a list of tuples as returned by parse_terms;
-        pattern is an expression treated as a product of factors
-        """
-        pattern = Mul.make_args(pattern)
-
-        if len(terms) < len(pattern):
-            # pattern is longer than  matched product
-            # so no chance for positive parsing result
-            return None
-        else:
-            pattern = [parse_term(elem) for elem in pattern]
-
-            terms = terms[:] # need a copy
-            elems, common_expo, has_deriv = [], None, False
-
-            for elem, e_rat, e_sym, e_ord in pattern:
-
-                if elem.is_Number:
-                    # a constant is a match for everything
-                    continue
-
-                for j in range(len(terms)):
-                    if terms[j] is None:
-                        continue
-
-                    term, t_rat, t_sym, t_ord = terms[j]
-
-                    # keeping track of whether one of the terms had
-                    # a derivative or not as this will require rebuilding
-                    # the expression later
-                    if t_ord is not None:
-                        has_deriv= True
-
-                    if (term.match(elem) is not None and \
-                            (t_sym == e_sym or t_sym is not None and \
-                            e_sym is not None and \
-                            t_sym.match(e_sym) is not None)):
-                        if exact == False:
-                            # we don't have to be exact so find common exponent
-                            # for both expression's term and pattern's element
-                            expo = t_rat / e_rat
-
-                            if common_expo is None:
-                                # first time
-                                common_expo = expo
-                            else:
-                                # common exponent was negotiated before so
-                                # there is no chance for a pattern match unless
-                                # common and current exponents are equal
-                                if common_expo != expo:
-                                    common_expo = 1
-                        else:
-                            # we ought to be exact so all fields of
-                            # interest must match in every details
-                            if e_rat != t_rat or e_ord != t_ord:
-                                continue
-
-                        # found common term so remove it from the expression
-                        # and try to match next element in the pattern
-                        elems.append(terms[j])
-                        terms[j] = None
-
-                        break
-
-                else:
-                    # pattern element not found
-                    return None
-
-            return filter(None, terms), elems, common_expo, has_deriv
-
-    if evaluate:
-        if expr.is_Mul:
-            ret = 1
-            for term in expr.args:
-                ret *= collect(term, syms, func, True, exact)
-            return ret
-        elif expr.is_Pow:
-            b = collect(expr.base, syms, func, True, exact)
-            return Pow(b, expr.exp)
-
-    summa = [separate(i) for i in Add.make_args(sympify(expr))]
-
-    if hasattr(syms, '__iter__') or hasattr(syms, '__getitem__'):
-        syms = [separate(s) for s in syms]
-    else:
-        syms = [separate(syms)]
-
-    collected, disliked = {}, S.Zero
-    for product in summa:
-        terms = [parse_term(i) for i in Mul.make_args(product)]
-
-        for symbol in syms:
-            if SYMPY_DEBUG:
-                print "DEBUG: parsing of expression %s with symbol %s " % (str(terms), str(symbol))
-
-            result = parse_expression(terms, symbol)
-
-            if SYMPY_DEBUG:
-                print "DEBUG: returned %s" %  str(result)
-
-            if result is not None:
-                terms, elems, common_expo, has_deriv = result
-
-                # when there was derivative in current pattern we
-                # will need to rebuild its expression from scratch
-                if not has_deriv:
-                    index = 1
-                    for elem in elems:
-                        index *= Pow(elem[0], elem[1])
-                        if elem[2] is not None:
-                            index **= elem[2]
-                else:
-                    index = make_expression(elems)
-                terms = separate(make_expression(terms))
-                index = separate(index)
-                if index in collected.keys():
-                    collected[index] += terms
-                else:
-                    collected[index] = terms
-
-                break
-        else:
-            # none of the patterns matched
-            disliked += product
-
-    if disliked is not S.Zero:
-        collected[S.One] = disliked
-
-    if func is not None:
-        collected = dict([ (key, func(val)) for key, val in collected.iteritems() ])
-
-    if evaluate:
-        return Add(*[a*b for a, b in collected.iteritems()])
-    else:
-        return collected
-
-def rcollect(expr, *vars):
-    """
-    Recursively collect sums in an expression.
-
-    Example
-    =======
-
-    >>> from sympy.simplify import rcollect
-    >>> from sympy.abc import x, y
-
-    >>> expr = (x**2*y + x*y + x + y)/(x + y)
-
-    >>> rcollect(expr, y)
-    (x + y*(x**2 + x + 1))/(x + y)
-
-    """
-    if expr.is_Atom or not expr.has(*vars):
-        return expr
-    else:
-        expr = expr.__class__(*[ rcollect(arg, *vars) for arg in expr.args ])
-
-        if expr.is_Add:
-            return collect(expr, vars)
-        else:
-            return expr
 
 def separatevars(expr, symbols=[], dict=False, force=False):
     """
@@ -573,51 +52,86 @@ def separatevars(expr, symbols=[], dict=False, force=False):
     string 'coeff'. (Passing None for symbols will return the
     expression in a dictionary keyed to 'coeff'.)
 
-    If force=True, then power bases will only be separated if assumptions allow.
+    If force=True, then bases of powers will be separated regardless
+    of assumptions on the symbols involved.
 
-    Note: the order of the factors is determined by Mul, so that the
+    Notes
+    =====
+
+    The order of the factors is determined by Mul, so that the
     separated expressions may not necessarily be grouped together.
 
-    Examples:
+    Although factoring is necessary to separate variables in some
+    expressions, it is not necessary in all cases, so one should not
+    count on the returned factors being factored.
+
+    Examples
+    ========
+
     >>> from sympy.abc import x, y, z, alpha
     >>> from sympy import separatevars, sin
     >>> separatevars((x*y)**y)
     (x*y)**y
     >>> separatevars((x*y)**y, force=True)
     x**y*y**y
-    >>> separatevars(2*x**2*z*sin(y)+2*z*x**2)
-    2*x**2*z*(sin(y) + 1)
 
-    >>> separatevars(2*x+y*sin(x))
-    2*x + y*sin(x)
-    >>> separatevars(2*x**2*z*sin(y)+2*z*x**2, symbols=(x, y), dict=True)
+    >>> e = 2*x**2*z*sin(y)+2*z*x**2
+    >>> separatevars(e)
+    2*x**2*z*(sin(y) + 1)
+    >>> separatevars(e, symbols=(x, y), dict=True)
     {'coeff': 2*z, x: x**2, y: sin(y) + 1}
-    >>> separatevars(2*x**2*z*sin(y)+2*z*x**2, [x, y, alpha], dict=True)
+    >>> separatevars(e, [x, y, alpha], dict=True)
     {'coeff': 2*z, alpha: 1, x: x**2, y: sin(y) + 1}
 
     If the expression is not really separable, or is only partially
-    separable, separatevars will do the best it can to separate it.
+    separable, separatevars will do the best it can to separate it
+    by using factoring.
 
-    >>> separatevars(x+x*y-3*(x**2))
+    >>> separatevars(x + x*y - 3*x**2)
     -x*(3*x - y - 1)
 
     If the expression is not separable then expr is returned unchanged
     or (if dict=True) then None is returned.
 
-    >>> eq = 2*x+y*sin(x)
+    >>> eq = 2*x + y*sin(x)
     >>> separatevars(eq) == eq
     True
-    >>> separatevars(2*x+y*sin(x), symbols=(x, y), dict=True) == None
+    >>> separatevars(2*x + y*sin(x), symbols=(x, y), dict=True) is None
     True
 
     """
-
+    expr = sympify(expr)
     if dict:
         return _separatevars_dict(_separatevars(expr, force), symbols)
     else:
         return _separatevars(expr, force)
 
+
 def _separatevars(expr, force):
+    from sympy.functions.elementary.complexes import Abs
+    if isinstance(expr, Abs):
+        arg = expr.args[0]
+        if arg.is_Mul and not arg.is_number:
+            s = separatevars(arg, dict=True, force=force)
+            if s is not None:
+                return Mul(*map(expr.func, s.values()))
+            else:
+                return expr
+
+    if len(expr.free_symbols) < 2:
+        return expr
+
+    # don't destroy a Mul since much of the work may already be done
+    if expr.is_Mul:
+        args = list(expr.args)
+        changed = False
+        for i, a in enumerate(args):
+            args[i] = separatevars(a, force)
+            changed = changed or args[i] != a
+        if changed:
+            expr = expr.func(*args)
+        return expr
+
     # get a Pow ready for expansion
     if expr.is_Pow:
         expr = Pow(separatevars(expr.base, force=force), expr.exp)
@@ -625,59 +139,43 @@ def _separatevars(expr, force):
     # First try other expansion methods
     expr = expr.expand(mul=False, multinomial=False, force=force)
 
-    _expr = expr.expand(power_exp=False, deep=False, force=force)
+    _expr, reps = posify(expr) if force else (expr, {})
+    expr = factor(_expr).subs(reps)
 
-    if not force:
-        # factor will expand bases so we mask them off now
-        pows = [p for p in _expr.atoms(Pow) if p.base.is_Mul]
-        dums = [Dummy(str(i)) for i in xrange(len(pows))]
-        _expr = _expr.subs(dict(zip(pows, dums)))
-
-    _expr = factor(_expr, expand=False)
-
-    if not force:
-        # and retore them
-        _expr = _expr.subs(dict(zip(dums, pows)))
-
-
-
-    if not _expr.is_Add:
-        expr = _expr
-
-    if expr.is_Add:
-
-        nonsepar = sympify(0)
-        # Find any common coefficients to pull out
-        commoncsetlist = []
-        for i in expr.args:
-            if i.is_Mul:
-                commoncsetlist.append(set(i.args))
-            else:
-                commoncsetlist.append(set((i,)))
-        commoncset = set(flatten(commoncsetlist))
-        commonc = sympify(1)
-
-        for i in commoncsetlist:
-            commoncset = commoncset.intersection(i)
-        commonc = Mul(*commoncset)
-
-        for i in expr.args:
-            coe = i.extract_multiplicatively(commonc)
-            if coe == None:
-                nonsepar += sympify(1)
-            else:
-                nonsepar += coe
-        if nonsepar == 0:
-            return commonc
-        else:
-            return commonc*nonsepar
-
-    else:
+    if not expr.is_Add:
         return expr
+
+    # Find any common coefficients to pull out
+    args = list(expr.args)
+    commonc = args[0].args_cnc(cset=True, warn=False)[0]
+    for i in args[1:]:
+        commonc &= i.args_cnc(cset=True, warn=False)[0]
+    commonc = Mul(*commonc)
+    commonc = commonc.as_coeff_Mul()[1]  # ignore constants
+    commonc_set = commonc.args_cnc(cset=True, warn=False)[0]
+
+    # remove them
+    for i, a in enumerate(args):
+        c, nc = a.args_cnc(cset=True, warn=False)
+        c = c - commonc_set
+        args[i] = Mul(*c)*Mul(*nc)
+    nonsepar = Add(*args)
+
+    if len(nonsepar.free_symbols) > 1:
+        _expr = nonsepar
+        _expr, reps = posify(_expr) if force else (_expr, {})
+        _expr = (factor(_expr)).subs(reps)
+
+        if not _expr.is_Add:
+            nonsepar = _expr
+
+    return commonc*nonsepar
+
 
 def _separatevars_dict(expr, symbols):
     if symbols:
-        assert all((t.is_Atom for t in symbols)), "symbols must be Atoms."
+        if not all((t.is_Atom for t in symbols)):
+            raise ValueError("symbols must be Atoms.")
         symbols = list(symbols)
     elif symbols is None:
         return {'coeff': expr}
@@ -686,7 +184,7 @@ def _separatevars_dict(expr, symbols):
         if not symbols:
             return None
 
-    ret = dict(((i, S.One) for i in symbols + ['coeff']))
+    ret = dict(((i, []) for i in symbols + ['coeff']))
 
     for i in Mul.make_args(expr):
         expsym = i.free_symbols
@@ -695,246 +193,62 @@ def _separatevars_dict(expr, symbols):
             return None
         if len(intersection) == 0:
             # There are no symbols, so it is part of the coefficient
-            ret['coeff'] *= i
+            ret['coeff'].append(i)
         else:
-            ret[intersection.pop()] *= i
+            ret[intersection.pop()].append(i)
+
+    # rebuild
+    for k, v in ret.items():
+        ret[k] = Mul(*v)
 
     return ret
 
-def ratsimp(expr):
-    """Put an expression over a common denominator, cancel and reduce.
 
-    == Examples ==
-        >>> from sympy import ratsimp
-        >>> from sympy.abc import x, y
-        >>> ratsimp(1/x + 1/y)
-        (x + y)/(x*y)
-    """
+def _is_sum_surds(p):
+    args = p.args if p.is_Add else [p]
+    for y in args:
+        if not ((y**2).is_Rational and y.is_extended_real):
+            return False
+    return True
 
-    f, g = cancel(expr).as_numer_denom()
-    try:
-        Q, r = reduced(f, [g], field=True, expand=False)
-    except ComputationFailed:
-        return f/g
-
-    return Add(*Q) + cancel(r/g)
-
-def trigsimp(expr, deep=False, recursive=False):
-    """
-    == Usage ==
-
-    trigsimp(expr) -> reduces expression by using known trig identities
-
-    == Notes ==
-
-    deep:
-    - Apply trigsimp inside functions
-
-    recursive:
-    - Use common subexpression elimination (cse()) and apply
-    trigsimp recursively (recursively==True is quite expensive
-    operation if the expression is large)
-
-    == Examples ==
-        >>> from sympy import trigsimp, sin, cos, log
-        >>> from sympy.abc import x, y
-        >>> e = 2*sin(x)**2 + 2*cos(x)**2
-        >>> trigsimp(e)
-        2
-        >>> trigsimp(log(e))
-        log(2*sin(x)**2 + 2*cos(x)**2)
-        >>> trigsimp(log(e), deep=True)
-        log(2)
-
-    """
-    sin, cos, tan, cot = C.sin, C.cos, C.tan, C.cot
-    if not expr.has(sin, cos, tan, cot):
-        return expr
-
-    if recursive:
-        w, g = cse(expr)
-        g = trigsimp_nonrecursive(g[0])
-
-        for sub in reversed(w):
-            g = g.subs(sub[0], sub[1])
-            g = trigsimp_nonrecursive(g)
-        result = g
-    else:
-        result = trigsimp_nonrecursive(expr, deep)
-
-    return result
-
-
-def trigsimp_nonrecursive(expr, deep=False):
-    """
-    A nonrecursive trig simplifier, used from trigsimp.
-
-    == Usage ==
-        trigsimp_nonrecursive(expr) -> reduces expression by using known trig
-                                       identities
-
-    == Notes ==
-
-    deep ........ apply trigsimp inside functions
-
-    == Examples ==
-        >>> from sympy import cos, sin, log
-        >>> from sympy.simplify.simplify import trigsimp, trigsimp_nonrecursive
-        >>> from sympy.abc import x, y
-        >>> e = 2*sin(x)**2 + 2*cos(x)**2
-        >>> trigsimp(e)
-        2
-        >>> trigsimp_nonrecursive(log(e))
-        log(2*sin(x)**2 + 2*cos(x)**2)
-        >>> trigsimp_nonrecursive(log(e), deep=True)
-        log(2)
-
-    """
-    sin, cos, tan, cot = C.sin, C.cos, C.tan, C.cot
-
-    if expr.is_Function:
-        if deep:
-            return expr.func(trigsimp_nonrecursive(expr.args[0], deep))
-    elif expr.is_Mul:
-        # do some simplifications like sin/cos -> tan:
-        a,b,c = map(Wild, 'abc')
-        matchers = (
-                (a*sin(b)**c/cos(b)**c, a*tan(b)**c),
-                (a*tan(b)**c*cos(b)**c, a*sin(b)**c),
-                (a*cot(b)**c*sin(b)**c, a*cos(b)**c),
-                (a*tan(b)**c/sin(b)**c, a/cos(b)**c),
-                (a*cot(b)**c/cos(b)**c, a/sin(b)**c),
-        )
-        for pattern, simp in matchers:
-            res = expr.match(pattern)
-            if res is not None:
-                # if c is missing or zero, do nothing:
-                if (not c in res) or res[c] == 0:
-                    continue
-                # if "a" contains any of sin("b"), cos("b"), tan("b") or cot("b),
-                # skip the simplification:
-                if res[a].has(cos(res[b]), sin(res[b]), tan(res[b]), cot(res[b])):
-                    continue
-                # simplify and finish:
-                expr = simp.subs(res)
-                break
-        if not expr.is_Mul:
-            return trigsimp_nonrecursive(expr, deep)
-        ret = S.One
-        for x in expr.args:
-            ret *= trigsimp_nonrecursive(x, deep)
-        return ret
-    elif expr.is_Pow:
-        return Pow(trigsimp_nonrecursive(expr.base, deep),
-                trigsimp_nonrecursive(expr.exp, deep))
-    elif expr.is_Add:
-        # TODO this needs to be faster
-
-        # The types of trig functions we are looking for
-        a,b,c = map(Wild, 'abc')
-        matchers = (
-            (a*sin(b)**2, a - a*cos(b)**2),
-            (a*tan(b)**2, a*(1/cos(b))**2 - a),
-            (a*cot(b)**2, a*(1/sin(b))**2 - a)
-        )
-
-        # Scan for the terms we need
-        ret = S.Zero
-        for term in expr.args:
-            term = trigsimp_nonrecursive(term, deep)
-            res = None
-            for pattern, result in matchers:
-                res = term.match(pattern)
-                if res is not None:
-                    ret += result.subs(res)
-                    break
-            if res is None:
-                ret += term
-
-        # Reduce any lingering artifacts, such as sin(x)**2 changing
-        # to 1-cos(x)**2 when sin(x)**2 was "simpler"
-        artifacts = (
-            (a - a*cos(b)**2 + c, a*sin(b)**2 + c, cos),
-            (a - a*(1/cos(b))**2 + c, -a*tan(b)**2 + c, cos),
-            (a - a*(1/sin(b))**2 + c, -a*cot(b)**2 + c, sin)
-        )
-
-        expr = ret
-        for pattern, result, ex in artifacts:
-            # Substitute a new wild that excludes some function(s)
-            # to help influence a better match. This is because
-            # sometimes, for example, 'a' would match sec(x)**2
-            a_t = Wild('a', exclude=[ex])
-            pattern = pattern.subs(a, a_t)
-            result = result.subs(a, a_t)
-            if expr.is_number:
-                continue
-
-            m = expr.match(pattern)
-            while m is not None:
-                if m[a_t] == 0 or -m[a_t] in m[c].args or m[a_t] + m[c] == 0:
-                    break
-                expr = result.subs(m)
-                m = expr.match(pattern)
-
-        return expr
-    return expr
-
-def radsimp(expr):
-    """
-    Rationalize the denominator.
-
-    Examples:
-        >>> from sympy import radsimp, sqrt, Symbol
-        >>> radsimp(1/(2+sqrt(2)))
-        -sqrt(2)/2 + 1
-        >>> x,y = map(Symbol, 'xy')
-        >>> e = ((2+2*sqrt(2))*x+(2+sqrt(8))*y)/(2+sqrt(2))
-        >>> radsimp(e)
-        sqrt(2)*x + sqrt(2)*y
-
-    """
-    n,d = fraction(expr)
-    a,b,c = map(Wild, 'abc')
-    r = d.match(a+b*sqrt(c))
-    if r is not None:
-        a = r[a]
-        if r[b] == 0:
-            b,c = 0,0
-        else:
-            b,c = r[b],r[c]
-
-        syms = list(n.atoms(Symbol))
-        n = collect((n*(a-b*sqrt(c))).expand(), syms)
-        d = a**2 - c*b**2
-
-    return n/d
 
 def posify(eq):
-    """Return eq (with generic symbols made positive) and a restore dictionary.
+    """Return eq (with generic symbols made positive) and a
+    dictionary containing the mapping between the old and new
+    symbols.
 
     Any symbol that has positive=None will be replaced with a positive dummy
     symbol having the same name. This replacement will allow more symbolic
-    processing of expressions, especially those involving powers and logarithms.
+    processing of expressions, especially those involving powers and
+    logarithms.
 
-    A dictionary that can be sent to subs to restore eq to its original symbols
-    is also returned.
+    A dictionary that can be sent to subs to restore eq to its original
+    symbols is also returned.
 
-    >>> from sympy import posify, Symbol, log
+    >>> from sympy import posify, Symbol, log, solve
     >>> from sympy.abc import x
     >>> posify(x + Symbol('p', positive=True) + Symbol('n', negative=True))
     (_x + n + p, {_x: x})
 
-    >> log(1/x).expand() # should be log(1/x) but it comes back as -log(x)
+    >>> eq = 1/x
+    >>> log(eq).expand()
     log(1/x)
-
-    >>> log(posify(1/x)[0]).expand() # take [0] and ignore replacements
+    >>> log(posify(eq)[0]).expand()
     -log(_x)
-    >>> eq, rep = posify(1/x)
-    >>> log(eq).expand().subs(rep)
+    >>> p, rep = posify(eq)
+    >>> log(p).expand().subs(rep)
     -log(x)
-    >>> posify([x, 1 + x])
-    ([_x, _x + 1], {_x: x})
+
+    It is possible to apply the same transformations to an iterable
+    of expressions:
+
+    >>> eq = x**2 - 4
+    >>> solve(eq, x)
+    [-2, 2]
+    >>> eq_x, reps = posify([eq, x]); eq_x
+    [_x**2 - 4, _x]
+    >>> solve(*eq_x)
+    [2]
     """
     eq = sympify(eq)
     if iterable(eq):
@@ -942,622 +256,19 @@ def posify(eq):
         eq = list(eq)
         syms = set()
         for e in eq:
-            syms = syms.union(e.atoms(C.Symbol))
+            syms = syms.union(e.atoms(Symbol))
         reps = {}
         for s in syms:
             reps.update(dict((v, k) for k, v in posify(s)[1].items()))
         for i, e in enumerate(eq):
             eq[i] = e.subs(reps)
-        return f(eq), dict([(r,s) for s, r in reps.iteritems()])
+        return f(eq), {r: s for s, r in reps.items()}
 
-    reps = dict([(s, Dummy(s.name, positive=True))
-                 for s in eq.atoms(Symbol) if s.is_positive is None])
+    reps = {s: Dummy(s.name, positive=True, **s.assumptions0)
+                 for s in eq.free_symbols if s.is_positive is None}
     eq = eq.subs(reps)
-    return eq, dict([(r,s) for s, r in reps.iteritems()])
+    return eq, {r: s for s, r in reps.items()}
 
-def powdenest(eq, force=False):
-    """
-    Collect exponents on powers as assumptions allow.
-
-    Given (bb**be)**e, this can be simplified as follows:
-        o if bb is positive or e is an integer, bb**(be*e)
-        o if be has an integer in the denominatory, then
-          all integers from its numerator can be joined with e
-    Given a product of powers raised to a power, (bb1**be1 * bb2**be2...)**e,
-    simplification can be done as follows:
-        o if e is positive, the gcd of all bei can be joined with e;
-        o all non-negative bb can be separated from those that are negative
-          and their gcd can be joined with e; autosimplification already
-          handles this separation.
-        o integer factors from powers that have integers in the denominator
-          of the exponent can be removed from any term and the gcd of such
-          integers can be joined with e
-
-    Setting ``force`` to True will make symbols that are not explicitly
-    negative behave as though they are positive, resulting in more
-    denesting.
-
-    When there are sums of logs in exp() then a product of powers may be
-    obtained e.g. exp(3*(log(a) + 2*log(b))) - > a**3*b**6.
-
-    Examples:
-
-    >>> from sympy.abc import a, b, x, y, z
-    >>> from sympy import Symbol, exp, log, sqrt, symbols, powdenest
-
-    >>> powdenest((x**(2*a/3))**(3*x))
-    (x**(a/3))**(6*x)
-    >>> powdenest(exp(3*x*log(2)))
-    2**(3*x)
-
-    Assumptions may prevent expansion:
-
-    >>> powdenest(sqrt(x**2))  # activate when log rules are fixed
-    sqrt(x**2)
-
-    >>> p = symbols('p', positive=True)
-    >>> powdenest(sqrt(p**2))
-    p
-
-    No other expansion is done.
-
-    >>> i, j = symbols('i,j', integer=1)
-    >>> powdenest((x**x)**(i + j)) # -X-> (x**x)**i*(x**x)**j
-    x**(x*(i + j))
-
-    But exp() will be denested by moving all non-log terms outside of
-    the function; this may result in the collapsing of the exp to a power
-    with a different base:
-
-    >>> powdenest(exp(3*y*log(x)))
-    x**(3*y)
-    >>> powdenest(exp(y*(log(a) + log(b))))
-    (a*b)**y
-    >>> powdenest(exp(3*(log(a) + log(b))))
-    a**3*b**3
-
-    If assumptions allow, symbols can also be moved to the outermost exponent:
-
-    >>> i = Symbol('i', integer=True)
-    >>> p = Symbol('p', positive=True)
-    >>> powdenest(((x**(2*i))**(3*y))**x)
-    ((x**(2*i))**(3*y))**x
-    >>> powdenest(((x**(2*i))**(3*y))**x, force=1)
-    x**(6*i*x*y)
-
-    >> powdenest(((p**(2*a))**(3*y))**x)  # activate when log rules are fixed
-    p**(6*a*x*y)
-
-    >>> powdenest(((x**(2*a/3))**(3*y/i))**x)
-    ((x**(a/3))**(y/i))**(6*x)
-    >>> powdenest((x**(2*i)*y**(4*i))**z,1)
-    (x*y**2)**(2*i*z)
-
-    >>> n = Symbol('n', negative=1)
-
-    >> powdenest((x**i)**y, force=1)  # activate when log rules are fixed
-    x**(i*y)
-    >> powdenest((n**i)**x, force=1)  # activate when log rules are fixed
-    (n**i)**x
-
-    """
-
-    if force:
-        eq, rep = posify(eq)
-        return powdenest(eq, force=0).subs(rep)
-
-    eq = S(eq)
-    if eq.is_Atom:
-        return eq
-
-    # handle everything that is not a power
-    #   if subs would work then one could replace the following with
-    #      return eq.subs(dict([(p, powdenest(p)) for p in eq.atoms(Pow)]))
-    #   but subs expands (3**x)**2 to 3**x * 3**x so the 3**(5*x)
-    #   is not recognized; in addition, that would take 2 passes through
-    #   the expression (once to find Pows and again to replace them). The
-    #   following does it in one pass. Which is more important, efficiency
-    #   or simplicity? On the other hand, this only does a shallow replacement
-    #   and doesn't enter Integrals or functions, etc... so perhaps the subs
-    #   approach (or adding a deep flag) is the thing to do.
-    if not eq.is_Pow and not eq.func is exp:
-        args = list(Add.make_args(eq))
-        rebuild = False
-        for i, arg in enumerate(args):
-            margs = list(Mul.make_args(arg))
-            changed = False
-            for j, m in enumerate(margs):
-                if not m.is_Pow:
-                    continue
-                m = powdenest(m, force=force)
-                if m != margs[j]:
-                    changed = True
-                    margs[j] = m
-            if changed:
-                rebuild = True
-                args[i] = C.Mul(*margs)
-        if rebuild:
-            eq = eq.func(*args)
-        return eq
-
-    b, e = eq.as_base_exp()
-
-    # denest exp with log terms in exponent
-    if b is S.Exp1 and e.is_Mul:
-        logs = []
-        other = []
-        efunc = C.Mul
-        for ei in Mul.make_args(e):
-            if any(aj.func is C.log for a in Mul.make_args(ei)
-                   for ai in Add.make_args(a) for aj in Mul.make_args(ai)):
-                logs.append(ei)
-            else:
-                other.append(ei)
-        logs = logcombine(efunc(*logs), force=force)
-        return Pow(C.exp(logs), efunc(*other))
-
-    bb, be = b.as_base_exp()
-    if be is S.One and not (b.is_Mul or b.is_Rational):
-        return eq
-
-    # denest eq which is either Pow**e or Mul**e
-    if force or e.is_integer:
-        # replace all non-explicitly negative symbols with positive dummies
-        syms = eq.atoms(Symbol)
-        rep = [(s, C.Dummy(s.name, positive=True)) for s in syms if not s.is_negative]
-        sub = eq.subs(rep)
-    else:
-        rep = []
-        sub = eq
-
-    # if any factor is a bare symbol then there is nothing to be done
-    b, e = sub.as_base_exp()
-    if e is S.One or any(s.is_Symbol for s in Mul.make_args(b)):
-        return sub.subs([(new, old) for old, new in rep])
-    # let log handle the case of the base of the argument being a mul, e.g.
-    # sqrt(x**(2*i)*y**(6*i)) -> x**i*y**(3**i)
-    gcd = terms_gcd(log(b).expand(log=1))
-    if gcd.func is C.log or not gcd.is_Mul:
-        if hasattr(gcd.args[0], 'exp'):
-            gcd = powdenest(gcd.args[0])
-            c, _ = gcd.exp.as_coeff_mul()
-            ok = c.p != 1
-            if ok:
-                ok = c.q != 1
-                if not ok:
-                    n, d = gcd.exp.as_numer_denom()
-                    ok = d is not S.One and any(di.is_integer for di in Mul.make_args(d))
-            if ok:
-                return Pow(Pow(gcd.base, gcd.exp/c.p), c.p*e)
-        elif e.is_Mul:
-            return Pow(b, e).subs([(new, old) for old, new in rep])
-        return eq
-    else:
-        add= []
-        other = []
-        for g in gcd.args:
-            if g.is_Add:
-                add.append(g)
-            else:
-                other.append(g)
-        return powdenest(Pow(exp(logcombine(Mul(*add))), e*Mul(*other))).subs([(new, old) for old, new in rep])
-
-def powsimp(expr, deep=False, combine='all', force=False):
-    """
-    == Usage ==
-        powsimp(expr, deep) -> reduces expression by combining powers with
-        similar bases and exponents.
-
-    == Notes ==
-        If deep is True then powsimp() will also simplify arguments of
-        functions. By default deep is set to False.
-
-        If force is True then bases will be combined without checking for
-        assumptions, e.g. sqrt(x)*sqrt(y) -> sqrt(x*y) which is not true
-        if x and y are both negative.
-
-        You can make powsimp() only combine bases or only combine exponents by
-        changing combine='base' or combine='exp'.  By default, combine='all',
-        which does both.  combine='base' will only combine::
-
-             a   a          a                          2x      x
-            x * y  =>  (x*y)   as well as things like 2   =>  4
-
-        and combine='exp' will only combine
-        ::
-
-             a   b      (a + b)
-            x * x  =>  x
-
-        combine='exp' will strictly only combine exponents in the way that used
-        to be automatic.  Also use deep=True if you need the old behavior.
-
-        When combine='all', 'exp' is evaluated first.  Consider the first
-        example below for when there could be an ambiguity relating to this.
-        This is done so things like the second example can be completely
-        combined.  If you want 'base' combined first, do something like
-        powsimp(powsimp(expr, combine='base'), combine='exp').
-
-    == Examples ==
-        >>> from sympy import powsimp, exp, log, symbols
-        >>> from sympy.abc import x, y, z, n
-        >>> powsimp(x**y*x**z*y**z, combine='all')
-        x**(y + z)*y**z
-        >>> powsimp(x**y*x**z*y**z, combine='exp')
-        x**(y + z)*y**z
-        >>> powsimp(x**y*x**z*y**z, combine='base', force=True)
-        x**y*(x*y)**z
-
-        >>> powsimp(x**z*x**y*n**z*n**y, combine='all', force=True)
-        (n*x)**(y + z)
-        >>> powsimp(x**z*x**y*n**z*n**y, combine='exp')
-        n**(y + z)*x**(y + z)
-        >>> powsimp(x**z*x**y*n**z*n**y, combine='base', force=True)
-        (n*x)**y*(n*x)**z
-
-        >>> x, y = symbols('x y', positive=True)
-        >>> powsimp(log(exp(x)*exp(y)))
-        log(exp(x)*exp(y))
-        >>> powsimp(log(exp(x)*exp(y)), deep=True)
-        x + y
-
-        Radicals with Mul bases will be combined if combine='exp'
-
-            >>> from sympy import sqrt, Mul
-            >>> x, y = symbols('x y')
-
-            Two radicals are automatically joined through Mul:
-            >>> a=sqrt(x*sqrt(y))
-            >>> a*a**3 == a**4
-            True
-
-            But if an integer power of that radical has been
-            autoexpanded then Mul does not join the resulting factors:
-            >>> a**4 # auto expands to a Mul, no longer a Pow
-            x**2*y
-            >>> _*a # so Mul doesn't combine them
-            x**2*y*sqrt(x*sqrt(y))
-            >>> powsimp(_) # but powsimp will
-            (x*sqrt(y))**(5/2)
-            >>> powsimp(x*y*a) # but won't when doing so would violate assumptions
-            x*y*sqrt(x*sqrt(y))
-
-    """
-    if combine not in ['all', 'exp', 'base']:
-        raise ValueError("combine must be one of ('all', 'exp', 'base').")
-    y = Dummy('y')
-    if expr.is_Pow:
-        if deep:
-            return powsimp(y*powsimp(expr.base, deep, combine, force)**powsimp(\
-            expr.exp, deep, combine, force), deep, combine, force)/y
-        else:
-            return powsimp(y*expr, deep, combine, force)/y # Trick it into being a Mul
-    elif expr.is_Function:
-        if expr.func is exp and deep:
-            # Exp should really be like Pow
-            return powsimp(y*exp(powsimp(expr.args[0], deep, combine, force)), deep, combine, force)/y
-        elif expr.func is exp and not deep:
-            return powsimp(y*expr, deep, combine, force)/y
-        elif deep:
-            return expr.func(*[powsimp(t, deep, combine, force) for t in expr.args])
-        else:
-            return expr
-    elif expr.is_Add:
-        return Add(*[powsimp(t, deep, combine, force) for t in expr.args])
-
-    elif expr.is_Mul:
-        if combine in ('exp', 'all'):
-            # Collect base/exp data, while maintaining order in the
-            # non-commutative parts of the product
-            if combine is 'all' and deep and any((t.is_Add for t in expr.args)):
-                # Once we get to 'base', there is no more 'exp', so we need to
-                # distribute here.
-                return powsimp(expand_mul(expr, deep=False), deep, combine, force)
-            c_powers = {}
-            nc_part = []
-            newexpr = []
-            for term in expr.args:
-                if term.is_Add and deep:
-                    newexpr.append(powsimp(term, deep, combine, force))
-                else:
-                    if term.is_commutative:
-                        b, e = term.as_base_exp()
-                        if deep:
-                            b, e = [powsimp(i, deep, combine, force) for i in  [b, e]]
-                        c_powers.setdefault(b, []).append(e)
-                    else:
-                        # This is the logic that combines exponents for equal,
-                        # but non-commutative bases: A**x*A**y == A**(x+y).
-                        if nc_part:
-                            b1, e1 = nc_part[-1].as_base_exp()
-                            b2, e2 = term.as_base_exp()
-                            if (b1 == b2 and
-                                e1.is_commutative and e2.is_commutative):
-                                nc_part[-1] = Pow(b1, Add(e1, e2))
-                                continue
-                        nc_part.append(term)
-
-            # add up exponents of common bases
-            for b, e in c_powers.iteritems():
-                c_powers[b] = Add(*e)
-
-            # check for base and inverted base pairs
-            be = c_powers.items()
-            skip = set() # skip if we already saw them
-            for b, e in be:
-                if b in skip:
-                    continue
-                bpos = b.is_positive
-                if bpos:
-                    binv = 1/b
-                    if b != binv and binv in c_powers:
-                        if b.as_numer_denom()[0] is S.One:
-                            c_powers.pop(b)
-                            c_powers[binv] -= e
-                        else:
-                            skip.add(binv)
-                            e = c_powers.pop(binv)
-                            c_powers[b] -= e
-
-            # filter c_powers and convert to a list
-            c_powers = [(b, e) for b, e in c_powers.iteritems() if e]
-
-            # ==============================================================
-            # check for Mul bases of Rational powers that can be combined with
-            # separated bases, e.g. x*sqrt(x*y)*sqrt(x*sqrt(x*y)) -> (x*sqrt(x*y))**(3/2)
-            # ---------------- helper functions
-            def ratq(x):
-                '''Return Rational part of x's exponent as it appears in the bkey.
-                '''
-                return bkey(x)[0][1]
-
-            def bkey(b, e=None):
-                '''Return b, e where e is the exponent of b or else is retrieved
-                from b with as_base_exponent. If e is a Rational then only the
-                numerator is sent back with e and the denominator is retained on b
-                e.g.
-                    x**3/2 -> x**(1/2), 3
-                    x**y -> x, y
-                    x**(2*y/3) -> x, 2*y/3
-
-                '''
-                from sympy import Rational as r
-                MUL = lambda *args: object.__new__(Mul)._new_rawargs(*args)
-                if e is not None: # coming from c_powers or from below
-                    if e.is_Integer:
-                        return (b, S.One), e
-                    elif e.is_Rational:
-                       return (b, Integer(e.q)), Integer(e.p)
-                    else:
-                        c, m = e.as_coeff_mul()
-                        if c is not S.One:
-                            return (b**MUL(*m), Integer(c.q)), Integer(c.p)
-                        else:
-                            return (b**e, S.One), S.One
-                else:
-                    return bkey(*b.as_base_exp())
-
-            def update(b):
-                '''Decide what to do with base, b. If its exponent is now an
-                integer multiple of the Rational denominator, then remove it
-                and put the factors of its base in the common_b dictionary or
-                update the existing bases if necessary. If it has been zeroed
-                out, simply remove the base.
-                '''
-                newe, r = divmod(common_b[b], b[1])
-                if not r:
-                    common_b.pop(b)
-                    if newe:
-                        for m in Mul.make_args(b[0]**newe):
-                            b, e = bkey(m)
-                            if b not in common_b:
-                                common_b[b] = 0
-                            common_b[b] += e
-                            if b[1] != 1:
-                                bases.append(b)
-            # ---------------- end of helper functions
-
-            # assemble a dictionary of the factors having a Rational power
-            common_b = {}
-            done = []
-            bases = []
-            for b, e in c_powers:
-                b, e = bkey(b, e)
-                common_b[b] = e
-                if b[1] != 1 and b[0].is_Mul:
-                    bases.append(b)
-            bases.sort(key=default_sort_key) # this makes tie-breaking canonical
-            bases.sort(key=count_ops, reverse= True) # handle longest first
-            for base in bases:
-                if base not in common_b: # it may have been removed already
-                    continue
-                b, exponent = base
-                last = False # True when no factor of base is a radical
-                qlcm = 1 # the lcm of the radical denominators
-                while True:
-                    bstart = b
-                    qstart = qlcm
-
-                    bb = [] # list of factors
-                    ee = [] # (factor's exponent, current value of that exponent in common_b)
-                    for bi in Mul.make_args(b):
-                        bib, bie = bkey(bi)
-                        if bib not in common_b or common_b[bib] < bie:
-                            ee = bb = [] # failed
-                            break
-                        ee.append([bie, common_b[bib]])
-                        bb.append(bib)
-                    if ee:
-                        # find the number of extractions possible
-                        # e.g. [(1, 2), (2, 2)] -> min(2/1, 2/2) -> 1
-                        min1 = ee[0][1]/ee[0][0]
-                        for i in xrange(len(ee)):
-                            rat = ee[i][1]/ee[i][0]
-                            if rat < 1:
-                                break
-                            min1 = min(min1, rat)
-                        else:
-                            # update base factor counts
-                            # e.g. if ee = [(2, 5), (3, 6)] then min1 = 2
-                            # and the new base counts will be 5-2*2 and 6-2*3
-                            for i in xrange(len(bb)):
-                                common_b[bb[i]] -= min1*ee[i][0]
-                                update(bb[i])
-                            # update the count of the base
-                            # e.g. x**2*y*sqrt(x*sqrt(y)) the count of x*sqrt(y)
-                            # will increase by 4 to give bkey (x*sqrt(y), 2, 5)
-                            common_b[base] += min1*qstart*exponent
-                    if (last # no more radicals in base
-                        or len(common_b) == 1 # nothing left to join with
-                        or all(k[1] == 1 for k in common_b) # no radicals left in common_b
-                        ):
-                        break
-                    # see what we can exponentiate base by to remove any radicals
-                    # so we know what to search for
-                    # e.g. if base were x**(1/2)*y**(1/3) then we should exponentiate
-                    # by 6 and look for powers of x and y in the ratio of 2 to 3
-                    qlcm = lcm([ratq(bi) for bi in Mul.make_args(bstart)])
-                    if qlcm == 1:
-                        break # we are done
-                    b = bstart**qlcm
-                    qlcm *= qstart
-                    if all(ratq(bi) == 1 for bi in Mul.make_args(b)):
-                        last = True # we are going to be done after this next pass
-                # this base no longer can find anything to join with and
-                # since it was longer than any other we are done with it
-                b, q = base
-                done.append((b, common_b.pop(base)*Rational(1, q)))
-
-            # update c_powers and get ready to continue with powsimp
-            c_powers = done
-            # there may be terms still in common_b that were bases that were
-            # identified as needing processing, so remove those, too
-            c_powers.extend([(b, Rational(e, q)) for (b, q), e in common_b.items()])
-            c_powers = dict(c_powers)
-            # ==============================================================
-
-            # rebuild the expression
-            newexpr = Mul(*(newexpr + [Pow(b, e) for b, e in c_powers.iteritems()]))
-            if combine is 'exp':
-                return Mul(newexpr, Mul(*nc_part))
-            else:
-                # combine is 'all', get stuff ready for 'base'
-                if deep:
-                    newexpr = expand_mul(newexpr, deep=False)
-                if newexpr.is_Add:
-                    return powsimp(Mul(*nc_part), deep, combine='base', force=force) * \
-                           Add(*[powsimp(i, deep, combine='base', force=force)
-                                 for i in newexpr.args])
-                else:
-                    return powsimp(Mul(*nc_part), deep, combine='base', force=force)*\
-                    powsimp(newexpr, deep, combine='base', force=force)
-
-        else:
-            # combine is 'base'
-            if deep:
-                expr = expand_mul(expr, deep=False)
-            if expr.is_Add:
-                return Add(*[powsimp(i, deep, combine, force) for i in expr.args])
-            else:
-                # Build c_powers and nc_part.  These must both be lists not
-                # dicts because exp's are not combined.
-                c_powers = []
-                nc_part = []
-                for term in expr.args:
-                    if term.is_commutative:
-                        c_powers.append(list(term.as_base_exp()))
-                    else:
-                        # This is the logic that combines bases that are
-                        # different and non-commutative, but with equal and
-                        # commutative exponents: A**x*B**x == (A*B)**x.
-                        if nc_part:
-                            b1, e1 = nc_part[-1].as_base_exp()
-                            b2, e2 = term.as_base_exp()
-                            if (e1 == e2 and e2.is_commutative):
-                                nc_part[-1] = Pow(Mul(b1, b2), e1)
-                                continue
-                        nc_part.append(term)
-
-            # Pull out numerical coefficients from exponent if assumptions allow
-            # e.g., 2**(2*x) => 4**x
-            for i in xrange(len(c_powers)):
-                b, e = c_powers[i]
-                if not (b.is_nonnegative or e.is_integer or force):
-                    continue
-                exp_c, exp_t = e.as_coeff_mul()
-                if not (exp_c is S.One) and exp_t:
-                    c_powers[i] = [Pow(b, exp_c), e._new_rawargs(*exp_t)]
-
-
-            # Combine bases whenever they have the same exponent and
-            # assumptions allow
-
-            # first gather the potential bases under the common exponent
-            c_exp = {}
-            for b, e in c_powers:
-                if deep:
-                    e = powsimp(e, deep, combine, force)
-                c_exp.setdefault(e, []).append(b)
-            del c_powers
-
-            # Merge back in the results of the above to form a new product
-            c_powers = {}
-            for e in c_exp:
-                bases = c_exp[e]
-
-                # calculate the new base for e
-                if len(bases) == 1:
-                    new_base = bases[0]
-                elif e.is_integer or force:
-                    new_base = Mul(*bases)
-                else:
-                    # see which ones can be joined
-                    unk=[]
-                    nonneg=[]
-                    neg=[]
-                    for bi in bases:
-                        if not bi.is_negative is None: #then we know the sign
-                            if bi.is_negative:
-                                neg.append(bi)
-                            else:
-                                nonneg.append(bi)
-                        else:
-                            unk.append(bi)
-                    if len(unk) == 1 and not neg or len(neg) == 1 and not unk:
-                        # a single neg or a single unk can join the rest
-                        nonneg.extend(unk + neg)
-                        unk = neg = []
-                    elif neg:
-                        # their negative signs cancel in pairs
-                        neg = [-w for w in neg]
-                        if len(neg) % 2:
-                            unk.append(S.NegativeOne)
-
-                    # these shouldn't be joined
-                    for b in unk:
-                        c_powers.setdefault(b, []).append(e)
-                    # here is a new joined base
-                    new_base = Mul(*(nonneg + neg))
-
-                c_powers.setdefault(new_base, []).append(e)
-
-            # break out the powers from c_powers now
-            c_part = []
-            if combine == 'all':
-                #...joining the exponents
-                for b, e in c_powers.iteritems():
-                    c_part.append(Pow(b, Add(*e)))
-            else:
-                #...joining nothing
-                for b, e in c_powers.iteritems():
-                    for ei in e:
-                        c_part.append(Pow(b, ei))
-
-            # we're done
-            return Mul(*(c_part + nc_part))
-
-    else:
-        return expr
 
 def hypersimp(f, k):
     """Given combinatorial term f(k) simplify its consecutive term ratio
@@ -1567,15 +278,15 @@ def hypersimp(f, k):
 
        The algorithm performs three basic steps:
 
-           (1) Rewrite all functions in terms of gamma, if possible.
+       1. Rewrite all functions in terms of gamma, if possible.
 
-           (2) Rewrite all occurrences of gamma in terms of products
-               of gamma and rising factorial with integer,  absolute
-               constant exponent.
+       2. Rewrite all occurrences of gamma in terms of products
+          of gamma and rising factorial with integer,  absolute
+          constant exponent.
 
-           (3) Perform simplification of nested fractions, powers
-               and if the resulting expression is a quotient of
-               polynomials, reduce their total degree.
+       3. Perform simplification of nested fractions, powers
+          and if the resulting expression is a quotient of
+          polynomials, reduce their total degree.
 
        If f(k) is hypergeometric then as result we arrive with a
        quotient of polynomials of minimal degree. Otherwise None
@@ -1583,12 +294,12 @@ def hypersimp(f, k):
 
        For more information on the implemented algorithm refer to:
 
-       [1] W. Koepf, Algorithms for m-fold Hypergeometric Summation,
-           Journal of Symbolic Computation (1995) 20, 399-417
+       1. W. Koepf, Algorithms for m-fold Hypergeometric Summation,
+          Journal of Symbolic Computation (1995) 20, 399-417
     """
     f = sympify(f)
 
-    g = f.subs(k, k+1) / f
+    g = f.subs(k, k + 1) / f
 
     g = g.rewrite(gamma)
     g = expand_func(g)
@@ -1598,6 +309,7 @@ def hypersimp(f, k):
         return simplify(g, ratio=S.Infinity)
     else:
         return None
+
 
 def hypersimilar(f, g, k):
     """Returns True if 'f' and 'g' are hyper-similar.
@@ -1609,322 +321,1141 @@ def hypersimilar(f, g, k):
        For more information see hypersimp().
 
     """
-    f, g = map(sympify, (f, g))
+    f, g = list(map(sympify, (f, g)))
 
     h = (f/g).rewrite(gamma)
     h = h.expand(func=True, basic=False)
 
     return h.is_rational_function(k)
 
-def combsimp(expr):
-    r"""
-    Simplify combinatorial expressions.
 
-    This function takes as input an expression containing factorials,
-    binomials, Pochhammer symbol and other "combinatorial" functions,
-    and tries to minimize the number of those functions and reduce
-    the size of their arguments. The result is be given in terms of
-    binomials and factorials.
+def signsimp(expr, evaluate=None):
+    """Make all Add sub-expressions canonical wrt sign.
 
-    The algorithm works by rewriting all combinatorial functions as
-    expressions involving rising factorials (Pochhammer symbols) and
-    applies recurrence relations and other transformations applicable
-    to rising factorials, to reduce their arguments, possibly letting
-    the resulting rising factorial to cancel. Rising factorials with
-    the second argument being an integer are expanded into polynomial
-    forms and finally all other rising factorial are rewritten in terms
-    more familiar binomials and factorials.
+    If an Add subexpression, ``a``, can have a sign extracted,
+    as determined by could_extract_minus_sign, it is replaced
+    with Mul(-1, a, evaluate=False). This allows signs to be
+    extracted from powers and products.
 
-    All transformation rules can be found (or was derived from) here:
+    Examples
+    ========
 
-    1. http://functions.wolfram.com/GammaBetaErf/Pochhammer/17/01/02/
-    2. http://functions.wolfram.com/GammaBetaErf/Pochhammer/27/01/0005/
+    >>> from sympy import signsimp, exp, symbols
+    >>> from sympy.abc import x, y
+    >>> i = symbols('i', odd=True)
+    >>> n = -1 + 1/x
+    >>> n/x/(-n)**2 - 1/n/x
+    (-1 + 1/x)/(x*(1 - 1/x)**2) - 1/(x*(-1 + 1/x))
+    >>> signsimp(_)
+    0
+    >>> x*n + x*-n
+    x*(-1 + 1/x) + x*(1 - 1/x)
+    >>> signsimp(_)
+    0
 
-    **Examples**
+    Since powers automatically handle leading signs
 
-    >>> from sympy.simplify import combsimp
-    >>> from sympy import factorial, binomial
-    >>> from sympy.abc import n, k
+    >>> (-2)**i
+    -2**i
 
-    >>> combsimp(factorial(n)/factorial(n - 3))
-    n*(n - 2)*(n - 1)
-    >>> combsimp(binomial(n+1, k+1)/binomial(n, k))
-    (n + 1)/(k + 1)
+    signsimp can be used to put the base of a power with an integer
+    exponent into canonical form:
 
-    """
-    factorial = C.factorial
-    binomial = C.binomial
-    gamma = C.gamma
+    >>> n**i
+    (-1 + 1/x)**i
 
-    def as_coeff_Add(expr):
-        if expr.is_Add:
-            coeff, args = expr.args[0], expr.args[1:]
+    By default, signsimp doesn't leave behind any hollow simplification:
+    if making an Add canonical wrt sign didn't change the expression, the
+    original Add is restored. If this is not desired then the keyword
+    ``evaluate`` can be set to False:
 
-            if coeff.is_Number:
-                if len(args) == 1:
-                    return coeff, args[0]
-                else:
-                    return coeff, expr._new_rawargs(*args)
-
-        return S.Zero, expr
-
-    class rf(Function):
-        @classmethod
-        def eval(cls, a, b):
-            if b.is_Integer:
-                if not b:
-                    return S.Zero
-
-                n, result = int(b), S.One
-
-                if n > 0:
-                    for i in xrange(0, n):
-                        result *= a + i
-
-                    return result
-                else:
-                    for i in xrange(1, -n+1):
-                        result *= a - i
-
-                    return 1/result
-            else:
-                c, _b = as_coeff_Add(b)
-
-                if c.is_Integer:
-                    if c > 0:
-                        return rf(a, _b)*rf(a+_b, c)
-                    elif c < 0:
-                        return rf(a, _b)/rf(a+_b+c, -c)
-
-                c, _a = as_coeff_Add(a)
-
-                if c.is_Integer:
-                    if c > 0:
-                        return rf(_a, b)*rf(_a+b, c)/rf(_a, c)
-                    elif c < 0:
-                        return rf(_a, b)*rf(_a+c, -c)/rf(_a+b+c, -c)
-
-    expr = expr.replace(binomial,
-        lambda n, k: rf((n-k+1).expand(), k.expand())/rf(1, k.expand()))
-    expr = expr.replace(factorial,
-        lambda n: rf(1, n.expand()))
-    expr = expr.replace(gamma,
-        lambda n: rf(1, (n-1).expand()))
-
-    expr = expr.replace(rf,
-        lambda a, b: binomial(a+b-1, b)*factorial(b))
-
-    def rule(n, k):
-        coeff, rewrite = S.One, False
-
-        cn, _n = as_coeff_Add(n)
-        ck, _k = as_coeff_Add(k)
-
-        if cn.is_Integer and cn:
-            coeff *= rf(_n + 1, cn)/rf(_n - k + 1, cn)
-            rewrite = True
-            n = _n
-
-        if ck.is_Integer and ck:
-            coeff *= rf(n - ck - _k + 1, ck)/rf(_k + 1, ck)
-            rewrite = True
-            k = _k
-
-        if rewrite:
-            return coeff*binomial(n, k)
-
-    expr = expr.replace(binomial, rule)
-
-    return factor(expr)
-
-def simplify(expr, ratio=1.7):
-    """Naively simplifies the given expression.
-
-       Simplification is not a well defined term and the exact strategies
-       this function tries can change in the future versions of SymPy. If
-       your algorithm relies on "simplification" (whatever it is), try to
-       determine what you need exactly  -  is it powsimp()?, radsimp()?,
-       together()?, logcombine()?, or something else? And use this particular
-       function directly, because those are well defined and thus your algorithm
-       will be robust.
-
-       In some cases, applying :func:`simplify` may actually result in some more
-       complicated expression.
-       By default ``ratio=1.7`` prevents more extreme cases:
-       if (result length)/(input length) > ratio, then input is returned
-       unmodified (:func:`count_ops` is used to measure length).
-
-       For example, if ``ratio=1``, ``simplify`` output can't be longer
-       than input.
-
-       ::
-
-            >>> from sympy import S, simplify, count_ops, oo
-            >>> root = S("(1/2 - sqrt(3)*I/2)*(sqrt(21)/2 + 5/2)**(1/3) + "
-            ... "1/((1/2 - sqrt(3)*I/2)*(sqrt(21)/2 + 5/2)**(1/3))")
-
-       Since ``simplify(root)`` would result in a slightly longer expression,
-       root is returned unchanged instead::
-
-           >>> simplify(root, ratio=1) == root
-           True
-
-       If ``ratio=oo``, simplify will be applied anyway::
-
-            >>> count_ops(simplify(root, ratio=oo)) > count_ops(root)
-            True
-
-       Note that the shortest expression is not necessary the simplest, so
-       setting ``ratio`` to 1 may not be a good idea.
-       Heuristically, default value ``ratio=1.7`` seems like a reasonable choice.
+    >>> e = exp(y - x)
+    >>> signsimp(e) == e
+    True
+    >>> signsimp(e, evaluate=False)
+    exp(-(x - y))
 
     """
+    if evaluate is None:
+        evaluate = global_evaluate[0]
     expr = sympify(expr)
+    if not isinstance(expr, Expr) or expr.is_Atom:
+        return expr
+    e = sub_post(sub_pre(expr))
+    if not isinstance(e, Expr) or e.is_Atom:
+        return e
+    if e.is_Add:
+        return e.func(*[signsimp(a, evaluate) for a in e.args])
+    if evaluate:
+        e = e.xreplace({m: -(-m) for m in e.atoms(Mul) if -(-m) != m})
+    return e
 
-    if not isinstance(expr, Basic): # XXX: temporary hack
+
+def simplify(expr, ratio=1.7, measure=count_ops, rational=False, inverse=False, doit=True, **kwargs):
+    """Simplifies the given expression.
+
+    Simplification is not a well defined term and the exact strategies
+    this function tries can change in the future versions of SymPy. If
+    your algorithm relies on "simplification" (whatever it is), try to
+    determine what you need exactly  -  is it powsimp()?, radsimp()?,
+    together()?, logcombine()?, or something else? And use this particular
+    function directly, because those are well defined and thus your algorithm
+    will be robust.
+
+    Nonetheless, especially for interactive use, or when you don't know
+    anything about the structure of the expression, simplify() tries to apply
+    intelligent heuristics to make the input expression "simpler".  For
+    example:
+
+    >>> from sympy import simplify, cos, sin
+    >>> from sympy.abc import x, y
+    >>> a = (x + x**2)/(x*sin(y)**2 + x*cos(y)**2)
+    >>> a
+    (x**2 + x)/(x*sin(y)**2 + x*cos(y)**2)
+    >>> simplify(a)
+    x + 1
+
+    Note that we could have obtained the same result by using specific
+    simplification functions:
+
+    >>> from sympy import trigsimp, cancel
+    >>> trigsimp(a)
+    (x**2 + x)/x
+    >>> cancel(_)
+    x + 1
+
+    In some cases, applying :func:`simplify` may actually result in some more
+    complicated expression. The default ``ratio=1.7`` prevents more extreme
+    cases: if (result length)/(input length) > ratio, then input is returned
+    unmodified.  The ``measure`` parameter lets you specify the function used
+    to determine how complex an expression is.  The function should take a
+    single argument as an expression and return a number such that if
+    expression ``a`` is more complex than expression ``b``, then
+    ``measure(a) > measure(b)``.  The default measure function is
+    :func:`~.count_ops`, which returns the total number of operations in the
+    expression.
+
+    For example, if ``ratio=1``, ``simplify`` output can't be longer
+    than input.
+
+    ::
+
+        >>> from sympy import sqrt, simplify, count_ops, oo
+        >>> root = 1/(sqrt(2)+3)
+
+    Since ``simplify(root)`` would result in a slightly longer expression,
+    root is returned unchanged instead::
+
+       >>> simplify(root, ratio=1) == root
+       True
+
+    If ``ratio=oo``, simplify will be applied anyway::
+
+        >>> count_ops(simplify(root, ratio=oo)) > count_ops(root)
+        True
+
+    Note that the shortest expression is not necessary the simplest, so
+    setting ``ratio`` to 1 may not be a good idea.
+    Heuristically, the default value ``ratio=1.7`` seems like a reasonable
+    choice.
+
+    You can easily define your own measure function based on what you feel
+    should represent the "size" or "complexity" of the input expression.  Note
+    that some choices, such as ``lambda expr: len(str(expr))`` may appear to be
+    good metrics, but have other problems (in this case, the measure function
+    may slow down simplify too much for very large expressions).  If you don't
+    know what a good metric would be, the default, ``count_ops``, is a good
+    one.
+
+    For example:
+
+    >>> from sympy import symbols, log
+    >>> a, b = symbols('a b', positive=True)
+    >>> g = log(a) + log(b) + log(a)*log(1/b)
+    >>> h = simplify(g)
+    >>> h
+    log(a*b**(1 - log(a)))
+    >>> count_ops(g)
+    8
+    >>> count_ops(h)
+    5
+
+    So you can see that ``h`` is simpler than ``g`` using the count_ops metric.
+    However, we may not like how ``simplify`` (in this case, using
+    ``logcombine``) has created the ``b**(log(1/a) + 1)`` term.  A simple way
+    to reduce this would be to give more weight to powers as operations in
+    ``count_ops``.  We can do this by using the ``visual=True`` option:
+
+    >>> print(count_ops(g, visual=True))
+    2*ADD + DIV + 4*LOG + MUL
+    >>> print(count_ops(h, visual=True))
+    2*LOG + MUL + POW + SUB
+
+    >>> from sympy import Symbol, S
+    >>> def my_measure(expr):
+    ...     POW = Symbol('POW')
+    ...     # Discourage powers by giving POW a weight of 10
+    ...     count = count_ops(expr, visual=True).subs(POW, 10)
+    ...     # Every other operation gets a weight of 1 (the default)
+    ...     count = count.replace(Symbol, type(S.One))
+    ...     return count
+    >>> my_measure(g)
+    8
+    >>> my_measure(h)
+    14
+    >>> 15./8 > 1.7 # 1.7 is the default ratio
+    True
+    >>> simplify(g, measure=my_measure)
+    -log(a)*log(b) + log(a) + log(b)
+
+    Note that because ``simplify()`` internally tries many different
+    simplification strategies and then compares them using the measure
+    function, we get a completely different result that is still different
+    from the input expression by doing this.
+
+    If rational=True, Floats will be recast as Rationals before simplification.
+    If rational=None, Floats will be recast as Rationals but the result will
+    be recast as Floats. If rational=False(default) then nothing will be done
+    to the Floats.
+
+    If inverse=True, it will be assumed that a composition of inverse
+    functions, such as sin and asin, can be cancelled in any order.
+    For example, ``asin(sin(x))`` will yield ``x`` without checking whether
+    x belongs to the set where this relation is true. The default is
+    False.
+
+    Note that ``simplify()`` automatically calls ``doit()`` on the final
+    expression. You can avoid this behavior by passing ``doit=False`` as
+    an argument.
+    """
+
+    def shorter(*choices):
+        """
+        Return the choice that has the fewest ops. In case of a tie,
+        the expression listed first is selected.
+        """
+        if not has_variety(choices):
+            return choices[0]
+        return min(choices, key=measure)
+
+    def done(e):
+        rv = e.doit() if doit else e
+        return shorter(rv, collect_abs(rv))
+
+    expr = sympify(expr)
+    kwargs = dict(
+        ratio=kwargs.get('ratio', ratio),
+        measure=kwargs.get('measure', measure),
+        rational=kwargs.get('rational', rational),
+        inverse=kwargs.get('inverse', inverse),
+        doit=kwargs.get('doit', doit))
+    # no routine for Expr needs to check for is_zero
+    if isinstance(expr, Expr) and expr.is_zero and expr*0 == S.Zero:
+        return S.Zero
+
+    _eval_simplify = getattr(expr, '_eval_simplify', None)
+    if _eval_simplify is not None:
+        return _eval_simplify(**kwargs)
+
+    original_expr = expr = collect_abs(signsimp(expr))
+
+    if not isinstance(expr, Basic) or not expr.args:  # XXX: temporary hack
         return expr
 
-    if isinstance(expr, Atom):
-        return expr
+    if inverse and expr.has(Function):
+        expr = inversecombine(expr)
+        if not expr.args:  # simplified to atomic
+            return expr
 
-    if isinstance(expr, C.Relational):
-        return expr.__class__(simplify(expr.lhs, ratio=ratio),
-                              simplify(expr.rhs, ratio=ratio))
+    # do deep simplification
+    handled = Add, Mul, Pow, ExpBase
+    expr = expr.replace(
+        # here, checking for x.args is not enough because Basic has
+        # args but Basic does not always play well with replace, e.g.
+        # when simultaneous is True found expressions will be masked
+        # off with a Dummy but not all Basic objects in an expression
+        # can be replaced with a Dummy
+        lambda x: isinstance(x, Expr) and x.args and not isinstance(
+            x, handled),
+        lambda x: x.func(*[simplify(i, **kwargs) for i in x.args]),
+        simultaneous=False)
+    if not isinstance(expr, handled):
+        return done(expr)
+
+    if not expr.is_commutative:
+        expr = nc_simplify(expr)
 
     # TODO: Apply different strategies, considering expression pattern:
     # is it a purely rational function? Is there any trigonometric function?...
     # See also https://github.com/sympy/sympy/pull/185.
 
-    original_expr = expr
 
-    def shorter(*choices):
-        '''Return the choice that has the fewest ops. In case of a tie,
-        the expression listed first is selected.'''
-        if len(set(choices)) == 1:
-            return choices[0]
-        return min(choices, key=count_ops)
+    # rationalize Floats
+    floats = False
+    if rational is not False and expr.has(Float):
+        floats = True
+        expr = nsimplify(expr, rational=True)
 
-    if expr.is_commutative is False:
-        expr = powsimp(expr)
-        if ratio is S.Infinity:
-            return expr
-        return shorter(together(expr), expr)
+    expr = bottom_up(expr, lambda w: getattr(w, 'normal', lambda: w)())
+    expr = Mul(*powsimp(expr).as_content_primitive())
+    _e = cancel(expr)
+    expr1 = shorter(_e, _mexpand(_e).cancel())  # issue 6829
+    expr2 = shorter(together(expr, deep=True), together(expr1, deep=True))
 
-    expr1 = cancel(powsimp(expr))
-    expr2 = together(expr1.expand(), deep=True)
     if ratio is S.Infinity:
         expr = expr2
     else:
         expr = shorter(expr2, expr1, expr)
-
-    if not isinstance(expr, Basic): # XXX: temporary hack
+    if not isinstance(expr, Basic):  # XXX: temporary hack
         return expr
 
-    if expr.has(C.TrigonometricFunction):
-        expr = trigsimp(expr)
+    expr = factor_terms(expr, sign=False)
 
-    if expr.has(C.log):
+    from sympy.simplify.hyperexpand import hyperexpand
+    from sympy.functions.special.bessel import BesselBase
+    from sympy import Sum, Product, Integral
+
+    # Deal with Piecewise separately to avoid recursive growth of expressions
+    if expr.has(Piecewise):
+        # Fold into a single Piecewise
+        expr = piecewise_fold(expr)
+        # Apply doit, if doit=True
+        expr = done(expr)
+        # Still a Piecewise?
+        if expr.has(Piecewise):
+            # Fold into a single Piecewise, in case doit lead to some
+            # expressions being Piecewise
+            expr = piecewise_fold(expr)
+            # kroneckersimp also affects Piecewise
+            if expr.has(KroneckerDelta):
+                expr = kroneckersimp(expr)
+            # Still a Piecewise?
+            if expr.has(Piecewise):
+                from sympy.functions.elementary.piecewise import piecewise_simplify
+                # Do not apply doit on the segments as it has already
+                # been done above, but simplify
+                expr = piecewise_simplify(expr, deep=True, doit=False)
+                # Still a Piecewise?
+                if expr.has(Piecewise):
+                    # Try factor common terms
+                    expr = shorter(expr, factor_terms(expr))
+                    # As all expressions have been simplified above with the
+                    # complete simplify, nothing more needs to be done here
+                    return expr
+
+    # hyperexpand automatically only works on hypergeometric terms
+    # Do this after the Piecewise part to avoid recursive expansion
+    expr = hyperexpand(expr)
+
+    if expr.has(KroneckerDelta):
+        expr = kroneckersimp(expr)
+
+    if expr.has(BesselBase):
+        expr = besselsimp(expr)
+
+    if expr.has(TrigonometricFunction, HyperbolicFunction):
+        expr = trigsimp(expr, deep=True)
+
+    if expr.has(log):
         expr = shorter(expand_log(expr, deep=True), logcombine(expr))
 
-    if expr.has(C.CombinatorialFunction, gamma):
+    if expr.has(CombinatorialFunction, gamma):
+        # expression with gamma functions or non-integer arguments is
+        # automatically passed to gammasimp
         expr = combsimp(expr)
 
-    expr = powsimp(expr, combine='exp', deep=True)
+    if expr.has(Sum):
+        expr = sum_simplify(expr, **kwargs)
+
+    if expr.has(Integral):
+        expr = expr.xreplace(dict([
+            (i, factor_terms(i)) for i in expr.atoms(Integral)]))
+
+    if expr.has(Product):
+        expr = product_simplify(expr)
+
+    from sympy.physics.units import Quantity
+    from sympy.physics.units.util import quantity_simplify
+
+    if expr.has(Quantity):
+        expr = quantity_simplify(expr)
+
+    short = shorter(powsimp(expr, combine='exp', deep=True), powsimp(expr), expr)
+    short = shorter(short, cancel(short))
+    short = shorter(short, factor_terms(short), expand_power_exp(expand_mul(short)))
+    if short.has(TrigonometricFunction, HyperbolicFunction, ExpBase):
+        short = exptrigsimp(short)
+
+    # get rid of hollow 2-arg Mul factorization
+    hollow_mul = Transform(
+        lambda x: Mul(*x.args),
+        lambda x:
+        x.is_Mul and
+        len(x.args) == 2 and
+        x.args[0].is_Number and
+        x.args[1].is_Add and
+        x.is_commutative)
+    expr = short.xreplace(hollow_mul)
+
     numer, denom = expr.as_numer_denom()
-
     if denom.is_Add:
-        a, b, c = map(Wild, 'abc')
-
-        r = denom.match(a + b*sqrt(c))
-
-        if r is not None and r[b]:
-            a, b, c = r[a], r[b], r[c]
-
-            numer *= a-b*sqrt(c)
-            numer = numer.expand()
-
-            denom = a**2 - c*b**2
-
-            expr = numer/denom
+        n, d = fraction(radsimp(1/denom, symbolic=False, max_terms=1))
+        if n is not S.One:
+            expr = (numer*n).expand()/d
 
     if expr.could_extract_minus_sign():
-        n, d = expr.as_numer_denom()
+        n, d = fraction(expr)
         if d != 0:
-            expr = -n/(-d)
+            expr = signsimp(-n/(-d))
 
-    if count_ops(expr) > ratio*count_ops(original_expr):
-        return original_expr
+    if measure(expr) > ratio*measure(original_expr):
+        expr = original_expr
 
-    if original_expr.is_Matrix:
-        expr = matrixify(expr)
+    # restore floats
+    if floats and rational is None:
+        expr = nfloat(expr, exponent=False)
+
+    return done(expr)
+
+
+def sum_simplify(s, **kwargs):
+    """Main function for Sum simplification"""
+    from sympy.concrete.summations import Sum
+    from sympy.core.function import expand
+
+    if not isinstance(s, Add):
+        s = s.xreplace(dict([(a, sum_simplify(a, **kwargs))
+            for a in s.atoms(Add) if a.has(Sum)]))
+    s = expand(s)
+    if not isinstance(s, Add):
+        return s
+
+    terms = s.args
+    s_t = [] # Sum Terms
+    o_t = [] # Other Terms
+
+    for term in terms:
+        sum_terms, other = sift(Mul.make_args(term),
+            lambda i: isinstance(i, Sum), binary=True)
+        if not sum_terms:
+            o_t.append(term)
+            continue
+        other = [Mul(*other)]
+        s_t.append(Mul(*(other + [s._eval_simplify(**kwargs) for s in sum_terms])))
+
+    result = Add(sum_combine(s_t), *o_t)
+
+    return result
+
+
+def sum_combine(s_t):
+    """Helper function for Sum simplification
+
+       Attempts to simplify a list of sums, by combining limits / sum function's
+       returns the simplified sum
+    """
+    from sympy.concrete.summations import Sum
+
+    used = [False] * len(s_t)
+
+    for method in range(2):
+        for i, s_term1 in enumerate(s_t):
+            if not used[i]:
+                for j, s_term2 in enumerate(s_t):
+                    if not used[j] and i != j:
+                        temp = sum_add(s_term1, s_term2, method)
+                        if isinstance(temp, Sum) or isinstance(temp, Mul):
+                            s_t[i] = temp
+                            s_term1 = s_t[i]
+                            used[j] = True
+
+    result = S.Zero
+    for i, s_term in enumerate(s_t):
+        if not used[i]:
+            result = Add(result, s_term)
+
+    return result
+
+
+def factor_sum(self, limits=None, radical=False, clear=False, fraction=False, sign=True):
+    """Return Sum with constant factors extracted.
+
+    If ``limits`` is specified then ``self`` is the summand; the other
+    keywords are passed to ``factor_terms``.
+
+    Examples
+    ========
+
+    >>> from sympy import Sum, Integral
+    >>> from sympy.abc import x, y
+    >>> from sympy.simplify.simplify import factor_sum
+    >>> s = Sum(x*y, (x, 1, 3))
+    >>> factor_sum(s)
+    y*Sum(x, (x, 1, 3))
+    >>> factor_sum(s.function, s.limits)
+    y*Sum(x, (x, 1, 3))
+    """
+    # XXX deprecate in favor of direct call to factor_terms
+    from sympy.concrete.summations import Sum
+    kwargs = dict(radical=radical, clear=clear,
+        fraction=fraction, sign=sign)
+    expr = Sum(self, *limits) if limits else self
+    return factor_terms(expr, **kwargs)
+
+
+def sum_add(self, other, method=0):
+    """Helper function for Sum simplification"""
+    from sympy.concrete.summations import Sum
+    from sympy import Mul
+
+    #we know this is something in terms of a constant * a sum
+    #so we temporarily put the constants inside for simplification
+    #then simplify the result
+    def __refactor(val):
+        args = Mul.make_args(val)
+        sumv = next(x for x in args if isinstance(x, Sum))
+        constant = Mul(*[x for x in args if x != sumv])
+        return Sum(constant * sumv.function, *sumv.limits)
+
+    if isinstance(self, Mul):
+        rself = __refactor(self)
+    else:
+        rself = self
+
+    if isinstance(other, Mul):
+        rother = __refactor(other)
+    else:
+        rother = other
+
+    if type(rself) == type(rother):
+        if method == 0:
+            if rself.limits == rother.limits:
+                return factor_sum(Sum(rself.function + rother.function, *rself.limits))
+        elif method == 1:
+            if simplify(rself.function - rother.function) == 0:
+                if len(rself.limits) == len(rother.limits) == 1:
+                    i = rself.limits[0][0]
+                    x1 = rself.limits[0][1]
+                    y1 = rself.limits[0][2]
+                    j = rother.limits[0][0]
+                    x2 = rother.limits[0][1]
+                    y2 = rother.limits[0][2]
+
+                    if i == j:
+                        if x2 == y1 + 1:
+                            return factor_sum(Sum(rself.function, (i, x1, y2)))
+                        elif x1 == y2 + 1:
+                            return factor_sum(Sum(rself.function, (i, x2, y1)))
+
+    return Add(self, other)
+
+
+def product_simplify(s):
+    """Main function for Product simplification"""
+    from sympy.concrete.products import Product
+
+    terms = Mul.make_args(s)
+    p_t = [] # Product Terms
+    o_t = [] # Other Terms
+
+    for term in terms:
+        if isinstance(term, Product):
+            p_t.append(term)
+        else:
+            o_t.append(term)
+
+    used = [False] * len(p_t)
+
+    for method in range(2):
+        for i, p_term1 in enumerate(p_t):
+            if not used[i]:
+                for j, p_term2 in enumerate(p_t):
+                    if not used[j] and i != j:
+                        if isinstance(product_mul(p_term1, p_term2, method), Product):
+                            p_t[i] = product_mul(p_term1, p_term2, method)
+                            used[j] = True
+
+    result = Mul(*o_t)
+
+    for i, p_term in enumerate(p_t):
+        if not used[i]:
+            result = Mul(result, p_term)
+
+    return result
+
+
+def product_mul(self, other, method=0):
+    """Helper function for Product simplification"""
+    from sympy.concrete.products import Product
+
+    if type(self) == type(other):
+        if method == 0:
+            if self.limits == other.limits:
+                return Product(self.function * other.function, *self.limits)
+        elif method == 1:
+            if simplify(self.function - other.function) == 0:
+                if len(self.limits) == len(other.limits) == 1:
+                    i = self.limits[0][0]
+                    x1 = self.limits[0][1]
+                    y1 = self.limits[0][2]
+                    j = other.limits[0][0]
+                    x2 = other.limits[0][1]
+                    y2 = other.limits[0][2]
+
+                    if i == j:
+                        if x2 == y1 + 1:
+                            return Product(self.function, (i, x1, y2))
+                        elif x1 == y2 + 1:
+                            return Product(self.function, (i, x2, y1))
+
+    return Mul(self, other)
+
+
+def _nthroot_solve(p, n, prec):
+    """
+     helper function for ``nthroot``
+     It denests ``p**Rational(1, n)`` using its minimal polynomial
+    """
+    from sympy.polys.numberfields import _minimal_polynomial_sq
+    from sympy.solvers import solve
+    while n % 2 == 0:
+        p = sqrtdenest(sqrt(p))
+        n = n // 2
+    if n == 1:
+        return p
+    pn = p**Rational(1, n)
+    x = Symbol('x')
+    f = _minimal_polynomial_sq(p, n, x)
+    if f is None:
+        return None
+    sols = solve(f, x)
+    for sol in sols:
+        if abs(sol - pn).n() < 1./10**prec:
+            sol = sqrtdenest(sol)
+            if _mexpand(sol**n) == p:
+                return sol
+
+
+def logcombine(expr, force=False):
+    """
+    Takes logarithms and combines them using the following rules:
+
+    - log(x) + log(y) == log(x*y) if both are positive
+    - a*log(x) == log(x**a) if x is positive and a is real
+
+    If ``force`` is True then the assumptions above will be assumed to hold if
+    there is no assumption already in place on a quantity. For example, if
+    ``a`` is imaginary or the argument negative, force will not perform a
+    combination but if ``a`` is a symbol with no assumptions the change will
+    take place.
+
+    Examples
+    ========
+
+    >>> from sympy import Symbol, symbols, log, logcombine, I
+    >>> from sympy.abc import a, x, y, z
+    >>> logcombine(a*log(x) + log(y) - log(z))
+    a*log(x) + log(y) - log(z)
+    >>> logcombine(a*log(x) + log(y) - log(z), force=True)
+    log(x**a*y/z)
+    >>> x,y,z = symbols('x,y,z', positive=True)
+    >>> a = Symbol('a', real=True)
+    >>> logcombine(a*log(x) + log(y) - log(z))
+    log(x**a*y/z)
+
+    The transformation is limited to factors and/or terms that
+    contain logs, so the result depends on the initial state of
+    expansion:
+
+    >>> eq = (2 + 3*I)*log(x)
+    >>> logcombine(eq, force=True) == eq
+    True
+    >>> logcombine(eq.expand(), force=True)
+    log(x**2) + I*log(x**3)
+
+    See Also
+    ========
+
+    posify: replace all symbols with symbols having positive assumptions
+    sympy.core.function.expand_log: expand the logarithms of products
+        and powers; the opposite of logcombine
+
+    """
+
+    def f(rv):
+        if not (rv.is_Add or rv.is_Mul):
+            return rv
+
+        def gooda(a):
+            # bool to tell whether the leading ``a`` in ``a*log(x)``
+            # could appear as log(x**a)
+            return (a is not S.NegativeOne and  # -1 *could* go, but we disallow
+                (a.is_extended_real or force and a.is_extended_real is not False))
+
+        def goodlog(l):
+            # bool to tell whether log ``l``'s argument can combine with others
+            a = l.args[0]
+            return a.is_positive or force and a.is_nonpositive is not False
+
+        other = []
+        logs = []
+        log1 = defaultdict(list)
+        for a in Add.make_args(rv):
+            if isinstance(a, log) and goodlog(a):
+                log1[()].append(([], a))
+            elif not a.is_Mul:
+                other.append(a)
+            else:
+                ot = []
+                co = []
+                lo = []
+                for ai in a.args:
+                    if ai.is_Rational and ai < 0:
+                        ot.append(S.NegativeOne)
+                        co.append(-ai)
+                    elif isinstance(ai, log) and goodlog(ai):
+                        lo.append(ai)
+                    elif gooda(ai):
+                        co.append(ai)
+                    else:
+                        ot.append(ai)
+                if len(lo) > 1:
+                    logs.append((ot, co, lo))
+                elif lo:
+                    log1[tuple(ot)].append((co, lo[0]))
+                else:
+                    other.append(a)
+
+        # if there is only one log in other, put it with the
+        # good logs
+        if len(other) == 1 and isinstance(other[0], log):
+            log1[()].append(([], other.pop()))
+        # if there is only one log at each coefficient and none have
+        # an exponent to place inside the log then there is nothing to do
+        if not logs and all(len(log1[k]) == 1 and log1[k][0] == [] for k in log1):
+            return rv
+
+        # collapse multi-logs as far as possible in a canonical way
+        # TODO: see if x*log(a)+x*log(a)*log(b) -> x*log(a)*(1+log(b))?
+        # -- in this case, it's unambiguous, but if it were were a log(c) in
+        # each term then it's arbitrary whether they are grouped by log(a) or
+        # by log(c). So for now, just leave this alone; it's probably better to
+        # let the user decide
+        for o, e, l in logs:
+            l = list(ordered(l))
+            e = log(l.pop(0).args[0]**Mul(*e))
+            while l:
+                li = l.pop(0)
+                e = log(li.args[0]**e)
+            c, l = Mul(*o), e
+            if isinstance(l, log):  # it should be, but check to be sure
+                log1[(c,)].append(([], l))
+            else:
+                other.append(c*l)
+
+        # logs that have the same coefficient can multiply
+        for k in list(log1.keys()):
+            log1[Mul(*k)] = log(logcombine(Mul(*[
+                l.args[0]**Mul(*c) for c, l in log1.pop(k)]),
+                force=force), evaluate=False)
+
+        # logs that have oppositely signed coefficients can divide
+        for k in ordered(list(log1.keys())):
+            if not k in log1:  # already popped as -k
+                continue
+            if -k in log1:
+                # figure out which has the minus sign; the one with
+                # more op counts should be the one
+                num, den = k, -k
+                if num.count_ops() > den.count_ops():
+                    num, den = den, num
+                other.append(
+                    num*log(log1.pop(num).args[0]/log1.pop(den).args[0],
+                            evaluate=False))
+            else:
+                other.append(k*log1.pop(k))
+
+        return Add(*other)
+
+    return bottom_up(expr, f)
+
+
+def inversecombine(expr):
+    """Simplify the composition of a function and its inverse.
+
+    No attention is paid to whether the inverse is a left inverse or a
+    right inverse; thus, the result will in general not be equivalent
+    to the original expression.
+
+    Examples
+    ========
+
+    >>> from sympy.simplify.simplify import inversecombine
+    >>> from sympy import asin, sin, log, exp
+    >>> from sympy.abc import x
+    >>> inversecombine(asin(sin(x)))
+    x
+    >>> inversecombine(2*log(exp(3*x)))
+    6*x
+    """
+
+    def f(rv):
+        if rv.is_Function and hasattr(rv, "inverse"):
+            if (len(rv.args) == 1 and len(rv.args[0].args) == 1 and
+                isinstance(rv.args[0], rv.inverse(argindex=1))):
+                    rv = rv.args[0].args[0]
+        return rv
+
+    return bottom_up(expr, f)
+
+
+def walk(e, *target):
+    """iterate through the args that are the given types (target) and
+    return a list of the args that were traversed; arguments
+    that are not of the specified types are not traversed.
+
+    Examples
+    ========
+
+    >>> from sympy.simplify.simplify import walk
+    >>> from sympy import Min, Max
+    >>> from sympy.abc import x, y, z
+    >>> list(walk(Min(x, Max(y, Min(1, z))), Min))
+    [Min(x, Max(y, Min(1, z)))]
+    >>> list(walk(Min(x, Max(y, Min(1, z))), Min, Max))
+    [Min(x, Max(y, Min(1, z))), Max(y, Min(1, z)), Min(1, z)]
+
+    See Also
+    ========
+
+    bottom_up
+    """
+    if isinstance(e, target):
+        yield e
+        for i in e.args:
+            for w in walk(i, *target):
+                yield w
+
+
+def bottom_up(rv, F, atoms=False, nonbasic=False):
+    """Apply ``F`` to all expressions in an expression tree from the
+    bottom up. If ``atoms`` is True, apply ``F`` even if there are no args;
+    if ``nonbasic`` is True, try to apply ``F`` to non-Basic objects.
+    """
+    args = getattr(rv, 'args', None)
+    if args is not None:
+        if args:
+            args = tuple([bottom_up(a, F, atoms, nonbasic) for a in args])
+            if args != rv.args:
+                rv = rv.func(*args)
+            rv = F(rv)
+        elif atoms:
+            rv = F(rv)
+    else:
+        if nonbasic:
+            try:
+                rv = F(rv)
+            except TypeError:
+                pass
+
+    return rv
+
+
+def kroneckersimp(expr):
+    """
+    Simplify expressions with KroneckerDelta.
+
+    The only simplification currently attempted is to identify multiplicative cancellation:
+
+    >>> from sympy import KroneckerDelta, kroneckersimp
+    >>> from sympy.abc import i, j
+    >>> kroneckersimp(1 + KroneckerDelta(0, j) * KroneckerDelta(1, j))
+    1
+    """
+    def args_cancel(args1, args2):
+        for i1 in range(2):
+            for i2 in range(2):
+                a1 = args1[i1]
+                a2 = args2[i2]
+                a3 = args1[(i1 + 1) % 2]
+                a4 = args2[(i2 + 1) % 2]
+                if Eq(a1, a2) is S.true and Eq(a3, a4) is S.false:
+                    return True
+        return False
+
+    def cancel_kronecker_mul(m):
+        from sympy.utilities.iterables import subsets
+
+        args = m.args
+        deltas = [a for a in args if isinstance(a, KroneckerDelta)]
+        for delta1, delta2 in subsets(deltas, 2):
+            args1 = delta1.args
+            args2 = delta2.args
+            if args_cancel(args1, args2):
+                return 0*m
+        return m
+
+    if not expr.has(KroneckerDelta):
+        return expr
+
+    if expr.has(Piecewise):
+        expr = expr.rewrite(KroneckerDelta)
+
+    newexpr = expr
+    expr = None
+
+    while newexpr != expr:
+        expr = newexpr
+        newexpr = expr.replace(lambda e: isinstance(e, Mul), cancel_kronecker_mul)
 
     return expr
 
-def _real_to_rational(expr):
+
+def besselsimp(expr):
     """
-    Replace all reals in expr with rationals.
+    Simplify bessel-type functions.
 
-    >>> from sympy import nsimplify
-    >>> from sympy.abc import x
+    This routine tries to simplify bessel-type functions. Currently it only
+    works on the Bessel J and I functions, however. It works by looking at all
+    such functions in turn, and eliminating factors of "I" and "-1" (actually
+    their polar equivalents) in front of the argument. Then, functions of
+    half-integer order are rewritten using strigonometric functions and
+    functions of integer order (> 1) are rewritten using functions
+    of low order.  Finally, if the expression was changed, compute
+    factorization of the result with factor().
 
-    >>> nsimplify(.76 + .1*x**.5, rational=1)
-    sqrt(x)/10 + 19/25
+    >>> from sympy import besselj, besseli, besselsimp, polar_lift, I, S
+    >>> from sympy.abc import z, nu
+    >>> besselsimp(besselj(nu, z*polar_lift(-1)))
+    exp(I*pi*nu)*besselj(nu, z)
+    >>> besselsimp(besseli(nu, z*polar_lift(-I)))
+    exp(-I*pi*nu/2)*besselj(nu, z)
+    >>> besselsimp(besseli(S(-1)/2, z))
+    sqrt(2)*cosh(z)/(sqrt(pi)*sqrt(z))
+    >>> besselsimp(z*besseli(0, z) + z*(besseli(2, z))/2 + besseli(1, z))
+    3*z*besseli(0, z)/2
+    """
+    # TODO
+    # - better algorithm?
+    # - simplify (cos(pi*b)*besselj(b,z) - besselj(-b,z))/sin(pi*b) ...
+    # - use contiguity relations?
+
+    def replacer(fro, to, factors):
+        factors = set(factors)
+
+        def repl(nu, z):
+            if factors.intersection(Mul.make_args(z)):
+                return to(nu, z)
+            return fro(nu, z)
+        return repl
+
+    def torewrite(fro, to):
+        def tofunc(nu, z):
+            return fro(nu, z).rewrite(to)
+        return tofunc
+
+    def tominus(fro):
+        def tofunc(nu, z):
+            return exp(I*pi*nu)*fro(nu, exp_polar(-I*pi)*z)
+        return tofunc
+
+    orig_expr = expr
+
+    ifactors = [I, exp_polar(I*pi/2), exp_polar(-I*pi/2)]
+    expr = expr.replace(
+        besselj, replacer(besselj,
+        torewrite(besselj, besseli), ifactors))
+    expr = expr.replace(
+        besseli, replacer(besseli,
+        torewrite(besseli, besselj), ifactors))
+
+    minusfactors = [-1, exp_polar(I*pi)]
+    expr = expr.replace(
+        besselj, replacer(besselj, tominus(besselj), minusfactors))
+    expr = expr.replace(
+        besseli, replacer(besseli, tominus(besseli), minusfactors))
+
+    z0 = Dummy('z')
+
+    def expander(fro):
+        def repl(nu, z):
+            if (nu % 1) == S.Half:
+                return simplify(trigsimp(unpolarify(
+                        fro(nu, z0).rewrite(besselj).rewrite(jn).expand(
+                            func=True)).subs(z0, z)))
+            elif nu.is_Integer and nu > 1:
+                return fro(nu, z).expand(func=True)
+            return fro(nu, z)
+        return repl
+
+    expr = expr.replace(besselj, expander(besselj))
+    expr = expr.replace(bessely, expander(bessely))
+    expr = expr.replace(besseli, expander(besseli))
+    expr = expr.replace(besselk, expander(besselk))
+
+    def _bessel_simp_recursion(expr):
+
+        def _use_recursion(bessel, expr):
+            while True:
+                bessels = expr.find(lambda x: isinstance(x, bessel))
+                try:
+                    for ba in sorted(bessels, key=lambda x: re(x.args[0])):
+                        a, x = ba.args
+                        bap1 = bessel(a+1, x)
+                        bap2 = bessel(a+2, x)
+                        if expr.has(bap1) and expr.has(bap2):
+                            expr = expr.subs(ba, 2*(a+1)/x*bap1 - bap2)
+                            break
+                    else:
+                        return expr
+                except (ValueError, TypeError):
+                    return expr
+        if expr.has(besselj):
+            expr = _use_recursion(besselj, expr)
+        if expr.has(bessely):
+            expr = _use_recursion(bessely, expr)
+        return expr
+
+    expr = _bessel_simp_recursion(expr)
+    if expr != orig_expr:
+        expr = expr.factor()
+
+    return expr
+
+
+def nthroot(expr, n, max_len=4, prec=15):
+    """
+    compute a real nth-root of a sum of surds
+
+    Parameters
+    ==========
+
+    expr : sum of surds
+    n : integer
+    max_len : maximum number of surds passed as constants to ``nsimplify``
+
+    Algorithm
+    =========
+
+    First ``nsimplify`` is used to get a candidate root; if it is not a
+    root the minimal polynomial is computed; the answer is one of its
+    roots.
+
+    Examples
+    ========
+
+    >>> from sympy.simplify.simplify import nthroot
+    >>> from sympy import Rational, sqrt
+    >>> nthroot(90 + 34*sqrt(7), 3)
+    sqrt(7) + 3
 
     """
-    p = sympify(expr)
-    for r in p.atoms(C.Float):
-        newr = nsimplify(r)
-        if not newr.is_Rational or \
-           r.is_finite and not newr.is_finite:
-            newr = r
-            if newr < 0:
-                s = -1
-                newr *= s
-            else:
-                s = 1
-            d = Pow(10, int((mpmath.log(newr)/mpmath.log(10))))
-            newr = s*Rational(str(newr/d))*d
-        p = p.subs(r, newr)
-    return p
+    expr = sympify(expr)
+    n = sympify(n)
+    p = expr**Rational(1, n)
+    if not n.is_integer:
+        return p
+    if not _is_sum_surds(expr):
+        return p
+    surds = []
+    coeff_muls = [x.as_coeff_Mul() for x in expr.args]
+    for x, y in coeff_muls:
+        if not x.is_rational:
+            return p
+        if y is S.One:
+            continue
+        if not (y.is_Pow and y.exp == S.Half and y.base.is_integer):
+            return p
+        surds.append(y)
+    surds.sort()
+    surds = surds[:max_len]
+    if expr < 0 and n % 2 == 1:
+        p = (-expr)**Rational(1, n)
+        a = nsimplify(p, constants=surds)
+        res = a if _mexpand(a**n) == _mexpand(-expr) else p
+        return -res
+    a = nsimplify(p, constants=surds)
+    if _mexpand(a) is not _mexpand(p) and _mexpand(a**n) == _mexpand(expr):
+        return _mexpand(a)
+    expr = _nthroot_solve(expr, n, prec)
+    if expr is None:
+        return p
+    return expr
 
-def nsimplify(expr, constants=[], tolerance=None, full=False, rational=False):
+
+def nsimplify(expr, constants=(), tolerance=None, full=False, rational=None,
+    rational_conversion='base10'):
     """
-    Replace numbers with simple representations.
+    Find a simple representation for a number or, if there are free symbols or
+    if rational=True, then replace Floats with their Rational equivalents. If
+    no change is made and rational is not False then Floats will at least be
+    converted to Rationals.
 
-    If rational=True then numbers are simply replaced with their rational
-    equivalents.
-
-    If rational=False, a simple formula that numerically matches the
-    given expression is sought (and the input should be possible to evalf
-    to a precision of at least 30 digits).
+    For numerical expressions, a simple formula that numerically matches the
+    given numerical expression is sought (and the input should be possible
+    to evalf to a precision of at least 30 digits).
 
     Optionally, a list of (rationally independent) constants to
     include in the formula may be given.
 
-    A lower tolerance may be set to find less exact matches.
+    A lower tolerance may be set to find less exact matches. If no tolerance
+    is given then the least precise value will set the tolerance (e.g. Floats
+    default to 15 digits of precision, so would be tolerance=10**-15).
 
     With full=True, a more extensive search is performed
     (this is useful to find simpler numbers when the tolerance
     is set low).
 
-    Examples:
+    When converting to rational, if rational_conversion='base10' (the default), then
+    convert floats to rationals using their base-10 (string) representation.
+    When rational_conversion='exact' it uses the exact, base-2 representation.
 
-        >>> from sympy import nsimplify, sqrt, GoldenRatio, exp, I, exp, pi
-        >>> nsimplify(4/(1+sqrt(5)), [GoldenRatio])
-        -2 + 2*GoldenRatio
-        >>> nsimplify((1/(exp(3*pi*I/5)+1)))
-        1/2 - I*sqrt(sqrt(5)/10 + 1/4)
-        >>> nsimplify(I**I, [pi])
-        exp(-pi/2)
-        >>> nsimplify(pi, tolerance=0.01)
-        22/7
+    Examples
+    ========
+
+    >>> from sympy import nsimplify, sqrt, GoldenRatio, exp, I, exp, pi
+    >>> nsimplify(4/(1+sqrt(5)), [GoldenRatio])
+    -2 + 2*GoldenRatio
+    >>> nsimplify((1/(exp(3*pi*I/5)+1)))
+    1/2 - I*sqrt(sqrt(5)/10 + 1/4)
+    >>> nsimplify(I**I, [pi])
+    exp(-pi/2)
+    >>> nsimplify(pi, tolerance=0.01)
+    22/7
+
+    >>> nsimplify(0.333333333333333, rational=True, rational_conversion='exact')
+    6004799503160655/18014398509481984
+    >>> nsimplify(0.333333333333333, rational=True)
+    1/3
+
+    See Also
+    ========
+
+    sympy.core.function.nfloat
 
     """
-    if rational:
-        return _real_to_rational(expr)
+    try:
+        return sympify(as_int(expr))
+    except (TypeError, ValueError):
+        pass
+    expr = sympify(expr).xreplace({
+        Float('inf'): S.Infinity,
+        Float('-inf'): S.NegativeInfinity,
+        })
+    if expr is S.Infinity or expr is S.NegativeInfinity:
+        return expr
+    if rational or expr.free_symbols:
+        return _real_to_rational(expr, tolerance, rational_conversion)
 
-    expr = sympify(expr)
-
+    # SymPy's default tolerance for Rationals is 15; other numbers may have
+    # lower tolerances set, so use them to pick the largest tolerance if None
+    # was given
+    if tolerance is None:
+        tolerance = 10**-min([15] +
+             [mpmath.libmp.libmpf.prec_to_dps(n._prec)
+             for n in expr.atoms(Float)])
+    # XXX should prec be set independent of tolerance or should it be computed
+    # from tolerance?
     prec = 30
     bprec = int(prec*3.33)
 
@@ -1939,8 +1470,8 @@ def nsimplify(expr, constants=[], tolerance=None, full=False, rational=False):
     exprval = expr.evalf(prec, chop=True)
     re, im = exprval.as_real_imag()
 
-    # Must be numerical
-    if not ((re.is_Float or re.is_Integer) and (im.is_Float or im.is_Integer)):
+    # safety check to make sure that this evaluated to a number
+    if not (re.is_Number and im.is_Number):
         return expr
 
     def nsimplify_real(x):
@@ -1950,7 +1481,7 @@ def nsimplify(expr, constants=[], tolerance=None, full=False, rational=False):
             # We'll be happy with low precision if a simple fraction
             if not (tolerance or full):
                 mpmath.mp.dps = 15
-                rat = mpmath.findpoly(xv, 1)
+                rat = mpmath.pslq([xv, 1])
                 if rat is not None:
                     return Rational(-int(rat[1]), int(rat[0]))
             mpmath.mp.dps = prec
@@ -1960,156 +1491,627 @@ def nsimplify(expr, constants=[], tolerance=None, full=False, rational=False):
                 raise ValueError
             if full:
                 newexpr = newexpr[0]
-            return sympify(newexpr)
+            expr = sympify(newexpr)
+            if x and not expr:  # don't let x become 0
+                raise ValueError
+            if expr.is_finite is False and not xv in [mpmath.inf, mpmath.ninf]:
+                raise ValueError
+            return expr
         finally:
+            # even though there are returns above, this is executed
+            # before leaving
             mpmath.mp.dps = orig
     try:
-        if re: re = nsimplify_real(re)
-        if im: im = nsimplify_real(im)
+        if re:
+            re = nsimplify_real(re)
+        if im:
+            im = nsimplify_real(im)
     except ValueError:
+        if rational is None:
+            return _real_to_rational(expr, rational_conversion=rational_conversion)
         return expr
 
-    return re + im*S.ImaginaryUnit
+    rv = re + im*S.ImaginaryUnit
+    # if there was a change or rational is explicitly not wanted
+    # return the value, else return the Rational representation
+    if rv != expr or rational is False:
+        return rv
+    return _real_to_rational(expr, rational_conversion=rational_conversion)
 
 
-def logcombine(expr, force=False):
+def _real_to_rational(expr, tolerance=None, rational_conversion='base10'):
     """
-    Takes logarithms and combines them using the following rules:
+    Replace all reals in expr with rationals.
 
-    - log(x)+log(y) == log(x*y)
-    - a*log(x) == log(x**a)
+    Examples
+    ========
 
-    These identities are only valid if x and y are positive and if a is real, so
-    the function will not combine the terms unless the arguments have the proper
-    assumptions on them.  Use logcombine(func, force=True) to
-    automatically assume that the arguments of logs are positive and that
-    coefficients are real.  Note that this will not change any assumptions
-    already in place, so if the coefficient is imaginary or the argument
-    negative, combine will still not combine the equations.  Change the
-    assumptions on the variables to make them combine.
+    >>> from sympy import Rational
+    >>> from sympy.simplify.simplify import _real_to_rational
+    >>> from sympy.abc import x
 
-    Examples:
-    >>> from sympy import Symbol, symbols, log, logcombine
-    >>> from sympy.abc import a, x, y, z
-    >>> logcombine(a*log(x)+log(y)-log(z))
-    a*log(x) + log(y) - log(z)
-    >>> logcombine(a*log(x)+log(y)-log(z), force=True)
-    log(x**a*y/z)
-    >>> x,y,z = symbols('x,y,z', positive=True)
-    >>> a = Symbol('a', real=True)
-    >>> logcombine(a*log(x)+log(y)-log(z))
-    log(x**a*y/z)
+    >>> _real_to_rational(.76 + .1*x**.5)
+    sqrt(x)/10 + 19/25
+
+    If rational_conversion='base10', this uses the base-10 string. If
+    rational_conversion='exact', the exact, base-2 representation is used.
+
+    >>> _real_to_rational(0.333333333333333, rational_conversion='exact')
+    6004799503160655/18014398509481984
+    >>> _real_to_rational(0.333333333333333)
+    1/3
 
     """
-    # Try to make (a+bi)*log(x) == a*log(x)+bi*log(x).  This needs to be a
-    # separate function call to avoid infinite recursion.
-    expr = expand_mul(expr, deep=False)
-    return _logcombine(expr, force)
-
-def _logcombine(expr, force=False):
-    """
-    Does the main work for logcombine, it's a separate function to avoid an
-    infinite recursion. See the docstrings of logcombine() for help.
-    """
-    def _getlogargs(expr):
-        """
-        Returns the arguments of the logarithm in an expression.
-        Example:
-        _getlogargs(a*log(x*y))
-        x*y
-        """
-        if expr.func is log:
-            return [expr.args[0]]
+    expr = _sympify(expr)
+    inf = Float('inf')
+    p = expr
+    reps = {}
+    reduce_num = None
+    if tolerance is not None and tolerance < 1:
+        reduce_num = ceiling(1/tolerance)
+    for fl in p.atoms(Float):
+        key = fl
+        if reduce_num is not None:
+            r = Rational(fl).limit_denominator(reduce_num)
+        elif (tolerance is not None and tolerance >= 1 and
+                fl.is_Integer is False):
+            r = Rational(tolerance*round(fl/tolerance)
+                ).limit_denominator(int(tolerance))
         else:
-            args = []
-            for i in expr.args:
-                if i.func is log:
-                    args.append(_getlogargs(i))
-            return flatten(args)
-        return None
+            if rational_conversion == 'exact':
+                r = Rational(fl)
+                reps[key] = r
+                continue
+            elif rational_conversion != 'base10':
+                raise ValueError("rational_conversion must be 'base10' or 'exact'")
 
-    if type(expr) in (int, float) or expr.is_Number or expr.is_Rational or \
-        expr.is_NumberSymbol or type(expr) == C.Integral:
-        return expr
-
-    if isinstance(expr, Equality):
-        retval = Equality(_logcombine(expr.lhs-expr.rhs, force),\
-        Integer(0))
-        # If logcombine couldn't do much with the equality, try to make it like
-        # it was.  Hopefully extract_additively won't become smart enought to
-        # take logs apart :)
-        right = retval.lhs.extract_additively(expr.lhs)
-        if right:
-            return Equality(expr.lhs, _logcombine(-right, force))
-        else:
-            return retval
-
-    if expr.is_Add:
-        argslist = 1
-        notlogs = 0
-        coeflogs = 0
-        for i in expr.args:
-            if i.func is log:
-                if (i.args[0].is_positive or (force and not \
-                i.args[0].is_nonpositive)):
-                    argslist *= _logcombine(i.args[0], force)
+            r = nsimplify(fl, rational=False)
+            # e.g. log(3).n() -> log(3) instead of a Rational
+            if fl and not r:
+                r = Rational(fl)
+            elif not r.is_Rational:
+                if fl == inf or fl == -inf:
+                    r = S.ComplexInfinity
+                elif fl < 0:
+                    fl = -fl
+                    d = Pow(10, int((mpmath.log(fl)/mpmath.log(10))))
+                    r = -Rational(str(fl/d))*d
+                elif fl > 0:
+                    d = Pow(10, int((mpmath.log(fl)/mpmath.log(10))))
+                    r = Rational(str(fl/d))*d
                 else:
-                    notlogs += i
-            elif i.is_Mul and any(map(lambda t: getattr(t,'func', False)==log,\
-            i.args)):
-                largs = _getlogargs(i)
-                assert len(largs) != 0
-                loglargs = 1
-                for j in largs:
-                    loglargs *= log(j)
+                    r = Integer(0)
+        reps[key] = r
+    return p.subs(reps, simultaneous=True)
 
-                if  all(getattr(t,'is_positive') for t in largs)\
-                    and getattr(i.extract_multiplicatively(loglargs),'is_real', False)\
-                    or (force\
-                        and not all(getattr(t,'is_nonpositive') for t in largs)\
-                        and not getattr(i.extract_multiplicatively(loglargs),\
-                        'is_real')==False):
 
-                    coeflogs += _logcombine(i, force)
-                else:
-                    notlogs += i
-            elif i.has(log):
-                notlogs += _logcombine(i, force)
+def clear_coefficients(expr, rhs=S.Zero):
+    """Return `p, r` where `p` is the expression obtained when Rational
+    additive and multiplicative coefficients of `expr` have been stripped
+    away in a naive fashion (i.e. without simplification). The operations
+    needed to remove the coefficients will be applied to `rhs` and returned
+    as `r`.
+
+    Examples
+    ========
+
+    >>> from sympy.simplify.simplify import clear_coefficients
+    >>> from sympy.abc import x, y
+    >>> from sympy import Dummy
+    >>> expr = 4*y*(6*x + 3)
+    >>> clear_coefficients(expr - 2)
+    (y*(2*x + 1), 1/6)
+
+    When solving 2 or more expressions like `expr = a`,
+    `expr = b`, etc..., it is advantageous to provide a Dummy symbol
+    for `rhs` and  simply replace it with `a`, `b`, etc... in `r`.
+
+    >>> rhs = Dummy('rhs')
+    >>> clear_coefficients(expr, rhs)
+    (y*(2*x + 1), _rhs/12)
+    >>> _[1].subs(rhs, 2)
+    1/6
+    """
+    was = None
+    free = expr.free_symbols
+    if expr.is_Rational:
+        return (S.Zero, rhs - expr)
+    while expr and was != expr:
+        was = expr
+        m, expr = (
+            expr.as_content_primitive()
+            if free else
+            factor_terms(expr).as_coeff_Mul(rational=True))
+        rhs /= m
+        c, expr = expr.as_coeff_Add(rational=True)
+        rhs -= c
+    expr = signsimp(expr, evaluate = False)
+    if _coeff_isneg(expr):
+        expr = -expr
+        rhs = -rhs
+    return expr, rhs
+
+def nc_simplify(expr, deep=True):
+    '''
+    Simplify a non-commutative expression composed of multiplication
+    and raising to a power by grouping repeated subterms into one power.
+    Priority is given to simplifications that give the fewest number
+    of arguments in the end (for example, in a*b*a*b*c*a*b*c simplifying
+    to (a*b)**2*c*a*b*c gives 5 arguments while a*b*(a*b*c)**2 has 3).
+    If `expr` is a sum of such terms, the sum of the simplified terms
+    is returned.
+
+    Keyword argument `deep` controls whether or not subexpressions
+    nested deeper inside the main expression are simplified. See examples
+    below. Setting `deep` to `False` can save time on nested expressions
+    that don't need simplifying on all levels.
+
+    Examples
+    ========
+
+    >>> from sympy import symbols
+    >>> from sympy.simplify.simplify import nc_simplify
+    >>> a, b, c = symbols("a b c", commutative=False)
+    >>> nc_simplify(a*b*a*b*c*a*b*c)
+    a*b*(a*b*c)**2
+    >>> expr = a**2*b*a**4*b*a**4
+    >>> nc_simplify(expr)
+    a**2*(b*a**4)**2
+    >>> nc_simplify(a*b*a*b*c**2*(a*b)**2*c**2)
+    ((a*b)**2*c**2)**2
+    >>> nc_simplify(a*b*a*b + 2*a*c*a**2*c*a**2*c*a)
+    (a*b)**2 + 2*(a*c*a)**3
+    >>> nc_simplify(b**-1*a**-1*(a*b)**2)
+    a*b
+    >>> nc_simplify(a**-1*b**-1*c*a)
+    (b*a)**(-1)*c*a
+    >>> expr = (a*b*a*b)**2*a*c*a*c
+    >>> nc_simplify(expr)
+    (a*b)**4*(a*c)**2
+    >>> nc_simplify(expr, deep=False)
+    (a*b*a*b)**2*(a*c)**2
+
+    '''
+    from sympy.matrices.expressions import (MatrixExpr, MatAdd, MatMul,
+                                                MatPow, MatrixSymbol)
+    from sympy.core.exprtools import factor_nc
+
+    if isinstance(expr, MatrixExpr):
+        expr = expr.doit(inv_expand=False)
+        _Add, _Mul, _Pow, _Symbol = MatAdd, MatMul, MatPow, MatrixSymbol
+    else:
+        _Add, _Mul, _Pow, _Symbol = Add, Mul, Pow, Symbol
+
+    # =========== Auxiliary functions ========================
+    def _overlaps(args):
+        # Calculate a list of lists m such that m[i][j] contains the lengths
+        # of all possible overlaps between args[:i+1] and args[i+1+j:].
+        # An overlap is a suffix of the prefix that matches a prefix
+        # of the suffix.
+        # For example, let expr=c*a*b*a*b*a*b*a*b. Then m[3][0] contains
+        # the lengths of overlaps of c*a*b*a*b with a*b*a*b. The overlaps
+        # are a*b*a*b, a*b and the empty word so that m[3][0]=[4,2,0].
+        # All overlaps rather than only the longest one are recorded
+        # because this information helps calculate other overlap lengths.
+        m = [[([1, 0] if a == args[0] else [0]) for a in args[1:]]]
+        for i in range(1, len(args)):
+            overlaps = []
+            j = 0
+            for j in range(len(args) - i - 1):
+                overlap = []
+                for v in m[i-1][j+1]:
+                    if j + i + 1 + v < len(args) and args[i] == args[j+i+1+v]:
+                        overlap.append(v + 1)
+                overlap += [0]
+                overlaps.append(overlap)
+            m.append(overlaps)
+        return m
+
+    def _reduce_inverses(_args):
+        # replace consecutive negative powers by an inverse
+        # of a product of positive powers, e.g. a**-1*b**-1*c
+        # will simplify to (a*b)**-1*c;
+        # return that new args list and the number of negative
+        # powers in it (inv_tot)
+        inv_tot = 0 # total number of inverses
+        inverses = []
+        args = []
+        for arg in _args:
+            if isinstance(arg, _Pow) and arg.args[1] < 0:
+                inverses = [arg**-1] + inverses
+                inv_tot += 1
             else:
-                notlogs += i
-        if notlogs + log(argslist) + coeflogs == expr:
+                if len(inverses) == 1:
+                    args.append(inverses[0]**-1)
+                elif len(inverses) > 1:
+                    args.append(_Pow(_Mul(*inverses), -1))
+                    inv_tot -= len(inverses) - 1
+                inverses = []
+                args.append(arg)
+        if inverses:
+            args.append(_Pow(_Mul(*inverses), -1))
+            inv_tot -= len(inverses) - 1
+        return inv_tot, tuple(args)
+
+    def get_score(s):
+        # compute the number of arguments of s
+        # (including in nested expressions) overall
+        # but ignore exponents
+        if isinstance(s, _Pow):
+            return get_score(s.args[0])
+        elif isinstance(s, (_Add, _Mul)):
+            return sum([get_score(a) for a in s.args])
+        return 1
+
+    def compare(s, alt_s):
+        # compare two possible simplifications and return a
+        # "better" one
+        if s != alt_s and get_score(alt_s) < get_score(s):
+            return alt_s
+        return s
+    # ========================================================
+
+    if not isinstance(expr, (_Add, _Mul, _Pow)) or expr.is_commutative:
+        return expr
+    args = expr.args[:]
+    if isinstance(expr, _Pow):
+        if deep:
+            return _Pow(nc_simplify(args[0]), args[1]).doit()
+        else:
             return expr
+    elif isinstance(expr, _Add):
+        return _Add(*[nc_simplify(a, deep=deep) for a in args]).doit()
+    else:
+        # get the non-commutative part
+        c_args, args = expr.args_cnc()
+        com_coeff = Mul(*c_args)
+        if com_coeff != 1:
+            return com_coeff*nc_simplify(expr/com_coeff, deep=deep)
+
+    inv_tot, args = _reduce_inverses(args)
+    # if most arguments are negative, work with the inverse
+    # of the expression, e.g. a**-1*b*a**-1*c**-1 will become
+    # (c*a*b**-1*a)**-1 at the end so can work with c*a*b**-1*a
+    invert = False
+    if inv_tot > len(args)/2:
+        invert = True
+        args = [a**-1 for a in args[::-1]]
+
+    if deep:
+        args = tuple(nc_simplify(a) for a in args)
+
+    m = _overlaps(args)
+
+    # simps will be {subterm: end} where `end` is the ending
+    # index of a sequence of repetitions of subterm;
+    # this is for not wasting time with subterms that are part
+    # of longer, already considered sequences
+    simps = {}
+
+    post = 1
+    pre = 1
+
+    # the simplification coefficient is the number of
+    # arguments by which contracting a given sequence
+    # would reduce the word; e.g. in a*b*a*b*c*a*b*c,
+    # contracting a*b*a*b to (a*b)**2 removes 3 arguments
+    # while a*b*c*a*b*c to (a*b*c)**2 removes 6. It's
+    # better to contract the latter so simplification
+    # with a maximum simplification coefficient will be chosen
+    max_simp_coeff = 0
+    simp = None # information about future simplification
+
+    for i in range(1, len(args)):
+        simp_coeff = 0
+        l = 0 # length of a subterm
+        p = 0 # the power of a subterm
+        if i < len(args) - 1:
+            rep = m[i][0]
+        start = i # starting index of the repeated sequence
+        end = i+1 # ending index of the repeated sequence
+        if i == len(args)-1 or rep == [0]:
+            # no subterm is repeated at this stage, at least as
+            # far as the arguments are concerned - there may be
+            # a repetition if powers are taken into account
+            if (isinstance(args[i], _Pow) and
+                            not isinstance(args[i].args[0], _Symbol)):
+                subterm = args[i].args[0].args
+                l = len(subterm)
+                if args[i-l:i] == subterm:
+                    # e.g. a*b in a*b*(a*b)**2 is not repeated
+                    # in args (= [a, b, (a*b)**2]) but it
+                    # can be matched here
+                    p += 1
+                    start -= l
+                if args[i+1:i+1+l] == subterm:
+                    # e.g. a*b in (a*b)**2*a*b
+                    p += 1
+                    end += l
+            if p:
+                p += args[i].args[1]
+            else:
+                continue
         else:
-            alllogs = _logcombine(log(argslist) + coeflogs, force)
-            return notlogs + alllogs
+            l = rep[0] # length of the longest repeated subterm at this point
+            start -= l - 1
+            subterm = args[start:end]
+            p = 2
+            end += l
 
-    if expr.is_Mul:
-        a = Wild('a')
-        x = Wild('x')
-        coef = expr.match(a*log(x))
-        if coef\
-            and (coef[a].is_real\
-                or expr.is_Number\
-                or expr.is_NumberSymbol\
-                or type(coef[a]) in (int, float)\
-                or (force\
-                and not coef[a].is_imaginary))\
-            and (coef[a].func != log\
-                or force\
-                or (not getattr(coef[a],'is_real')==False\
-                    and getattr(x, 'is_positive'))):
+        if subterm in simps and simps[subterm] >= start:
+            # the subterm is part of a sequence that
+            # has already been considered
+            continue
 
-            return log(coef[x]**coef[a])
+        # count how many times it's repeated
+        while end < len(args):
+            if l in m[end-1][0]:
+                p += 1
+                end += l
+            elif isinstance(args[end], _Pow) and args[end].args[0].args == subterm:
+                # for cases like a*b*a*b*(a*b)**2*a*b
+                p += args[end].args[1]
+                end += 1
+            else:
+                break
+
+        # see if another match can be made, e.g.
+        # for b*a**2 in b*a**2*b*a**3 or a*b in
+        # a**2*b*a*b
+
+        pre_exp = 0
+        pre_arg = 1
+        if start - l >= 0 and args[start-l+1:start] == subterm[1:]:
+            if isinstance(subterm[0], _Pow):
+                pre_arg = subterm[0].args[0]
+                exp = subterm[0].args[1]
+            else:
+                pre_arg = subterm[0]
+                exp = 1
+            if isinstance(args[start-l], _Pow) and args[start-l].args[0] == pre_arg:
+                pre_exp = args[start-l].args[1] - exp
+                start -= l
+                p += 1
+            elif args[start-l] == pre_arg:
+                pre_exp = 1 - exp
+                start -= l
+                p += 1
+
+        post_exp = 0
+        post_arg = 1
+        if end + l - 1 < len(args) and args[end:end+l-1] == subterm[:-1]:
+            if isinstance(subterm[-1], _Pow):
+                post_arg = subterm[-1].args[0]
+                exp = subterm[-1].args[1]
+            else:
+                post_arg = subterm[-1]
+                exp = 1
+            if isinstance(args[end+l-1], _Pow) and args[end+l-1].args[0] == post_arg:
+                post_exp = args[end+l-1].args[1] - exp
+                end += l
+                p += 1
+            elif args[end+l-1] == post_arg:
+                post_exp = 1 - exp
+                end += l
+                p += 1
+
+        # Consider a*b*a**2*b*a**2*b*a:
+        # b*a**2 is explicitly repeated, but note
+        # that in this case a*b*a is also repeated
+        # so there are two possible simplifications:
+        # a*(b*a**2)**3*a**-1 or (a*b*a)**3
+        # The latter is obviously simpler.
+        # But in a*b*a**2*b**2*a**2 the simplifications are
+        # a*(b*a**2)**2 and (a*b*a)**3*a in which case
+        # it's better to stick with the shorter subterm
+        if post_exp and exp % 2 == 0 and start > 0:
+            exp = exp/2
+            _pre_exp = 1
+            _post_exp = 1
+            if isinstance(args[start-1], _Pow) and args[start-1].args[0] == post_arg:
+                _post_exp = post_exp + exp
+                _pre_exp = args[start-1].args[1] - exp
+            elif args[start-1] == post_arg:
+                _post_exp = post_exp + exp
+                _pre_exp = 1 - exp
+            if _pre_exp == 0 or _post_exp == 0:
+                if not pre_exp:
+                    start -= 1
+                post_exp = _post_exp
+                pre_exp = _pre_exp
+                pre_arg = post_arg
+                subterm = (post_arg**exp,) + subterm[:-1] + (post_arg**exp,)
+
+        simp_coeff += end-start
+
+        if post_exp:
+            simp_coeff -= 1
+        if pre_exp:
+            simp_coeff -= 1
+
+        simps[subterm] = end
+
+        if simp_coeff > max_simp_coeff:
+            max_simp_coeff = simp_coeff
+            simp = (start, _Mul(*subterm), p, end, l)
+            pre = pre_arg**pre_exp
+            post = post_arg**post_exp
+
+    if simp:
+        subterm = _Pow(nc_simplify(simp[1], deep=deep), simp[2])
+        pre = nc_simplify(_Mul(*args[:simp[0]])*pre, deep=deep)
+        post = post*nc_simplify(_Mul(*args[simp[3]:]), deep=deep)
+        simp = pre*subterm*post
+        if pre != 1 or post != 1:
+            # new simplifications may be possible but no need
+            # to recurse over arguments
+            simp = nc_simplify(simp, deep=False)
+    else:
+        simp = _Mul(*args)
+
+    if invert:
+        simp = _Pow(simp, -1)
+
+    # see if factor_nc(expr) is simplified better
+    if not isinstance(expr, MatrixExpr):
+        f_expr = factor_nc(expr)
+        if f_expr != expr:
+            alt_simp = nc_simplify(f_expr, deep=deep)
+            simp = compare(simp, alt_simp)
+    else:
+        simp = simp.doit(inv_expand=False)
+    return simp
+
+
+def dotprodsimp(expr, withsimp=False):
+    """Simplification for a sum of products targeted at the kind of blowup that
+    occurs during summation of products. Intended to reduce expression blowup
+    during matrix multiplication or other similar operations.
+
+    Parameters
+    ==========
+
+    withsimp : bool, optional
+        Specifies whether a flag should be returned along with the expression
+        to indicate roughly whether simplification was successful. It is used
+        in ``MatrixArithmetic._eval_pow_by_recursion`` to avoid attempting to
+        simplify an expression repetitively which does not simplify.
+    """
+
+    from sympy.core.operations import LatticeOp
+
+    def _count_ops_alg(expr):
+        """Optimized count algebraic operations with no recursion into
+        non-algebraic args that ``core.function.count_ops`` does.
+        """
+
+        ops  = 0
+        args = [expr]
+
+        while args:
+            a = args.pop()
+
+            if a.is_Rational:
+                if a is not S.One: # -1/3 = NEG + DIV
+                    ops += bool (a.p < 0) + bool (a.q != 1)
+
+            elif a.is_Mul:
+                if _coeff_isneg(a):
+                    ops += 1
+                    if a.args[0] is S.NegativeOne:
+                        a = a.as_two_terms()[1]
+                    else:
+                        a = -a
+
+                n, d = fraction(a)
+
+                if n.is_Integer:
+                    ops += 1 + bool (n < 0)
+                    args.append(d) # won't be -Mul but could be Add
+
+                elif d is not S.One:
+                    if not d.is_Integer:
+                        args.append(d)
+                    ops += 1
+                    args.append(n) # could be -Mul
+
+                else:
+                    ops += len(a.args) - 1
+                    args.extend(a.args)
+
+            elif a.is_Add:
+                laargs = len(a.args)
+                negs   = 0
+
+                for ai in a.args:
+                    if _coeff_isneg(ai):
+                        negs += 1
+                        ai    = -ai
+                    args.append(ai)
+
+                ops += laargs - (negs != laargs) # -x - y = NEG + SUB
+
+            elif a.is_Pow:
+                ops += 1
+                args.append(a.base)
+
+            elif isinstance(a, LatticeOp):
+                ops += len(a.args) - 1
+                args.extend(a.args)
+
+        return ops
+
+    def _nonalg_subs_dummies(expr, dummies):
+        """Substitute dummy variables for non-algebraic expressions to avoid
+        evaluation of non-algebraic terms that ``polys.polytools.cancel`` does.
+        """
+
+        if not expr.args:
+            return expr
+
+        if expr.is_Add or expr.is_Mul or expr.is_Pow:
+            args = None
+
+            for i, a in enumerate(expr.args):
+                c = _nonalg_subs_dummies(a, dummies)
+
+                if c is a:
+                    continue
+
+                if args is None:
+                    args = list(expr.args)
+
+                args[i] = c
+
+            if args is None:
+                return expr
+
+            return expr.func(*args)
+
+        return dummies.setdefault(expr, Dummy())
+
+    simplified = False # doesn't really mean simplified, rather "can simplify again"
+
+    if isinstance(expr, Expr) and not expr.is_Relational:
+        # XXX: Should really count ops of initial expression and compare to
+        # expand_mul to see if simplification was done but that can be good bit
+        # slower for large initial expressions and this seems to work.
+        expr     = expand_mul(expr) # this and the following expand should not be combined
+        exprops  = _count_ops_alg(expr)
+        expr2    = expand_multinomial(expr)
+        expr2ops = _count_ops_alg(expr2)
+
+        if expr2ops < exprops:
+            expr       = expr2
+            exprops    = expr2ops
+            simplified = True
+
+        if exprops >= 6: # empirically tested cutoff for expensive simplification
+            dummies = {}
+            expr2   = _nonalg_subs_dummies(expr, dummies)
+
+            if expr2 is expr or _count_ops_alg(expr2) >= 6: # check again after substitution
+                expr3 = cancel(expr2)
+
+                if expr3 != expr2:
+                    expr       = expr3.subs([(d, e) for e, d in dummies.items()])
+                    simplified = True
+
+        # very special case: x/(x-1) - 1/(x-1) -> 1
+        elif (exprops == 5 and expr.is_Add and expr.args [0].is_Mul and
+                expr.args [1].is_Mul and expr.args [0].args [-1].is_Pow and
+                expr.args [1].args [-1].is_Pow and
+                expr.args [0].args [-1].exp is S.NegativeOne and
+                expr.args [1].args [-1].exp is S.NegativeOne):
+
+            expr2    = together (expr)
+            expr2ops = _count_ops_alg(expr2)
+
+            if expr2ops < exprops:
+                expr       = expr2
+                simplified = True
+
         else:
-            return _logcombine(expr.args[0], force)*reduce(lambda x, y:\
-             _logcombine(x, force)*_logcombine(y, force),\
-             expr.args[1:], 1)
+            simplified = True
 
-    if expr.is_Function:
-        return expr.func(*map(lambda t: _logcombine(t, force), expr.args))
-
-    if expr.is_Pow:
-        return _logcombine(expr.args[0], force)**\
-        _logcombine(expr.args[1], force)
-
-    return expr
+    return (expr, simplified) if withsimp else expr

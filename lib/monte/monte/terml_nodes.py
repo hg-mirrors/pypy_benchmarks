@@ -1,4 +1,9 @@
 from collections import namedtuple
+import sys
+if sys.version_info[0] > 2:
+    long = int
+    unicode = str
+    basestring = (str, bytes)
 
 _Term = namedtuple("Term", "tag data args span")
 class Term(_Term):

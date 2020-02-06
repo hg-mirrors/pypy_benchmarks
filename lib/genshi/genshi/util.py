@@ -13,10 +13,14 @@
 
 """Various utility classes and functions."""
 
-import htmlentitydefs as entities
 import re
+import sys
+if sys.version_info[0] > 2:
+    from html import entities
+else:
+    import htmlentitydefs as entities
 
-from compat import any, all, stringrepr
+from .compat import any, all, stringrepr
 
 __docformat__ = 'restructuredtext en'
 

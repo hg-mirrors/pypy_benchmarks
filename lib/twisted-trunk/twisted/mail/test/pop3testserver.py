@@ -4,10 +4,12 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
+from __future__ import print_function
+
 from twisted.internet.protocol import Factory
 from twisted.protocols import basic
 from twisted.internet import reactor
-import sys, time
+import sys
 
 USER = "test"
 PASS = "twisted"
@@ -27,30 +29,30 @@ TIMEOUT_DEFERRED = False
 SLOW_GREETING = False
 
 """Commands"""
-CONNECTION_MADE = "+OK POP3 localhost v2003.83 server ready"
+CONNECTION_MADE = b"+OK POP3 localhost v2003.83 server ready"
 
 CAPABILITIES = [
-"TOP",
-"LOGIN-DELAY 180",
-"USER",
-"SASL LOGIN"
+b"TOP",
+b"LOGIN-DELAY 180",
+b"USER",
+b"SASL LOGIN"
 ]
 
-CAPABILITIES_SSL = "STLS"
-CAPABILITIES_UIDL = "UIDL"
+CAPABILITIES_SSL = b"STLS"
+CAPABILITIES_UIDL = b"UIDL"
 
- 
-INVALID_RESPONSE = "-ERR Unknown request"
-VALID_RESPONSE = "+OK Command Completed"
-AUTH_DECLINED = "-ERR LOGIN failed"
-AUTH_ACCEPTED = "+OK Mailbox open, 0 messages"
-TLS_ERROR = "-ERR server side error start TLS handshake"
-LOGOUT_COMPLETE = "+OK quit completed"
-NOT_LOGGED_IN = "-ERR Unknown AUHORIZATION state command"
-STAT = "+OK 0 0"
-UIDL = "+OK Unique-ID listing follows\r\n."
-LIST = "+OK Mailbox scan listing follows\r\n."
-CAP_START = "+OK Capability list follows:"
+
+INVALID_RESPONSE = b"-ERR Unknown request"
+VALID_RESPONSE = b"+OK Command Completed"
+AUTH_DECLINED = b"-ERR LOGIN failed"
+AUTH_ACCEPTED = b"+OK Mailbox open, 0 messages"
+TLS_ERROR = b"-ERR server side error start TLS handshake"
+LOGOUT_COMPLETE = b"+OK quit completed"
+NOT_LOGGED_IN = b"-ERR Unknown AUHORIZATION state command"
+STAT = b"+OK 0 0"
+UIDL = b"+OK Unique-ID listing follows\r\n."
+LIST = b"+OK Mailbox scan listing follows\r\n."
+CAP_START = b"+OK Capability list follows:"
 
 
 class POP3TestServer(basic.LineReceiver):
@@ -60,14 +62,18 @@ class POP3TestServer(basic.LineReceiver):
         self.tmpUser = None
         self.ctx = contextFactory
 
+
     def sendSTATResp(self, req):
         self.sendLine(STAT)
+
 
     def sendUIDLResp(self, req):
         self.sendLine(UIDL)
 
+
     def sendLISTResp(self, req):
         self.sendLine(LIST)
+
 
     def sendCapabilities(self):
         if self.caps is None:
@@ -81,8 +87,8 @@ class POP3TestServer(basic.LineReceiver):
 
         for cap in CAPABILITIES:
             self.caps.append(cap)
-        resp = '\r\n'.join(self.caps)
-        resp += "\r\n."
+        resp = b'\r\n'.join(self.caps)
+        resp += b'\r\n.'
 
         self.sendLine(resp)
 
@@ -98,8 +104,10 @@ class POP3TestServer(basic.LineReceiver):
         else:
             self.sendGreeting()
 
+
     def sendGreeting(self):
         self.sendLine(CONNECTION_MADE)
+
 
     def lineReceived(self, line):
         """Error Conditions"""
@@ -115,16 +123,16 @@ class POP3TestServer(basic.LineReceiver):
             self.disconnect()
             return
 
-        elif find("CAPA"):
+        elif find(b"CAPA"):
             if INVALID_CAPABILITY_RESPONSE:
                 self.sendLine(INVALID_RESPONSE)
             else:
                 self.sendCapabilities()
 
-        elif find("STLS") and SSL_SUPPORT:
+        elif find(b"STLS") and SSL_SUPPORT:
             self.startTLS()
 
-        elif find("USER"):
+        elif find(b"USER"):
             if INVALID_LOGIN_RESPONSE:
                 self.sendLine(INVALID_RESPONSE)
                 return
@@ -138,7 +146,7 @@ class POP3TestServer(basic.LineReceiver):
 
             self.sendLine(resp)
 
-        elif find("PASS"):
+        elif find(b"PASS"):
             resp = None
             try:
                 pwd = line.split(" ")[1]
@@ -155,7 +163,7 @@ class POP3TestServer(basic.LineReceiver):
 
             self.sendLine(resp)
 
-        elif find("QUIT"):
+        elif find(b"QUIT"):
             self.loggedIn = False
             self.sendLine(LOGOUT_COMPLETE)
             self.disconnect()
@@ -166,20 +174,20 @@ class POP3TestServer(basic.LineReceiver):
         elif not self.loggedIn:
             self.sendLine(NOT_LOGGED_IN)
 
-        elif find("NOOP"):
+        elif find(b"NOOP"):
             self.sendLine(VALID_RESPONSE)
 
-        elif find("STAT"):
+        elif find(b"STAT"):
             if TIMEOUT_DEFERRED:
                 return
             self.sendLine(STAT)
 
-        elif find("LIST"):
+        elif find(b"LIST"):
             if TIMEOUT_DEFERRED:
                 return
             self.sendLine(LIST)
 
-        elif find("UIDL"):
+        elif find(b"UIDL"):
             if TIMEOUT_DEFERRED:
                 return
             elif not UIDL_SUPPORT:
@@ -188,18 +196,21 @@ class POP3TestServer(basic.LineReceiver):
 
             self.sendLine(UIDL)
 
+
     def startTLS(self):
         if self.ctx is None:
             self.getContext()
 
         if SSL_SUPPORT and self.ctx is not None:
-            self.sendLine('+OK Begin TLS negotiation now')
+            self.sendLine(b'+OK Begin TLS negotiation now')
             self.transport.startTLS(self.ctx)
         else:
-            self.sendLine('-ERR TLS not available')
+            self.sendLine(b'-ERR TLS not available')
+
 
     def disconnect(self):
         self.transport.loseConnection()
+
 
     def getContext(self):
         try:
@@ -227,7 +238,9 @@ slow - Wait 20 seconds after the connection is made to return a Server Greeting
 """
 
 def printMessage(msg):
-    print "Server Starting in %s mode" % msg
+    print("Server Starting in %s mode" % msg)
+
+
 
 def processArg(arg):
 
@@ -266,7 +279,6 @@ def processArg(arg):
         DROP_CONNECTION = True
         printMessage("Drop Connection")
 
-
     elif arg.lower() == 'bad_tls':
         global BAD_TLS_RESPONSE
         BAD_TLS_RESPONSE = True
@@ -288,11 +300,11 @@ def processArg(arg):
         printMessage("Slow Greeting")
 
     elif arg.lower() == '--help':
-        print usage
+        print(usage)
         sys.exit()
 
     else:
-        print usage
+        print(usage)
         sys.exit()
 
 def main():

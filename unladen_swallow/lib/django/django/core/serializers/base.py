@@ -1,20 +1,54 @@
 """
 Module for abstract serializer/unserializer base classes.
 """
-
-from StringIO import StringIO
-
 from django.db import models
-from django.utils.encoding import smart_str, smart_unicode
-from django.utils import datetime_safe
+from django.utils import six
+
+
+class SerializerDoesNotExist(KeyError):
+    """The requested serializer was not found."""
+    pass
+
 
 class SerializationError(Exception):
     """Something bad happened during serialization."""
     pass
 
+
 class DeserializationError(Exception):
     """Something bad happened during deserialization."""
-    pass
+
+    @classmethod
+    def WithData(cls, original_exc, model, fk, field_value):
+        """
+        Factory method for creating a deserialization error which has a more
+        explanatory message.
+        """
+        return cls("%s: (%s:pk=%s) field_value was '%s'" % (original_exc, model, fk, field_value))
+
+
+class ProgressBar(object):
+    progress_width = 75
+
+    def __init__(self, output, total_count):
+        self.output = output
+        self.total_count = total_count
+        self.prev_done = 0
+
+    def update(self, count):
+        if not self.output:
+            return
+        perc = count * 100 // self.total_count
+        done = perc * self.progress_width // 100
+        if self.prev_done >= done:
+            return
+        self.prev_done = done
+        cr = '' if self.total_count == 1 else '\r'
+        self.output.write(cr + '[' + '.' * done + ' ' * (self.progress_width - done) + ']')
+        if done == self.progress_width:
+            self.output.write('\n')
+        self.output.flush()
+
 
 class Serializer(object):
     """
@@ -24,6 +58,8 @@ class Serializer(object):
     # Indicates if the implemented serializer is only available for
     # internal Django use.
     internal_use_only = False
+    progress_class = ProgressBar
+    stream_class = six.StringIO
 
     def serialize(self, queryset, **options):
         """
@@ -31,39 +67,45 @@ class Serializer(object):
         """
         self.options = options
 
-        self.stream = options.get("stream", StringIO())
-        self.selected_fields = options.get("fields")
+        self.stream = options.pop("stream", self.stream_class())
+        self.selected_fields = options.pop("fields", None)
+        self.use_natural_foreign_keys = options.pop('use_natural_foreign_keys', False)
+        self.use_natural_primary_keys = options.pop('use_natural_primary_keys', False)
+        progress_bar = self.progress_class(
+            options.pop('progress_output', None), options.pop('object_count', 0)
+        )
 
         self.start_serialization()
-        for obj in queryset:
+        self.first = True
+        for count, obj in enumerate(queryset, start=1):
             self.start_object(obj)
-            for field in obj._meta.local_fields:
+            # Use the concrete parent class' _meta instead of the object's _meta
+            # This is to avoid local_fields problems for proxy models. Refs #17717.
+            concrete_model = obj._meta.concrete_model
+            for field in concrete_model._meta.local_fields:
                 if field.serialize:
-                    if field.rel is None:
+                    if field.remote_field is None:
                         if self.selected_fields is None or field.attname in self.selected_fields:
                             self.handle_field(obj, field)
                     else:
                         if self.selected_fields is None or field.attname[:-3] in self.selected_fields:
                             self.handle_fk_field(obj, field)
-            for field in obj._meta.many_to_many:
+            for field in concrete_model._meta.many_to_many:
                 if field.serialize:
                     if self.selected_fields is None or field.attname in self.selected_fields:
                         self.handle_m2m_field(obj, field)
             self.end_object(obj)
+            progress_bar.update(count)
+            if self.first:
+                self.first = False
         self.end_serialization()
         return self.getvalue()
-
-    def get_string_value(self, obj, field):
-        """
-        Convert a field's value to a string.
-        """
-        return smart_unicode(field.value_to_string(obj))
 
     def start_serialization(self):
         """
         Called when serializing of the queryset starts.
         """
-        raise NotImplementedError
+        raise NotImplementedError('subclasses of Serializer must provide a start_serialization() method')
 
     def end_serialization(self):
         """
@@ -75,7 +117,7 @@ class Serializer(object):
         """
         Called when serializing of an object starts.
         """
-        raise NotImplementedError
+        raise NotImplementedError('subclasses of Serializer must provide a start_object() method')
 
     def end_object(self, obj):
         """
@@ -87,19 +129,19 @@ class Serializer(object):
         """
         Called to handle each individual (non-relational) field on an object.
         """
-        raise NotImplementedError
+        raise NotImplementedError('subclasses of Serializer must provide an handle_field() method')
 
     def handle_fk_field(self, obj, field):
         """
         Called to handle a ForeignKey field.
         """
-        raise NotImplementedError
+        raise NotImplementedError('subclasses of Serializer must provide an handle_fk_field() method')
 
     def handle_m2m_field(self, obj, field):
         """
         Called to handle a ManyToManyField.
         """
-        raise NotImplementedError
+        raise NotImplementedError('subclasses of Serializer must provide an handle_m2m_field() method')
 
     def getvalue(self):
         """
@@ -109,7 +151,8 @@ class Serializer(object):
         if callable(getattr(self.stream, 'getvalue', None)):
             return self.stream.getvalue()
 
-class Deserializer(object):
+
+class Deserializer(six.Iterator):
     """
     Abstract base deserializer class.
     """
@@ -119,21 +162,18 @@ class Deserializer(object):
         Init this serializer given a stream or a string
         """
         self.options = options
-        if isinstance(stream_or_string, basestring):
-            self.stream = StringIO(stream_or_string)
+        if isinstance(stream_or_string, six.string_types):
+            self.stream = six.StringIO(stream_or_string)
         else:
             self.stream = stream_or_string
-        # hack to make sure that the models have all been loaded before
-        # deserialization starts (otherwise subclass calls to get_model()
-        # and friends might fail...)
-        models.get_apps()
 
     def __iter__(self):
         return self
 
-    def next(self):
+    def __next__(self):
         """Iteration iterface -- return the next item in the stream"""
-        raise NotImplementedError
+        raise NotImplementedError('subclasses of Deserializer must provide a __next__() method')
+
 
 class DeserializedObject(object):
     """
@@ -152,19 +192,39 @@ class DeserializedObject(object):
         self.m2m_data = m2m_data
 
     def __repr__(self):
-        return "<DeserializedObject: %s>" % smart_str(self.object)
+        return "<%s: %s(pk=%s)>" % (
+            self.__class__.__name__,
+            self.object._meta.label,
+            self.object.pk,
+        )
 
-    def save(self, save_m2m=True):
+    def save(self, save_m2m=True, using=None, **kwargs):
         # Call save on the Model baseclass directly. This bypasses any
         # model-defined save. The save is also forced to be raw.
-        # This ensures that the data that is deserialized is literally
-        # what came from the file, not post-processed by pre_save/save
-        # methods.
-        models.Model.save_base(self.object, raw=True)
+        # raw=True is passed to any pre/post_save signals.
+        models.Model.save_base(self.object, using=using, raw=True, **kwargs)
         if self.m2m_data and save_m2m:
             for accessor_name, object_list in self.m2m_data.items():
-                setattr(self.object, accessor_name, object_list)
+                getattr(self.object, accessor_name).set(object_list)
 
         # prevent a second (possibly accidental) call to save() from saving
         # the m2m data twice.
         self.m2m_data = None
+
+
+def build_instance(Model, data, db):
+    """
+    Build a model instance.
+
+    If the model instance doesn't have a primary key and the model supports
+    natural keys, try to retrieve it from the database.
+    """
+    obj = Model(**data)
+    if (obj.pk is None and hasattr(Model, 'natural_key') and
+            hasattr(Model._default_manager, 'get_by_natural_key')):
+        natural_key = obj.natural_key()
+        try:
+            obj.pk = Model._default_manager.db_manager(db).get_by_natural_key(*natural_key).pk
+        except Model.DoesNotExist:
+            pass
+    return obj

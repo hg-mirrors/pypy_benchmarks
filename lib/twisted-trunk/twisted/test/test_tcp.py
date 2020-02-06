@@ -5,18 +5,26 @@
 Tests for implementations of L{IReactorTCP}.
 """
 
-import socket, random, errno
+from __future__ import division, absolute_import
 
-from zope.interface import implements
+import socket
+import random
+import errno
+import hamcrest
+from functools import wraps
+
+from zope.interface import implementer
 
 from twisted.trial import unittest
 
-from twisted.python.log import msg
+from twisted.python.log import msg, err
 from twisted.internet import protocol, reactor, defer, interfaces
 from twisted.internet import error
 from twisted.internet.address import IPv4Address
 from twisted.internet.interfaces import IHalfCloseableProtocol, IPullProducer
 from twisted.protocols import policies
+from twisted.python.compat import _PY3
+from twisted.python.runtime import platform
 from twisted.test.proto_helpers import AccumulatingProtocol
 
 
@@ -87,15 +95,15 @@ class MyProtocolFactoryMixin(object):
         typical C{protocol} attribute of factories (but that name is used by
         this class for something else).
 
-    @type protocolConnectionMade: L{NoneType} or L{defer.Deferred}
+    @type protocolConnectionMade: L{None} or L{defer.Deferred}
     @ivar protocolConnectionMade: When an instance of L{AccumulatingProtocol}
-        is connected, if this is not C{None}, the L{Deferred} will be called
-        back with the protocol instance and the attribute set to C{None}.
+        is connected, if this is not L{None}, the L{Deferred} will be called
+        back with the protocol instance and the attribute set to L{None}.
 
-    @type protocolConnectionLost: L{NoneType} or L{defer.Deferred}
+    @type protocolConnectionLost: L{None} or L{defer.Deferred}
     @ivar protocolConnectionLost: When an instance of L{AccumulatingProtocol}
         is created, this will be set as its C{closedDeferred} attribute and
-        then this attribute will be set to C{None} so the L{defer.Deferred} is
+        then this attribute will be set to L{None} so the L{defer.Deferred} is
         not used by more than one protocol.
 
     @ivar protocol: The most recently created L{AccumulatingProtocol} instance
@@ -167,7 +175,7 @@ class MyClientFactory(MyProtocolFactoryMixin, protocol.ClientFactory):
 
 
 
-class ListeningTestCase(unittest.TestCase):
+class ListeningTests(unittest.TestCase):
 
     def test_listen(self):
         """
@@ -177,7 +185,7 @@ class ListeningTestCase(unittest.TestCase):
         f = MyServerFactory()
         p1 = reactor.listenTCP(0, f, interface="127.0.0.1")
         self.addCleanup(p1.stopListening)
-        self.failUnless(interfaces.IListeningPort.providedBy(p1))
+        self.assertTrue(interfaces.IListeningPort.providedBy(p1))
 
 
     def testStopListening(self):
@@ -211,9 +219,9 @@ class ListeningTestCase(unittest.TestCase):
         f = MyServerFactory()
         p = reactor.listenTCP(0, f)
         portNo = str(p.getHost().port)
-        self.failIf(repr(p).find(portNo) == -1)
+        self.assertFalse(repr(p).find(portNo) == -1)
         def stoppedListening(ign):
-            self.failIf(repr(p).find(portNo) != -1)
+            self.assertFalse(repr(p).find(portNo) != -1)
         d = defer.maybeDeferred(p.stopListening)
         return d.addCallback(stoppedListening)
 
@@ -233,7 +241,8 @@ class ListeningTestCase(unittest.TestCase):
         connector = reactor.connectTCP("127.0.0.1",
                                        port.getHost().port, client)
         self.addCleanup(connector.disconnect)
-        def check((serverProto, clientProto)):
+        def check(result):
+            serverProto, clientProto = result
             portNumber = port.getHost().port
             self.assertEqual(
                 repr(serverProto.transport),
@@ -266,7 +275,8 @@ class ListeningTestCase(unittest.TestCase):
                                         client.protocolConnectionMade]
                 ).addCallback(close)
 
-        def close((serverProto, clientProto)):
+        def close(result):
+            serverProto, clientProto = result
             clientProto.transport.loseConnection()
             serverProto.transport.loseConnection()
 
@@ -317,7 +327,8 @@ class ListeningTestCase(unittest.TestCase):
                                         client.protocolConnectionMade]
                 ).addCallback(close)
 
-        def close((serverProto, clientProto)):
+        def close(result):
+            serverProto, clientProto = result
             clientProto.transport.loseConnection()
             serverProto.transport.loseConnection()
 
@@ -363,16 +374,7 @@ class ListeningTestCase(unittest.TestCase):
 
 
 
-def callWithSpew(f):
-    from twisted.python.util import spewerWithLinenums as spewer
-    import sys
-    sys.settrace(spewer)
-    try:
-        f()
-    finally:
-        sys.settrace(None)
-
-class LoopbackTestCase(unittest.TestCase):
+class LoopbackTests(unittest.TestCase):
     """
     Test loopback connections.
     """
@@ -416,7 +418,8 @@ class LoopbackTestCase(unittest.TestCase):
         reactor.connectTCP("127.0.0.1", portNumber, clientF)
 
         connsMade = defer.gatherResults([serverConnMade, clientConnMade])
-        def connected((serverProtocol, clientProtocol)):
+        def connected(result):
+            serverProtocol, clientProtocol = result
             callback(serverProtocol, clientProtocol)
             serverProtocol.transport.loseConnection()
             clientProtocol.transport.loseConnection()
@@ -495,7 +498,7 @@ class LoopbackTestCase(unittest.TestCase):
         # unbounded number of connections succeed.
 
         serverSockets = []
-        for i in xrange(10):
+        for i in range(10):
             serverSocket = socket.socket()
             serverSocket.bind(('127.0.0.1', 0))
             serverSocket.listen(1)
@@ -571,7 +574,8 @@ class LoopbackTestCase(unittest.TestCase):
         reactor.connectTCP('127.0.0.1', 'http', clientFactory)
 
         connMade = defer.gatherResults([serverConnMade, clientConnMade])
-        def connected((serverProtocol, clientProtocol)):
+        def connected(result):
+            serverProtocol, clientProtocol = result
             self.assertTrue(
                 serverFactory.called,
                 "Server factory was not called upon to build a protocol.")
@@ -602,6 +606,10 @@ class ClientStartStopFactory(MyClientFactory):
     started = 0
     stopped = 0
 
+    def __init__(self, *a, **kw):
+        MyClientFactory.__init__(self, *a, **kw)
+        self.whenStopped = defer.Deferred()
+
     def startFactory(self):
         if self.started or self.stopped:
             raise RuntimeError
@@ -611,9 +619,10 @@ class ClientStartStopFactory(MyClientFactory):
         if not self.started or self.stopped:
             raise RuntimeError
         self.stopped = 1
+        self.whenStopped.callback(True)
 
 
-class FactoryTestCase(unittest.TestCase):
+class FactoryTests(unittest.TestCase):
     """Tests for factories."""
 
     def test_serverStartStop(self):
@@ -677,100 +686,7 @@ class FactoryTestCase(unittest.TestCase):
 
 
 
-class ConnectorTestCase(unittest.TestCase):
-
-    def test_connectorIdentity(self):
-        """
-        L{IReactorTCP.connectTCP} returns an object which provides
-        L{IConnector}.  The destination of the connector is the address which
-        was passed to C{connectTCP}.  The same connector object is passed to
-        the factory's C{startedConnecting} method as to the factory's
-        C{clientConnectionLost} method.
-        """
-        serverFactory = ClosingFactory()
-        tcpPort = reactor.listenTCP(0, serverFactory, interface="127.0.0.1")
-        serverFactory.port = tcpPort
-        self.addCleanup(serverFactory.cleanUp)
-        portNumber = tcpPort.getHost().port
-
-        seenConnectors = []
-        seenFailures = []
-
-        clientFactory = ClientStartStopFactory()
-        clientFactory.clientConnectionLost = (
-            lambda connector, reason: (seenConnectors.append(connector),
-                                       seenFailures.append(reason)))
-        clientFactory.startedConnecting = seenConnectors.append
-
-        connector = reactor.connectTCP("127.0.0.1", portNumber, clientFactory)
-        self.assertTrue(interfaces.IConnector.providedBy(connector))
-        dest = connector.getDestination()
-        self.assertEqual(dest.type, "TCP")
-        self.assertEqual(dest.host, "127.0.0.1")
-        self.assertEqual(dest.port, portNumber)
-
-        d = loopUntil(lambda: clientFactory.stopped)
-        def clientFactoryStopped(ignored):
-            seenFailures[0].trap(error.ConnectionDone)
-            self.assertEqual(seenConnectors, [connector, connector])
-        d.addCallback(clientFactoryStopped)
-        return d
-
-
-    def test_userFail(self):
-        """
-        Calling L{IConnector.stopConnecting} in C{Factory.startedConnecting}
-        results in C{Factory.clientConnectionFailed} being called with
-        L{error.UserError} as the reason.
-        """
-        serverFactory = MyServerFactory()
-        tcpPort = reactor.listenTCP(0, serverFactory, interface="127.0.0.1")
-        self.addCleanup(tcpPort.stopListening)
-        portNumber = tcpPort.getHost().port
-
-        def startedConnecting(connector):
-            connector.stopConnecting()
-
-        clientFactory = ClientStartStopFactory()
-        clientFactory.startedConnecting = startedConnecting
-        reactor.connectTCP("127.0.0.1", portNumber, clientFactory)
-
-        d = loopUntil(lambda: clientFactory.stopped)
-        def check(ignored):
-            self.assertEqual(clientFactory.failed, 1)
-            clientFactory.reason.trap(error.UserError)
-        return d.addCallback(check)
-
-
-    def test_reconnect(self):
-        """
-        Calling L{IConnector.connect} in C{Factory.clientConnectionLost} causes
-        a new connection attempt to be made.
-        """
-        serverFactory = ClosingFactory()
-        tcpPort = reactor.listenTCP(0, serverFactory, interface="127.0.0.1")
-        serverFactory.port = tcpPort
-        self.addCleanup(serverFactory.cleanUp)
-        portNumber = tcpPort.getHost().port
-
-        clientFactory = MyClientFactory()
-
-        def clientConnectionLost(connector, reason):
-            connector.connect()
-        clientFactory.clientConnectionLost = clientConnectionLost
-        reactor.connectTCP("127.0.0.1", portNumber, clientFactory)
-
-        d = loopUntil(lambda: clientFactory.failed)
-        def reconnectFailed(ignored):
-            p = clientFactory.protocol
-            self.assertEqual((p.made, p.closed), (1, 1))
-            clientFactory.reason.trap(error.ConnectionRefusedError)
-            self.assertEqual(clientFactory.stopped, 1)
-        return d.addCallback(reconnectFailed)
-
-
-
-class CannotBindTestCase(unittest.TestCase):
+class CannotBindTests(unittest.TestCase):
     """
     Tests for correct behavior when a reactor cannot bind to the required TCP
     port.
@@ -800,12 +716,12 @@ class CannotBindTestCase(unittest.TestCase):
     def _fireWhenDoneFunc(self, d, f):
         """Returns closure that when called calls f and then callbacks d.
         """
-        from twisted.python import util as tputil
+        @wraps(f)
         def newf(*args, **kw):
             rtn = f(*args, **kw)
             d.callback('')
             return rtn
-        return tputil.mergeFunctionMetadata(f, newf)
+        return newf
 
 
     def test_clientBind(self):
@@ -887,7 +803,7 @@ class MyOtherClientFactory(protocol.ClientFactory):
 
 
 
-class LocalRemoteAddressTestCase(unittest.TestCase):
+class LocalRemoteAddressTests(unittest.TestCase):
     """
     Tests for correct getHost/getPeer values and that the correct address is
     passed to buildProtocol.
@@ -933,16 +849,16 @@ class WriterProtocol(protocol.Protocol):
         # directly flunk the test. The test will fail when maximum number of
         # iterations have passed and the writer's factory.done has not yet
         # been set.
-        self.transport.write("Hello Cleveland!\n")
-        seq = ["Goodbye", " cruel", " world", "\n"]
+        self.transport.write(b"Hello Cleveland!\n")
+        seq = [b"Goodbye", b" cruel", b" world", b"\n"]
         self.transport.writeSequence(seq)
         peer = self.transport.getPeer()
         if peer.type != "TCP":
-            print "getPeer returned non-TCP socket:", peer
+            msg("getPeer returned non-TCP socket: %s" % (peer,))
             self.factory.problem = 1
         us = self.transport.getHost()
         if us.type != "TCP":
-            print "getHost returned non-TCP socket:", us
+            msg("getHost returned non-TCP socket: %s" % (us,))
             self.factory.problem = 1
         self.factory.done = 1
 
@@ -957,14 +873,14 @@ class ReaderProtocol(protocol.Protocol):
 class WriterClientFactory(protocol.ClientFactory):
     def __init__(self):
         self.done = 0
-        self.data = ""
+        self.data = b""
     def buildProtocol(self, addr):
         p = ReaderProtocol()
         p.factory = self
         self.protocol = p
         return p
 
-class WriteDataTestCase(unittest.TestCase):
+class WriteDataTests(unittest.TestCase):
     """
     Test that connected TCP sockets can actually write data. Try to exercise
     the entire ITransport interface.
@@ -988,13 +904,13 @@ class WriteDataTestCase(unittest.TestCase):
         reactor.connectTCP("127.0.0.1", n, wrappedClientF)
 
         def check(ignored):
-            self.failUnless(f.done, "writer didn't finish, it probably died")
-            self.failUnless(f.problem == 0, "writer indicated an error")
-            self.failUnless(clientF.done,
+            self.assertTrue(f.done, "writer didn't finish, it probably died")
+            self.assertTrue(f.problem == 0, "writer indicated an error")
+            self.assertTrue(clientF.done,
                             "client didn't see connection dropped")
-            expected = "".join(["Hello Cleveland!\n",
-                                "Goodbye", " cruel", " world", "\n"])
-            self.failUnless(clientF.data == expected,
+            expected = b"".join([b"Hello Cleveland!\n",
+                                b"Goodbye", b" cruel", b" world", b"\n"])
+            self.assertTrue(clientF.data == expected,
                             "client didn't receive all the data it expected")
         d = defer.gatherResults([wrappedF.onDisconnect,
                                  wrappedClientF.onDisconnect])
@@ -1011,15 +927,8 @@ class WriteDataTestCase(unittest.TestCase):
         # This is an unpleasant thing.  Generally tests shouldn't skip or
         # run based on the name of the reactor being used (most tests
         # shouldn't care _at all_ what reactor is being used, in fact).  The
-        # Gtk reactor cannot pass this test, though, because it fails to
-        # implement IReactorTCP entirely correctly.  Gtk is quite old at
-        # this point, so it's more likely that gtkreactor will be deprecated
-        # and removed rather than fixed to handle this case correctly.
-        # Since this is a pre-existing (and very long-standing) issue with
-        # the Gtk reactor, there's no reason for it to prevent this test
-        # being added to exercise the other reactors, for which the behavior
-        # was also untested but at least works correctly (now).  See #2833
-        # for information on the status of gtkreactor.
+        # IOCP reactor cannot pass this test, though -- please see the skip
+        # reason below for details.
         if reactor.__class__.__name__ == 'IOCPReactor':
             raise unittest.SkipTest(
                 "iocpreactor does not, in fact, stop reading immediately after "
@@ -1027,11 +936,6 @@ class WriteDataTestCase(unittest.TestCase):
                 "notification. Under some circumstances, it might be possible to "
                 "not receive this notifications (specifically, pauseProducing, "
                 "deliver some data, proceed with this test).")
-        if reactor.__class__.__name__ == 'GtkReactor':
-            raise unittest.SkipTest(
-                "gtkreactor does not implement unclean disconnection "
-                "notification correctly.  This might more properly be "
-                "a todo, but due to technical limitations it cannot be.")
 
         # Called back after the protocol for the client side of the connection
         # has paused its transport, preventing it from reading, therefore
@@ -1077,6 +981,7 @@ class WriteDataTestCase(unittest.TestCase):
         self.addCleanup(port.stopListening)
         addr = port.getHost()
 
+        @implementer(IPullProducer)
         class Infinite(object):
             """
             A producer which will write to its consumer as long as
@@ -1084,14 +989,13 @@ class WriteDataTestCase(unittest.TestCase):
 
             @ivar consumer: The L{IConsumer} which will be written to.
             """
-            implements(IPullProducer)
 
             def __init__(self, consumer):
                 self.consumer = consumer
 
             def resumeProducing(self):
                 msg('Infinite.resumeProducing')
-                self.consumer.write('x')
+                self.consumer.write(b'x')
                 msg('Infinite.resumeProducing wrote to consumer')
 
             def stopProducing(self):
@@ -1147,7 +1051,7 @@ class WriteDataTestCase(unittest.TestCase):
 
 class ConnectionLosingProtocol(protocol.Protocol):
     def connectionMade(self):
-        self.transport.write("1")
+        self.transport.write(b"1")
         self.transport.loseConnection()
         self.master._connectionMade()
         self.master.ports.append(self.transport)
@@ -1172,7 +1076,7 @@ class ConnectionLostNotifyingProtocol(protocol.Protocol):
     @ivar onConnectionLost: The L{Deferred} which will be fired in
         C{connectionLost}.
 
-    @ivar lostConnectionReason: C{None} until the connection is lost, then a
+    @ivar lostConnectionReason: L{None} until the connection is lost, then a
         reference to the reason passed to C{connectionLost}.
     """
     def __init__(self, onConnectionLost):
@@ -1234,16 +1138,18 @@ class ProperlyCloseFilesMixin:
         raise NotImplementedError()
 
 
-    def getHandleErrorCode(self):
+    def getHandleErrorCodeMatcher(self):
         """
-        Return the errno expected to result from writing to a closed
-        platform socket handle.
+        Return a L{hamcrest.core.matcher.Matcher} that matches the
+        errno expected to result from writing to a closed platform
+        socket handle.
         """
-        # These platforms have been seen to give EBADF:
-        #
-        #  Linux 2.4.26, Linux 2.6.15, OS X 10.4, FreeBSD 5.4
-        #  Windows 2000 SP 4, Windows XP SP 2
-        return errno.EBADF
+        # Windows and Python 3: returns WSAENOTSOCK
+        # Windows and Python 2: returns EBADF
+        # Linux, FreeBSD, macOS: returns EBADF
+        if platform.isWindows() and _PY3:
+            return hamcrest.equal_to(errno.WSAENOTSOCK)
+        return hamcrest.equal_to(errno.EBADF)
 
 
     def test_properlyCloseFiles(self):
@@ -1270,23 +1176,31 @@ class ProperlyCloseFilesMixin:
             the client and the server have received disconnect notification.
             """
             client.transport.write(
-                'some bytes to make sure the connection is set up')
+                b'some bytes to make sure the connection is set up')
             client.transport.loseConnection()
             return defer.gatherResults([
                 onClientConnectionLost, onServerConnectionLost])
         clientDeferred.addCallback(clientConnected)
 
-        def clientDisconnected((client, server)):
+        def clientDisconnected(result):
             """
             Verify that the underlying platform socket handle has been
             cleaned up.
             """
-            client.lostConnectionReason.trap(error.ConnectionClosed)
-            server.lostConnectionReason.trap(error.ConnectionClosed)
-            expectedErrorCode = self.getHandleErrorCode()
-            err = self.assertRaises(
-                self.getHandleExceptionType(), client.handle.send, 'bytes')
-            self.assertEqual(err.args[0], expectedErrorCode)
+            client, server = result
+            if not client.lostConnectionReason.check(error.ConnectionClosed):
+                err(client.lostConnectionReason,
+                    "Client lost connection for unexpected reason")
+            if not server.lostConnectionReason.check(error.ConnectionClosed):
+                err(server.lostConnectionReason,
+                    "Server lost connection for unexpected reason")
+            errorCodeMatcher = self.getHandleErrorCodeMatcher()
+            exception = self.assertRaises(
+                self.getHandleExceptionType(), client.handle.send, b'bytes')
+            hamcrest.assert_that(
+                exception.args[0],
+                errorCodeMatcher,
+            )
         clientDeferred.addCallback(clientDisconnected)
 
         def cleanup(passthrough):
@@ -1303,7 +1217,7 @@ class ProperlyCloseFilesMixin:
 
 
 
-class ProperlyCloseFilesTestCase(unittest.TestCase, ProperlyCloseFilesMixin):
+class ProperlyCloseFilesTests(unittest.TestCase, ProperlyCloseFilesMixin):
     """
     Test that the sockets created by L{IReactorTCP.connectTCP} are cleaned up
     when the connection they are associated with is closed.
@@ -1356,7 +1270,7 @@ class WiredFactory(policies.WrappingFactory):
 
 
 
-class AddressTestCase(unittest.TestCase):
+class AddressTests(unittest.TestCase):
     """
     Tests for address-related interactions with client and server protocols.
     """
@@ -1449,15 +1363,22 @@ class AddressTestCase(unittest.TestCase):
 
 
 class LargeBufferWriterProtocol(protocol.Protocol):
-
     # Win32 sockets cannot handle single huge chunks of bytes.  Write one
-    # massive string to make sure Twisted deals with this fact.
+    # massive string to make sure Twisted deals with this fact. Immediately
+    # follow that with another write to test behaviour under load (see issue
+    # #9446)
 
     def connectionMade(self):
-        # write 60MB
-        self.transport.write('X'*self.factory.len)
-        self.factory.done = 1
-        self.transport.loseConnection()
+        self.transport.write(b'X'*(self.factory.len-1))
+
+        def finish():
+            self.transport.write(b'X')
+            self.factory.done = 1
+            self.transport.loseConnection()
+
+        reactor.callLater(0.001, finish)
+
+
 
 class LargeBufferReaderProtocol(protocol.Protocol):
     def dataReceived(self, data):
@@ -1493,7 +1414,7 @@ class FireOnCloseFactory(policies.WrappingFactory):
         self.deferred = defer.Deferred()
 
 
-class LargeBufferTestCase(unittest.TestCase):
+class LargeBufferTests(unittest.TestCase):
     """Test that buffering large amounts of data works.
     """
 
@@ -1513,19 +1434,23 @@ class LargeBufferTestCase(unittest.TestCase):
         reactor.connectTCP("127.0.0.1", n, wrappedClientF)
 
         d = defer.gatherResults([wrappedF.deferred, wrappedClientF.deferred])
+
         def check(ignored):
-            self.failUnless(f.done, "writer didn't finish, it probably died")
-            self.failUnless(clientF.len == self.datalen,
+            self.assertTrue(f.done, "writer didn't finish, it probably died")
+            self.assertTrue(clientF.len >= self.datalen,
                             "client didn't receive all the data it expected "
                             "(%d != %d)" % (clientF.len, self.datalen))
-            self.failUnless(clientF.done,
+            self.assertTrue(clientF.len <= self.datalen,
+                            "client did receive more data than it expected "
+                            "(%d != %d)" % (clientF.len, self.datalen))
+            self.assertTrue(clientF.done,
                             "client didn't see connection dropped")
         return d.addCallback(check)
 
 
+@implementer(IHalfCloseableProtocol)
 class MyHCProtocol(AccumulatingProtocol):
 
-    implements(IHalfCloseableProtocol)
 
     readHalfClosed = False
     writeHalfClosed = False
@@ -1556,7 +1481,7 @@ class MyHCFactory(protocol.ServerFactory):
         return p
 
 
-class HalfCloseTestCase(unittest.TestCase):
+class HalfCloseTests(unittest.TestCase):
     """Test half-closing connections."""
 
     def setUp(self):
@@ -1606,24 +1531,24 @@ class HalfCloseTestCase(unittest.TestCase):
         f = self.f
         t = client.transport
 
-        t.write("hello")
+        t.write(b"hello")
         d = loopUntil(lambda :len(t._tempDataBuffer) == 0)
         def loseWrite(ignored):
             t.loseWriteConnection()
             return loopUntil(lambda :t._writeDisconnected)
         def check(ignored):
-            self.assertEqual(client.closed, False)
-            self.assertEqual(client.writeHalfClosed, True)
-            self.assertEqual(client.readHalfClosed, False)
+            self.assertFalse(client.closed)
+            self.assertTrue(client.writeHalfClosed)
+            self.assertFalse(client.readHalfClosed)
             return loopUntil(lambda :f.protocol.readHalfClosed)
         def write(ignored):
             w = client.transport.write
-            w(" world")
-            w("lalala fooled you")
+            w(b" world")
+            w(b"lalala fooled you")
             self.assertEqual(0, len(client.transport._tempDataBuffer))
-            self.assertEqual(f.protocol.data, "hello")
-            self.assertEqual(f.protocol.closed, False)
-            self.assertEqual(f.protocol.readHalfClosed, True)
+            self.assertEqual(f.protocol.data, b"hello")
+            self.assertFalse(f.protocol.closed)
+            self.assertTrue(f.protocol.readHalfClosed)
         return d.addCallback(loseWrite).addCallback(check).addCallback(write)
 
     def testWriteCloseNotification(self):
@@ -1638,7 +1563,7 @@ class HalfCloseTestCase(unittest.TestCase):
         return d
 
 
-class HalfClose2TestCase(unittest.TestCase):
+class HalfCloseNoNotificationAndShutdownExceptionTests(unittest.TestCase):
 
     def setUp(self):
         self.f = f = MyServerFactory()
@@ -1669,13 +1594,13 @@ class HalfClose2TestCase(unittest.TestCase):
         half-closing the connection causes the peer's connection to be
         closed.
         """
-        self.client.transport.write("hello")
+        self.client.transport.write(b"hello")
         self.client.transport.loseWriteConnection()
         self.f.protocol.closedDeferred = d = defer.Deferred()
         self.client.closedDeferred = d2 = defer.Deferred()
         d.addCallback(lambda x:
-                      self.assertEqual(self.f.protocol.data, 'hello'))
-        d.addCallback(lambda x: self.assertEqual(self.f.protocol.closed, True))
+                      self.assertEqual(self.f.protocol.data, b'hello'))
+        d.addCallback(lambda x: self.assertTrue(self.f.protocol.closed))
         return defer.gatherResults([d, d2])
 
     def testShutdownException(self):
@@ -1684,12 +1609,12 @@ class HalfClose2TestCase(unittest.TestCase):
         loseWriteConnection should pass silently.
         """
         self.f.protocol.transport.loseConnection()
-        self.client.transport.write("X")
+        self.client.transport.write(b"X")
         self.client.transport.loseWriteConnection()
         self.f.protocol.closedDeferred = d = defer.Deferred()
         self.client.closedDeferred = d2 = defer.Deferred()
         d.addCallback(lambda x:
-                      self.assertEqual(self.f.protocol.closed, True))
+                      self.assertTrue(self.f.protocol.closed))
         return defer.gatherResults([d, d2])
 
 
@@ -1762,7 +1687,7 @@ class HalfCloseBuggyApplicationTests(unittest.TestCase):
 
 
 
-class LogTestCase(unittest.TestCase):
+class LogTests(unittest.TestCase):
     """
     Test logging facility of TCP base classes.
     """
@@ -1796,7 +1721,7 @@ class LogTestCase(unittest.TestCase):
 
 
 
-class PauseProducingTestCase(unittest.TestCase):
+class PauseProducingTests(unittest.TestCase):
     """
     Test some behaviors of pausing the production of a transport.
     """
@@ -1843,7 +1768,7 @@ class PauseProducingTestCase(unittest.TestCase):
 
 
 
-class CallBackOrderTestCase(unittest.TestCase):
+class CallBackOrderTests(unittest.TestCase):
     """
     Test the order of reactor callbacks
     """
@@ -1905,4 +1830,4 @@ except ImportError:
     pass
 else:
     numRounds = resource.getrlimit(resource.RLIMIT_NOFILE)[0] + 10
-    ProperlyCloseFilesTestCase.numberRounds = numRounds
+    ProperlyCloseFilesTests.numberRounds = numRounds

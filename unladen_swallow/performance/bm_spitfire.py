@@ -17,6 +17,8 @@ import gc
 import optparse
 import sys
 import time
+if sys.version_info[0] > 2:
+    xrange = range
 
 # Local imports
 import util
@@ -45,13 +47,13 @@ def test_spitfire(count):
     # conceivably be interesting to stress Spitfire's lower optimization
     # levels, we assume no-one will be running a production system with those
     # settings.
-    spitfire_tmpl_o4 = spitfire.compiler.util.load_template(
+    spitfire_tmpl_o3 = spitfire.compiler.util.load_template(
         SPITFIRE_SRC,
-        "spitfire_tmpl_o4",
-        spitfire.compiler.analyzer.o4_options,
+        "spitfire_tmpl_o3",
+        spitfire.compiler.options.o3_options,
         {"enable_filters": False})
 
-    table = [xrange(1000) for _ in xrange(1000)]
+    table = [xrange(1000) for _ in xrange(500)]
 
     times = []
     for _ in xrange(count):
@@ -62,26 +64,11 @@ def test_spitfire(count):
     return times
 
 
-def test_spitfire_without_psyco(count):
-    class FakePsyco(object):
-        def bind(self, *args, **kwargs):
-            pass
-    sys.modules["psyco"] = FakePsyco()
-
-    return test_spitfire(count)
-
-
 if __name__ == "__main__":
     parser = optparse.OptionParser(
         usage="%prog [options]",
         description=("Test the performance of Spitfire."))
-    parser.add_option("--disable_psyco", action="store_true",
-                      help="Turn off Psyco integration.")
     util.add_standard_options_to(parser)
     options, args = parser.parse_args()
 
-    benchmark = test_spitfire
-    if options.disable_psyco:
-        benchmark = test_spitfire_without_psyco
-
-    util.run_benchmark(options, options.num_runs, benchmark)
+    util.run_benchmark(options, options.num_runs, test_spitfire)

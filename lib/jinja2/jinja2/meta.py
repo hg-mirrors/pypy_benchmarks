@@ -6,11 +6,12 @@
     This module implements various functions that exposes information about
     templates that might be interesting for various kinds of applications.
 
-    :copyright: (c) 2010 by the Jinja Team, see AUTHORS for more details.
+    :copyright: (c) 2017 by the Jinja Team, see AUTHORS for more details.
     :license: BSD, see LICENSE for more details.
 """
 from jinja2 import nodes
 from jinja2.compiler import CodeGenerator
+from jinja2._compat import string_types, iteritems
 
 
 class TrackingCodeGenerator(CodeGenerator):
@@ -24,9 +25,12 @@ class TrackingCodeGenerator(CodeGenerator):
     def write(self, x):
         """Don't write."""
 
-    def pull_locals(self, frame):
+    def enter_frame(self, frame):
         """Remember all undeclared identifiers."""
-        self.undeclared_identifiers.update(frame.identifiers.undeclared)
+        CodeGenerator.enter_frame(self, frame)
+        for _, (action, param) in iteritems(frame.symbols.loads):
+            if action == 'resolve':
+                self.undeclared_identifiers.add(param)
 
 
 def find_undeclared_variables(ast):
@@ -38,8 +42,8 @@ def find_undeclared_variables(ast):
     >>> from jinja2 import Environment, meta
     >>> env = Environment()
     >>> ast = env.parse('{% set foo = 42 %}{{ bar + foo }}')
-    >>> meta.find_undeclared_variables(ast)
-    set(['bar'])
+    >>> meta.find_undeclared_variables(ast) == set(['bar'])
+    True
 
     .. admonition:: Implementation
 
@@ -77,7 +81,7 @@ def find_referenced_templates(ast):
                     # something const, only yield the strings and ignore
                     # non-string consts that really just make no sense
                     if isinstance(template_name, nodes.Const):
-                        if isinstance(template_name.value, basestring):
+                        if isinstance(template_name.value, string_types):
                             yield template_name.value
                     # something dynamic in there
                     else:
@@ -87,7 +91,7 @@ def find_referenced_templates(ast):
                 yield None
             continue
         # constant is a basestring, direct template name
-        if isinstance(node.template.value, basestring):
+        if isinstance(node.template.value, string_types):
             yield node.template.value
         # a tuple or list (latter *should* not happen) made of consts,
         # yield the consts that are strings.  We could warn here for
@@ -95,7 +99,7 @@ def find_referenced_templates(ast):
         elif isinstance(node, nodes.Include) and \
              isinstance(node.template.value, (tuple, list)):
             for template_name in node.template.value:
-                if isinstance(template_name, basestring):
+                if isinstance(template_name, string_types):
                     yield template_name
         # something else we don't care about, we could warn here
         else:

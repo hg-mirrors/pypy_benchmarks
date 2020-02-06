@@ -9,7 +9,7 @@ __metaclass__ = type
 
 import os, socket, traceback
 
-from zope.interface import implements
+from zope.interface import implementer
 
 from twisted.python.runtime import platform
 from twisted.trial.unittest import SkipTest
@@ -32,7 +32,7 @@ def socketpair():
             client.setblocking(False)
             try:
                 client.connect(('127.0.0.1', serverSocket.getsockname()[1]))
-            except socket.error, e:
+            except socket.error as e:
                 if e.args[0] not in (EINPROGRESS, EWOULDBLOCK):
                     raise
             server, addr = serverSocket.accept()
@@ -84,7 +84,7 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
             reactor.stop()
         fd.doRead = removeAndStop
         reactor.addReader(fd)
-        server.sendall('x')
+        server.sendall(b'x')
 
         # The reactor will only stop if it calls fd.doRead.
         self.runReactor(reactor)
@@ -105,7 +105,7 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
 
         reactor.addReader(fd)
         reactor.removeReader(fd)
-        server.sendall('x')
+        server.sendall(b'x')
 
         # Give the reactor two timed event passes to notice that there's I/O
         # (if it is incorrectly watching for I/O).
@@ -208,7 +208,7 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
         fd.doRead = lambda: self.fail("doRead should not be called")
         fd.doWrite = lambda: self.fail("doWrite should not be called")
 
-        server.sendall('x')
+        server.sendall(b'x')
 
         reactor.addReader(fd)
         reactor.addWriter(fd)
@@ -244,17 +244,12 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
         """
         reactor = self.buildReactor()
 
-        if reactor.__class__.__name__ == 'Win32Reactor':
-            # Win32Reactor uses WinSock to monitor sockets.  This means it never
-            # actually has to call fileno().
-            raise SkipTest("Win32Reactor never calls fileno")
-
         client, server = self._connectedPair()
 
         class DisappearingDescriptor(FileDescriptor):
             _fileno = server.fileno()
 
-            _received = ""
+            _received = b""
 
             def fileno(self):
                 return self._fileno
@@ -262,16 +257,16 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
             def doRead(self):
                 self._fileno = -1
                 self._received += server.recv(1)
-                client.send('y')
+                client.send(b'y')
 
             def connectionLost(self, reason):
                 reactor.stop()
 
         descriptor = DisappearingDescriptor(reactor)
         reactor.addReader(descriptor)
-        client.send('x')
+        client.send(b'x')
         self.runReactor(reactor)
-        self.assertEqual(descriptor._received, "x")
+        self.assertEqual(descriptor._received, b"x")
 
 
     def test_lostFileDescriptor(self):
@@ -290,12 +285,14 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
         """
         reactor = self.buildReactor()
 
-        if reactor.__class__.__name__ == 'EPollReactor':
+        name = reactor.__class__.__name__
+        if name in ('EPollReactor', 'KQueueReactor', 'CFReactor',
+                    'AsyncioSelectorReactor'):
             # Closing a file descriptor immediately removes it from the epoll
             # set without generating a notification.  That means epollreactor
             # will not call any methods on Victim after the close, so there's
             # no chance to notice the socket is no longer valid.
-            raise SkipTest("EPollReactor cannot detect lost file descriptors")
+            raise SkipTest("%r cannot detect lost file descriptors" % (name,))
 
         client, server = self._connectedPair()
 
@@ -333,7 +330,7 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
             fileno = server.fileno()
             server.close()
             os.dup2(newS.fileno(), fileno)
-            newC.send("x")
+            newC.send(b"x")
         reactor.callLater(0, messItUp)
 
         self.runReactor(reactor)
@@ -346,7 +343,36 @@ class ReactorFDSetTestsBuilder(ReactorBuilder):
             "Cannot duplicate socket filenos on Windows")
 
 
+    def test_connectionLostOnShutdown(self):
+        """
+        Any file descriptors added to the reactor have their C{connectionLost}
+        called when C{reactor.stop} is called.
+        """
+        reactor = self.buildReactor()
 
+        class DoNothingDescriptor(FileDescriptor):
+            def doRead(self):
+                return None
+            def doWrite(self):
+                return None
+
+        client, server = self._connectedPair()
+
+        fd1 = DoNothingDescriptor(reactor)
+        fd1.fileno = client.fileno
+        fd2 = DoNothingDescriptor(reactor)
+        fd2.fileno = server.fileno
+        reactor.addReader(fd1)
+        reactor.addWriter(fd2)
+
+        reactor.callWhenRunning(reactor.stop)
+        self.runReactor(reactor)
+        self.assertTrue(fd1.disconnected)
+        self.assertTrue(fd2.disconnected)
+
+
+
+@implementer(IReadDescriptor)
 class RemovingDescriptor(object):
     """
     A read descriptor which removes itself from the reactor as soon as it
@@ -359,7 +385,6 @@ class RemovingDescriptor(object):
     @ivar calls: A list of the bottom of the call stack for any call to
         C{fileno} when C{insideReactor} is false.
     """
-    implements(IReadDescriptor)
 
 
     def __init__(self, reactor):
@@ -372,7 +397,7 @@ class RemovingDescriptor(object):
     def start(self):
         self.insideReactor = True
         self.reactor.addReader(self)
-        self.write.send('a')
+        self.write.send(b'a')
 
 
     def logPrefix(self):
@@ -383,6 +408,8 @@ class RemovingDescriptor(object):
         self.reactor.removeReader(self)
         self.insideReactor = False
         self.reactor.stop()
+        self.read.close()
+        self.write.close()
 
 
     def fileno(self):
@@ -392,7 +419,9 @@ class RemovingDescriptor(object):
 
 
     def connectionLost(self, reason):
+        # Ideally we'd close the descriptors here... but actually
+        # connectionLost is never called because we remove ourselves from the
+        # reactor before it stops.
         pass
-
 
 globals().update(ReactorFDSetTestsBuilder.makeTestCaseClasses())

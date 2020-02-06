@@ -5,31 +5,20 @@
 
     Jinja test functions. Used with the "is" operator.
 
-    :copyright: (c) 2010 by the Jinja Team.
+    :copyright: (c) 2017 by the Jinja Team.
     :license: BSD, see LICENSE for more details.
 """
+import operator
 import re
 from jinja2.runtime import Undefined
-
-try:
-    from collections import Mapping as MappingType
-except ImportError:
-    import UserDict
-    MappingType = (UserDict.UserDict, UserDict.DictMixin, dict)
-
-# nose, nothing here to test
-__test__ = False
-
+from jinja2._compat import text_type, string_types, integer_types, abc
+import decimal
 
 number_re = re.compile(r'^-?\d+(\.\d+)?$')
 regex_type = type(number_re)
 
 
-try:
-    test_callable = callable
-except NameError:
-    def test_callable(x):
-        return hasattr(x, '__call__')
+test_callable = callable
 
 
 def test_odd(value):
@@ -76,17 +65,17 @@ def test_none(value):
 
 def test_lower(value):
     """Return true if the variable is lowercased."""
-    return unicode(value).islower()
+    return text_type(value).islower()
 
 
 def test_upper(value):
     """Return true if the variable is uppercased."""
-    return unicode(value).isupper()
+    return text_type(value).isupper()
 
 
 def test_string(value):
     """Return true if the object is a string."""
-    return isinstance(value, basestring)
+    return isinstance(value, string_types)
 
 
 def test_mapping(value):
@@ -94,12 +83,12 @@ def test_mapping(value):
 
     .. versionadded:: 2.6
     """
-    return isinstance(value, MappingType)
+    return isinstance(value, abc.Mapping)
 
 
 def test_number(value):
     """Return true if the variable is a number."""
-    return isinstance(value, (int, long, float, complex))
+    return isinstance(value, integer_types + (float, complex, decimal.Decimal))
 
 
 def test_sequence(value):
@@ -141,6 +130,14 @@ def test_escaped(value):
     return hasattr(value, '__html__')
 
 
+def test_in(value, seq):
+    """Check if value is in seq.
+
+    .. versionadded:: 2.10
+    """
+    return value in seq
+
+
 TESTS = {
     'odd':              test_odd,
     'even':             test_even,
@@ -157,5 +154,21 @@ TESTS = {
     'iterable':         test_iterable,
     'callable':         test_callable,
     'sameas':           test_sameas,
-    'escaped':          test_escaped
+    'escaped':          test_escaped,
+    'in':               test_in,
+    '==':               operator.eq,
+    'eq':               operator.eq,
+    'equalto':          operator.eq,
+    '!=':               operator.ne,
+    'ne':               operator.ne,
+    '>':                operator.gt,
+    'gt':               operator.gt,
+    'greaterthan':      operator.gt,
+    'ge':               operator.ge,
+    '>=':               operator.ge,
+    '<':                operator.lt,
+    'lt':               operator.lt,
+    'lessthan':         operator.lt,
+    '<=':               operator.le,
+    'le':               operator.le,
 }

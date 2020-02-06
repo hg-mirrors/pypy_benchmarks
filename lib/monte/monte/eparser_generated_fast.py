@@ -679,7 +679,7 @@ class BaseEParser(GrammarBase):
             def _G_optional_373():
                 return (None, self.input.nullError())
             _G_or_374, lastError = self._or([_G_optional_371, _G_optional_373])
-            _G_python_375, lastError = eval('t.SeqExpr(filter(None, [e] + es))', self.globals, _locals), None
+            _G_python_375, lastError = eval('t.SeqExpr(list(filter(None, [e] + es)))', self.globals, _locals), None
             return (_G_python_375, self.currentError)
         def _G_or_376():
             def _G_optional_377():

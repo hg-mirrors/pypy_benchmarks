@@ -16,8 +16,13 @@ try:
 except ImportError:
     from unittest import TestCase
 
+try:
+    RecursionError
+except NameError:
+    RecursionError = RuntimeError
 
 from chameleon.utils import byte_string
+from chameleon.exc import RenderError
 
 
 class Message(object):
@@ -161,26 +166,131 @@ class ZopePageTemplatesTest(RenderTestCase):
         def decorator(func):
             @wraps(func)
             def wrapper(self):
-                from ..exc import TemplateError
+                from chameleon.exc import TemplateError
                 try:
                     template = self.from_string(body)
                 except TemplateError:
                     exc = sys.exc_info()[1]
                     return func(self, body, exc)
                 else:
-                    result = template()
-                    self.fail("Expected exception; got: %s." % result)
+                    self.fail("Expected exception.")
 
             return wrapper
         return decorator
 
-    @error("""<tal:block replace='bad /// ' />""")
-    def test_syntax_error(self, body, exc):
-        self.assertTrue(body[exc.offset:].startswith('bad ///'))
+    def test_syntax_error_in_strict_mode(self):
+        from chameleon.exc import ExpressionError
+
+        self.assertRaises(
+            ExpressionError,
+            self.from_string,
+            """<tal:block replace='bad /// ' />""",
+            strict=True
+            )
+
+    def test_syntax_error_in_non_strict_mode(self):
+        from chameleon.exc import ExpressionError
+
+        body = """<tal:block replace='bad /// ' />"""
+        template = self.from_string(body, strict=False)
+
+        try:
+            template()
+        except ExpressionError:
+            exc = sys.exc_info()[1]
+            self.assertTrue(body[exc.offset:].startswith('bad ///'))
+        else:
+            self.fail("Expected exception")
+
+    def test_exists_error_leak(self):
+        body = '''\
+        <?xml version="1.0"?>
+        <root>
+        <one tal:condition="exists: var_does_not_exists" />
+        <two tal:attributes="my_attr dict()['key-does-not-exist']" />
+        </root>'''
+        template = self.from_string(body, strict=False)
+        try:
+            template()
+        except RenderError:
+            exc = sys.exc_info()[1]
+            self.assertNotIn('var_does_not_exists', str(exc))
+        else:
+            self.fail("Expected exception")
+
+    def test_sys_exc_info_is_clear_after_pipe(self):
+        body = """<div tal:content="y|nothing"></div><span tal:content="error()" />"""
+        template = self.from_string(body, strict=False)
+
+        got = template.render(error=sys.exc_info)
+        self.assertTrue('<span>(None, None, None)</span>' in got)
+
+    def test_render_macro_include_subtemplate_containing_error(self):
+        macro_inner = self.from_string('''<two tal:attributes="my_attr dict()['key-does-not-exist']" />''')
+        macro_wrap = self.from_string('''<one tal:content="macro_inner()" />''')
+        template = self.from_string(
+            '''
+            <tal:defs define="translate string:">
+              <span i18n:translate="">foo</span>
+              <metal:macro use-macro="macro" />
+            </tal:defs>
+            ''')
+        try:
+            result = template(macro=macro_wrap, macro_inner=macro_inner)
+        except RenderError:
+            exc = sys.exc_info()[1]
+            self.assertTrue(isinstance(exc, KeyError))
+            self.assertIn(''''key-does-not-exist'
+
+ - Expression: "dict()['key-does-not-exist']"
+ - Filename:   <string>
+ - Location:   (line 1: col 29)
+ - Expression: "macro_inner()"
+ - Filename:   <string>
+ - Location:   (line 1: col 18)
+ - Expression: "macro"
+ - Filename:   <string>
+ - Location:   (line 4: col 38)
+''', str(exc))
+        else:
+            self.fail("Expected exception")
+
+    def test_render_error_macro_include(self):
+        body = """<metal:block use-macro='"bad"' />"""
+        template = self.from_string(body, strict=False)
+
+        try:
+            template()
+        except RenderError:
+            exc = sys.exc_info()[1]
+            self.assertTrue(isinstance(exc, AttributeError))
+            self.assertIn('bad', str(exc))
+        else:
+            self.fail("Expected exception")
 
     @error("""<tal:dummy attributes=\"dummy 'dummy'\" />""")
     def test_attributes_on_tal_tag_fails(self, body, exc):
         self.assertTrue(body[exc.offset:].startswith('dummy'))
+
+    @error("""<tal:dummy i18n:attributes=\"foo, bar\" />""")
+    def test_i18n_attributes_with_non_identifiers(self, body, exc):
+        self.assertTrue(body[exc.offset:].startswith('foo,'))
+
+    @error("""<tal:dummy repeat=\"key,value mydict.items()\">""")
+    def test_repeat_syntax_error_message(self, body, exc):
+        self.assertTrue(body[exc.offset:].startswith('key,value'))
+
+    @error('''<tal:dummy><p i18n:translate="mymsgid">
+            <span i18n:name="repeat"/><span i18n:name="repeat"/>
+            </p></tal:dummy>''')
+    def test_repeat_i18n_name_error(self, body, exc):
+        self.assertTrue(body[exc.offset:].startswith('repeat'), body[exc.offset:])
+
+    @error('''<tal:dummy>
+            <span i18n:name="not_in_translation"/>
+            </tal:dummy>''')
+    def test_i18n_name_not_in_translation_error(self, body, exc):
+        self.assertTrue(body[exc.offset:].startswith('not_in_translation'))
 
     def test_encoded(self):
         filename = '074-encoded-template.pt'
@@ -195,6 +305,17 @@ class ZopePageTemplatesTest(RenderTestCase):
             body = f.read()
 
         self.from_string(body)
+
+    def test_recursion_error(self):
+        template = self.from_string(
+            '<div metal:define-macro="main" '
+            'metal:use-macro="template.macros.main" />'
+        )
+        self.assertRaises(RecursionError, template)
+        try:
+            template()
+        except RecursionError as exc:
+            self.assertFalse(isinstance(exc, RenderError))
 
     def test_unicode_decode_error(self):
         template = self.from_file(
@@ -279,6 +400,17 @@ class ZopePageTemplatesTest(RenderTestCase):
         rendered = template(test=object())
         self.assertTrue('object' in rendered)
 
+    def test_on_error_handler(self):
+        exc = []
+        handler = exc.append
+        template = self.from_string(
+            '<tal:block on-error="string:error">${test}</tal:block>',
+            on_error_handler=handler
+        )
+        rendered = template()
+        self.assertEqual(len(exc), 1)
+        self.assertEqual(exc[0].__class__.__name__, "NameError")
+
     def test_object_substitution_coerce_to_str(self):
         template = self.from_string('${test}', translate=None)
 
@@ -304,6 +436,24 @@ class ZopePageTemplatesTest(RenderTestCase):
             )
         self.assertTrue(template(), "<div>foo</div>")
 
+    def test_trim_attribute_space(self):
+        document = '''<div
+                  class="document"
+                  id="test"
+                  tal:attributes="class string:${default} test"
+            />'''
+
+        result1 = self.from_string(
+            document)()
+
+        result2 = self.from_string(
+            document, trim_attribute_space=True)()
+
+        self.assertEqual(result1.count(" "), 49)
+        self.assertEqual(result2.count(" "), 4)
+        self.assertTrue(" />" in result1)
+        self.assertTrue(" />" in result2)
+
     def test_exception(self):
         from traceback import format_exception_only
 
@@ -312,17 +462,72 @@ class ZopePageTemplatesTest(RenderTestCase):
             )
         try:
             template()
-        except:
+        except Exception as exc:
+            self.assertIn(RenderError, type(exc).__bases__)
             exc = sys.exc_info()[1]
             formatted = str(exc)
             self.assertFalse('NameError:' in formatted)
             self.assertTrue('foo' in formatted)
-            self.assertTrue('(1:23)' in formatted)
+            self.assertTrue('(line 1: col 23)' in formatted)
 
             formatted_exc = "\n".join(format_exception_only(type(exc), exc))
             self.assertTrue('NameError: foo' in formatted_exc)
         else:
             self.fail("expected error")
+
+    def test_create_formatted_exception(self):
+        from chameleon.utils import create_formatted_exception
+
+        exc = create_formatted_exception(NameError('foo'), NameError, str)
+        self.assertEqual(exc.args, ('foo', ))
+
+        class MyNameError(NameError):
+            def __init__(self, boo):
+                NameError.__init__(self, boo)
+                self.bar = boo
+
+        exc = create_formatted_exception(MyNameError('foo'), MyNameError, str)
+        self.assertEqual(exc.args, ('foo', ))
+        self.assertEqual(exc.bar, 'foo')
+
+    def test_create_formatted_exception_no_subclass(self):
+        from chameleon.utils import create_formatted_exception
+
+        class DifficultMetaClass(type):
+            def __init__(self, class_name, bases, namespace):
+                if not bases == (BaseException, ):
+                    raise TypeError(bases)
+
+        Difficult = DifficultMetaClass('Difficult', (BaseException, ), {'args': ()})
+
+        exc = create_formatted_exception(Difficult(), Difficult, str)
+        self.assertEqual(exc.args, ())
+
+    def test_error_handler_makes_safe_copy(self):
+        calls = []
+
+        class TestException(Exception):
+            def __init__(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+        def _render(stream, econtext, rcontext):
+            exc = TestException('foo', bar='baz')
+            rcontext['__error__'] = ('expression', 1, 42, 'test.pt', exc),
+            raise exc
+
+        template = self.from_string("")
+        template._render = _render
+        try:
+            template()
+        except TestException:
+            self.assertEqual(calls, [(('foo', ), {'bar': 'baz'})])
+            exc = sys.exc_info()[1]
+            formatted = str(exc)
+            self.assertTrue('TestException' in formatted)
+            self.assertTrue('"expression"' in formatted)
+            self.assertTrue('(line 1: col 42)' in formatted)
+        else:
+            self.fail("unexpected error")
 
     def test_double_underscore_variable(self):
         from chameleon.exc import TranslationError
@@ -338,6 +543,28 @@ class ZopePageTemplatesTest(RenderTestCase):
         for name in COMPILER_INTERNALS_OR_DISALLOWED:
             body = "<d tal:define=\"%s 'foo'\">${%s}</d>" % (name, name)
             self.assertRaises(TranslationError, self.from_string, body)
+
+    def test_simple_translate_mapping(self):
+        template = self.from_string(
+            '<div i18n:translate="">'
+            '<span i18n:name="name">foo</span>'
+            '</div>')
+
+        self.assertEqual(template(), '<div><span>foo</span></div>')
+
+    def test_translate_is_not_an_internal(self):
+        macro = self.from_string('<span i18n:translate="">bar</span>')
+        template = self.from_string(
+            '''
+            <tal:defs define="translate string:">
+              <span i18n:translate="">foo</span>
+              <metal:macro use-macro="macro" />
+            </tal:defs>
+            ''')
+
+        result = template(macro=macro)
+        self.assertTrue('foo' in result)
+        self.assertTrue('foo' in result)
 
     def test_literal_false(self):
         template = self.from_string(
@@ -453,7 +680,7 @@ class ZopeTemplatesTestSuite(RenderTestCase):
             literal=Literal("<div>Hello world!</div>"),
             content="<div>Hello world!</div>",
             message=Message(),
-            load=loader.bind(PageTemplateFile)
+            load=loader.bind(PageTemplateFile),
             )
 
     def test_txt_files(self):
@@ -481,9 +708,14 @@ class ZopeTemplatesTestSuite(RenderTestCase):
             else:
                 with_domain = " with domain '%s'" % domain
 
+            if context is None:
+                with_context = ""
+            else:
+                with_context = ", context '%s'" % context
+
             stripped = default.rstrip('\n ')
-            return "%s ('%s' translation into '%s'%s)%s" % (
-                stripped, msgid, target_language, with_domain,
+            return "%s ('%s' translation into '%s'%s%s)%s" % (
+                stripped, msgid, target_language, with_domain, with_context,
                 default[len(stripped):]
                 )
 
@@ -491,9 +723,21 @@ class ZopeTemplatesTestSuite(RenderTestCase):
             # Make friendly title so we can locate the generated
             # source when debugging
             self.shortDescription = lambda: input_path
+
+            # When input path contains the string 'implicit-i18n', we
+            # enable "implicit translation".
+            implicit_i18n = 'implicit-i18n' in input_path
+            implicit_i18n_attrs = ("alt", "title") if implicit_i18n else ()
+
+            enable_data_attributes = 'data-attributes' in input_path
+
             template = factory(
                 input_path,
                 keep_source=True,
+                strict=False,
+                implicit_i18n_translate=implicit_i18n,
+                implicit_i18n_attributes=implicit_i18n_attrs,
+                enable_data_attributes=enable_data_attributes,
                 )
 
             params = kwargs.copy()
@@ -537,7 +781,9 @@ class ZopeTemplatesTestSuite(RenderTestCase):
                 content_type, encoding = detect_encoding(
                     output, template.default_encoding)
 
-            want = output.decode(encoding)
+            # Newline normalization across platforms
+            want = '\n'.join(output.decode(encoding).splitlines())
+            got = '\n'.join(got.splitlines())
 
             if checker.check_output(want, got, 0) is False:
                 from doctest import Example

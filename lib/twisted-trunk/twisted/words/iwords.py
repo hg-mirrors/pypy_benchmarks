@@ -2,7 +2,8 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-from zope.interface import Interface, Attribute, implements
+from zope.interface import Interface, Attribute
+
 
 class IProtocolPlugin(Interface):
     """Interface for plugins providing an interface to a Words service
@@ -14,7 +15,7 @@ class IProtocolPlugin(Interface):
         """Retrieve a C{twisted.internet.interfaces.IServerFactory} provider
 
         @param realm: An object providing C{twisted.cred.portal.IRealm} and
-        C{IChatService}, with which service information should be looked up.
+        L{IChatService}, with which service information should be looked up.
 
         @param portal: An object providing C{twisted.cred.portal.IPortal},
         through which logins should be performed.
@@ -41,7 +42,7 @@ class IGroup(Interface):
         """Return the number of participants in this group.
 
         @rtype: L{twisted.internet.defer.Deferred}
-        @return: A Deferred which fires with an C{int} representing the the
+        @return: A Deferred which fires with an C{int} representing the
         number of participants in this group.
         """
 
@@ -211,7 +212,7 @@ class IChatService(Interface):
         @rtype: L{twisted.internet.defer.Deferred}
         @return: A Deferred which fires with the group with the given
         name if one exists (or if one is created due to the setting of
-        L{createGroupOnRequest}, or which fails with
+        L{IChatService.createGroupOnRequest}, or which fails with
         L{twisted.words.ewords.NoSuchGroup} if no such group exists.
         """
 
@@ -246,7 +247,7 @@ class IChatService(Interface):
         @rtype: L{twisted.internet.defer.Deferred}
         @return: A Deferred which fires with the user with the given
         name if one exists (or if one is created due to the setting of
-        L{createUserOnRequest}, or which fails with
+        L{IChatService.createUserOnRequest}, or which fails with
         L{twisted.words.ewords.NoSuchUser} if no such user exists.
         """
 
@@ -262,5 +263,5 @@ class IChatService(Interface):
         """
 
 __all__ = [
-    'IChatInterface', 'IGroup', 'IChatClient', 'IUser', 'IChatService',
+    'IGroup', 'IChatClient', 'IUser', 'IChatService',
     ]

@@ -13,11 +13,11 @@
 
 """Core classes for markup processing."""
 
-try:
-    reduce # builtin in Python < 3
-except NameError:
-    from functools import reduce
 import sys
+if sys.version_info[0] > 2:
+    from functools import reduce
+    unicode = str
+
 from itertools import chain
 import operator
 
@@ -270,7 +270,7 @@ COMMENT = Stream.COMMENT
 def _ensure(stream):
     """Ensure that every item on the stream is actually a markup event."""
     stream = iter(stream)
-    event = stream.next()
+    event = next(stream)
 
     # Check whether the iterable is a real markup event stream by examining the
     # first item it yields; if it's not we'll need to do some conversion

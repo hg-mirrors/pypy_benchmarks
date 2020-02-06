@@ -7,9 +7,11 @@ Implements a simple polling interface for file descriptors that don't work with
 select() - this is pretty much only useful on Windows.
 """
 
-from zope.interface import implements
+from __future__ import absolute_import, division
 
+from zope.interface import implementer
 from twisted.internet.interfaces import IConsumer, IPushProducer
+from twisted.python.compat import unicode
 
 
 MIN_TIMEOUT = 0.000000001
@@ -103,9 +105,8 @@ import win32file
 import win32api
 import pywintypes
 
+@implementer(IPushProducer)
 class _PollableReadPipe(_PollableResource):
-
-    implements(IPushProducer)
 
     def __init__(self, pipe, receivedCallback, lostCallback):
         # security attributes for pipes
@@ -129,7 +130,7 @@ class _PollableReadPipe(_PollableResource):
                 finished = 1
                 break
 
-        dataBuf = ''.join(fullDataRead)
+        dataBuf = b''.join(fullDataRead)
         if dataBuf:
             self.receivedCallback(dataBuf)
         if finished:
@@ -159,14 +160,13 @@ class _PollableReadPipe(_PollableResource):
 
 FULL_BUFFER_SIZE = 64 * 1024
 
+@implementer(IConsumer)
 class _PollableWritePipe(_PollableResource):
-
-    implements(IConsumer)
 
     def __init__(self, writePipe, lostCallback):
         self.disconnecting = False
         self.producer = None
-        self.producerPaused = 0
+        self.producerPaused = False
         self.streamingProducer = 0
         self.outQueue = []
         self.writePipe = writePipe
@@ -185,13 +185,13 @@ class _PollableWritePipe(_PollableResource):
 
     def bufferFull(self):
         if self.producer is not None:
-            self.producerPaused = 1
+            self.producerPaused = True
             self.producer.pauseProducing()
 
     def bufferEmpty(self):
         if self.producer is not None and ((not self.streamingProducer) or
                                           self.producerPaused):
-            self.producer.producerPaused = 0
+            self.producer.producerPaused = False
             self.producer.resumeProducing()
             return True
         return False
@@ -234,15 +234,38 @@ class _PollableWritePipe(_PollableResource):
             pass
         self.lostCallback()
 
+
     def writeSequence(self, seq):
+        """
+        Append a C{list} or C{tuple} of bytes to the output buffer.
+
+        @param seq: C{list} or C{tuple} of C{str} instances to be appended to
+            the output buffer.
+
+        @raise TypeError: If C{seq} contains C{unicode}.
+        """
+        if unicode in map(type, seq):
+            raise TypeError("Unicode not allowed in output buffer.")
         self.outQueue.extend(seq)
 
+
     def write(self, data):
+        """
+        Append some bytes to the output buffer.
+
+        @param data: C{str} to be appended to the output buffer.
+        @type data: C{str}.
+
+        @raise TypeError: If C{data} is C{unicode} instead of C{str}.
+        """
+        if isinstance(data, unicode):
+            raise TypeError("Unicode not allowed in output buffer.")
         if self.disconnecting:
             return
         self.outQueue.append(data)
         if sum(map(len, self.outQueue)) > FULL_BUFFER_SIZE:
             self.bufferFull()
+
 
     def checkWork(self):
         numBytesWritten = 0
@@ -251,15 +274,13 @@ class _PollableWritePipe(_PollableResource):
                 self.writeConnectionLost()
                 return 0
             try:
-                win32file.WriteFile(self.writePipe, '', None)
+                win32file.WriteFile(self.writePipe, b'', None)
             except pywintypes.error:
                 self.writeConnectionLost()
                 return numBytesWritten
         while self.outQueue:
             data = self.outQueue.pop(0)
             errCode = 0
-            if isinstance(data, unicode):
-                raise TypeError("unicode not allowed")
             try:
                 errCode, nBytesWritten = win32file.WriteFile(self.writePipe,
                                                              data, None)

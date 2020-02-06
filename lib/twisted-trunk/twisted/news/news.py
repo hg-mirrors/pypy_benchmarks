@@ -6,6 +6,8 @@
 Maintainer: Jp Calderone
 """
 
+from __future__ import print_function
+
 from twisted.news import nntp
 from twisted.internet import protocol, reactor
 
@@ -37,7 +39,7 @@ class UsenetClientFactory(protocol.ClientFactory):
 
 
     def clientConnectionFailed(self, connector, reason):
-        print 'Connection failed: ', reason
+        print('Connection failed: ', reason)
     
     
     def updateChecks(self, addr):
@@ -51,7 +53,7 @@ class UsenetClientFactory(protocol.ClientFactory):
         return p
 
 
-# XXX - Maybe this inheritence doesn't make so much sense?
+# XXX - Maybe this inheritance doesn't make so much sense?
 class UsenetServerFactory(NNTPFactory):
     """A factory for NNTP Usenet server protocols."""
 
@@ -86,5 +88,5 @@ class UsenetServerFactory(NNTPFactory):
         self._updateCall = reactor.callLater(self.updatePeriod, self.syncWithRemotes)
 
 
-# backwards compatability
+# backwards compatibility
 Factory = UsenetServerFactory

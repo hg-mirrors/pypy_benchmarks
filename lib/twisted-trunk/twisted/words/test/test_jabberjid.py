@@ -5,11 +5,12 @@
 Tests for L{twisted.words.protocols.jabber.jid}.
 """
 
+from twisted.python.compat import unicode
 from twisted.trial import unittest
 
 from twisted.words.protocols.jabber import jid
 
-class JIDParsingTest(unittest.TestCase):
+class JIDParsingTests(unittest.TestCase):
     def test_parse(self):
         """
         Test different forms of JIDs.
@@ -85,10 +86,10 @@ class JIDParsingTest(unittest.TestCase):
         """
         self.assertEqual(jid.prep("user", "hoST", "resource"),
                           ("user", "host", "resource"))
-        self.assertNotEquals(jid.prep("user", "host", "Resource"),
+        self.assertNotEqual(jid.prep("user", "host", "Resource"),
                              ("user", "host", "resource"))
 
-class JIDTest(unittest.TestCase):
+class JIDTests(unittest.TestCase):
 
     def test_noneArguments(self):
         """
@@ -206,16 +207,16 @@ class JIDTest(unittest.TestCase):
         Test unicode representation of JIDs.
         """
         j = jid.JID(tuple=('user', 'host', 'resource'))
-        self.assertEqual("user@host/resource", unicode(j))
+        self.assertEqual(u"user@host/resource", unicode(j))
 
     def test_repr(self):
         """
         Test representation of JID objects.
         """
         j = jid.JID(tuple=('user', 'host', 'resource'))
-        self.assertEqual("JID(u'user@host/resource')", repr(j))
+        self.assertEqual("JID(%s)" % repr(u'user@host/resource'), repr(j))
 
-class InternJIDTest(unittest.TestCase):
+class InternJIDTests(unittest.TestCase):
     def test_identity(self):
         """
         Test that two interned JIDs yield the same object.

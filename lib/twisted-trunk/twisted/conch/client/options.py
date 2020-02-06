@@ -4,6 +4,7 @@
 #
 from twisted.conch.ssh.transport import SSHClientTransport, SSHCiphers
 from twisted.python import usage
+from twisted.python.compat import unicode
 
 import sys
 
@@ -29,26 +30,32 @@ class ConchOptions(usage.Options):
                 ['noagent', 'a', 'Disable authentication agent forwarding (default)'],
                 ['reconnect', 'r', 'Reconnect to the server if the connection is lost.'],
                ]
-    zsh_altArgDescr = {"connection-usage":"Connection types to use"}
-    #zsh_multiUse = ["foo", "bar"]
-    zsh_mutuallyExclusive = [("agent", "noagent")]
-    zsh_actions = {"user":"_users",
-                   "ciphers":"_values -s , 'ciphers to choose from' %s" %
-                       " ".join(SSHCiphers.cipherMap.keys()),
-                   "macs":"_values -s , 'macs to choose from' %s" %
-                       " ".join(SSHCiphers.macMap.keys()),
-                   "host-key-algorithms":"_values -s , 'host key algorithms to choose from' %s" %
-                       " ".join(SSHClientTransport.supportedPublicKeys),
-                   #"user-authentications":"_values -s , 'user authentication types to choose from' %s" %
-                   #    " ".join(???),
-                   }
-    #zsh_actionDescr = {"logfile":"log file name", "random":"random seed"}
-    # user, host, or user@host completion similar to zsh's ssh completion
-    zsh_extras = ['1:host | user@host:{_ssh;if compset -P "*@"; then _wanted hosts expl "remote host name" _ssh_hosts && ret=0 elif compset -S "@*"; then _wanted users expl "login name" _ssh_users -S "" && ret=0 else if (( $+opt_args[-l] )); then tmp=() else tmp=( "users:login name:_ssh_users -qS@" ) fi; _alternative "hosts:remote host name:_ssh_hosts" "$tmp[@]" && ret=0 fi}']
+
+    compData = usage.Completions(
+        mutuallyExclusive=[("agent", "noagent")],
+        optActions={
+            "user": usage.CompleteUsernames(),
+            "ciphers": usage.CompleteMultiList(
+                SSHCiphers.cipherMap.keys(),
+                descr='ciphers to choose from'),
+            "macs": usage.CompleteMultiList(
+                SSHCiphers.macMap.keys(),
+                descr='macs to choose from'),
+            "host-key-algorithms": usage.CompleteMultiList(
+                SSHClientTransport.supportedPublicKeys,
+                descr='host key algorithms to choose from'),
+            #"user-authentications": usage.CompleteMultiList(?
+            # descr='user authentication types' ),
+            },
+        extraActions=[usage.CompleteUserAtHost(),
+                      usage.Completer(descr="command"),
+                      usage.Completer(descr='argument',
+                                      repeat=True)]
+        )
 
     def __init__(self, *args, **kw):
         usage.Options.__init__(self, *args, **kw)
-        self.identitys = [] 
+        self.identitys = []
         self.conns = None
 
     def opt_identity(self, i):
@@ -59,30 +66,36 @@ class ConchOptions(usage.Options):
         "Select encryption algorithms"
         ciphers = ciphers.split(',')
         for cipher in ciphers:
-            if not SSHCiphers.cipherMap.has_key(cipher):
+            if cipher not in SSHCiphers.cipherMap:
                 sys.exit("Unknown cipher type '%s'" % cipher)
         self['ciphers'] = ciphers
 
 
     def opt_macs(self, macs):
         "Specify MAC algorithms"
-        macs = macs.split(',')
+        if isinstance(macs, unicode):
+            macs = macs.encode("utf-8")
+        macs = macs.split(b',')
         for mac in macs:
-            if not SSHCiphers.macMap.has_key(mac):
-                sys.exit("Unknown mac type '%s'" % mac)
+            if mac not in SSHCiphers.macMap:
+                sys.exit("Unknown mac type '%r'" % mac)
         self['macs'] = macs
 
     def opt_host_key_algorithms(self, hkas):
         "Select host key algorithms"
-        hkas = hkas.split(',')
+        if isinstance(hkas, unicode):
+            hkas = hkas.encode("utf-8")
+        hkas = hkas.split(b',')
         for hka in hkas:
             if hka not in SSHClientTransport.supportedPublicKeys:
-                sys.exit("Unknown host key type '%s'" % hka)
+                sys.exit("Unknown host key type '%r'" % hka)
         self['host-key-algorithms'] = hkas
 
     def opt_user_authentications(self, uas):
         "Choose how to authenticate to the remote server"
-        self['user-authentications'] = uas.split(',')
+        if isinstance(uas, unicode):
+            uas = uas.encode("utf-8")
+        self['user-authentications'] = uas.split(b',')
 
 #    def opt_compress(self):
 #        "Enable compression"

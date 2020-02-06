@@ -1,3 +1,4 @@
+# -*- test-case-name: twisted.application.test.test_service -*-
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
@@ -13,13 +14,17 @@ a sibling).
 Maintainer: Moshe Zadka
 """
 
-from zope.interface import implements, Interface, Attribute
+from __future__ import absolute_import, division
 
+from zope.interface import implementer, Interface, Attribute
+
+from twisted.persisted import sob
 from twisted.python.reflect import namedAny
 from twisted.python import components
+from twisted.python._oldstyle import _oldStyle
 from twisted.internet import defer
-from twisted.persisted import sob
 from twisted.plugin import IPlugin
+
 
 class IServiceMaker(Interface):
     """
@@ -49,18 +54,17 @@ class IServiceMaker(Interface):
         L{twisted.application.service.IService}.
 
         @param options: A mapping (typically a C{dict} or
-        C{twisted.python.usage.Options} instance) of configuration
+        L{twisted.python.usage.Options} instance) of configuration
         options to desired configuration values.
         """
 
 
 
+@implementer(IPlugin, IServiceMaker)
 class ServiceMaker(object):
     """
     Utility class to simplify the definition of L{IServiceMaker} plugins.
     """
-    implements(IPlugin, IServiceMaker)
-
     def __init__(self, name, module, description, tapname):
         self.name = name
         self.module = module
@@ -88,12 +92,16 @@ class IService(Interface):
     A service.
 
     Run start-up and shut-down code at the appropriate times.
-
-    @type name:            C{string}
-    @ivar name:            The name of the service (or None)
-    @type running:         C{boolean}
-    @ivar running:         Whether the service is running.
     """
+
+    name = Attribute(
+        "A C{str} which is the name of the service or C{None}.")
+
+    running = Attribute(
+        "A C{boolean} which indicates whether the service is running.")
+
+    parent = Attribute(
+        "An C{IServiceCollection} which is the parent or C{None}.")
 
     def setName(name):
         """
@@ -105,7 +113,8 @@ class IService(Interface):
 
     def setServiceParent(parent):
         """
-        Set the parent of the service.
+        Set the parent of the service.  This method is responsible for setting
+        the C{parent} attribute on this service (the child service).
 
         @type parent: L{IServiceCollection}
         @raise RuntimeError: Raised if the service already has a parent
@@ -120,10 +129,10 @@ class IService(Interface):
         This method is used symmetrically with L{setServiceParent} in that it
         sets the C{parent} attribute on the child.
 
-        @rtype: L{Deferred}
-        @return: a L{Deferred} which is triggered when the service has
-            finished shutting down. If shutting down is immediate,
-            a value can be returned (usually, C{None}).
+        @rtype: L{Deferred<defer.Deferred>}
+        @return: a L{Deferred<defer.Deferred>} which is triggered when the
+            service has finished shutting down. If shutting down is immediate,
+            a value can be returned (usually, L{None}).
         """
 
     def startService():
@@ -135,10 +144,10 @@ class IService(Interface):
         """
         Stop the service.
 
-        @rtype: L{Deferred}
-        @return: a L{Deferred} which is triggered when the service has
-            finished shutting down. If shutting down is immediate, a
-            value can be returned (usually, C{None}).
+        @rtype: L{Deferred<defer.Deferred>}
+        @return: a L{Deferred<defer.Deferred>} which is triggered when the
+            service has finished shutting down. If shutting down is immediate,
+            a value can be returned (usually, L{None}).
         """
 
     def privilegedStartService():
@@ -150,16 +159,16 @@ class IService(Interface):
         """
 
 
-class Service:
+
+@implementer(IService)
+class Service(object):
     """
     Base class for services.
 
     Most services should inherit from this class. It handles the
-    book-keeping reponsibilities of starting and stopping, as well
+    book-keeping responsibilities of starting and stopping, as well
     as not serializing this book-keeping information.
     """
-
-    implements(IService)
 
     running = 0
     name = None
@@ -167,7 +176,7 @@ class Service:
 
     def __getstate__(self):
         dict = self.__dict__.copy()
-        if dict.has_key("running"):
+        if "running" in dict:
             del dict['running']
         return dict
 
@@ -227,6 +236,9 @@ class IServiceCollection(Interface):
         """
         Add a child service.
 
+        Only implementations of L{IService.setServiceParent} should use this
+        method.
+
         @type service: L{IService}
         @raise RuntimeError: Raised if the service has a child with
             the given name.
@@ -241,14 +253,15 @@ class IServiceCollection(Interface):
 
         @type service: L{IService}
         @raise ValueError: Raised if the given service is not a child.
-        @rtype: L{Deferred}
-        @return: a L{Deferred} which is triggered when the service has
-            finished shutting down. If shutting down is immediate, a
-            value can be returned (usually, C{None}).
+        @rtype: L{Deferred<defer.Deferred>}
+        @return: a L{Deferred<defer.Deferred>} which is triggered when the
+            service has finished shutting down. If shutting down is immediate,
+            a value can be returned (usually, L{None}).
         """
 
 
 
+@implementer(IServiceCollection)
 class MultiService(Service):
     """
     Straightforward Service Container.
@@ -258,8 +271,6 @@ class MultiService(Service):
     will not finish shutting down until all of its child services
     will finish.
     """
-
-    implements(IServiceCollection)
 
     def __init__(self):
         self.services = []
@@ -293,7 +304,7 @@ class MultiService(Service):
 
     def addService(self, service):
         if service.name is not None:
-            if self.namedServices.has_key(service.name):
+            if service.name in self.namedServices:
                 raise RuntimeError("cannot have two services with same name"
                                    " '%s'" % service.name)
             self.namedServices[service.name] = service
@@ -324,32 +335,33 @@ class IProcess(Interface):
     """
     processName = Attribute(
         """
-        A C{str} giving the name the process should have in ps (or C{None}
+        A C{str} giving the name the process should have in ps (or L{None}
         to leave the name alone).
         """)
 
     uid = Attribute(
         """
         An C{int} giving the user id as which the process should run (or
-        C{None} to leave the UID alone).
-        """)    
+        L{None} to leave the UID alone).
+        """)
 
     gid = Attribute(
         """
         An C{int} giving the group id as which the process should run (or
-        C{None} to leave the GID alone).
-        """)    
+        L{None} to leave the GID alone).
+        """)
 
 
 
+@implementer(IProcess)
+@_oldStyle
 class Process:
     """
     Process running parameters.
 
     Sets up uid/gid in the constructor, and has a default
-    of C{None} as C{processName}.
+    of L{None} as C{processName}.
     """
-    implements(IProcess)
     processName = None
 
     def __init__(self, uid=None, gid=None):
@@ -357,13 +369,14 @@ class Process:
         Set uid and gid.
 
         @param uid: The user ID as whom to execute the process.  If
-            this is C{None}, no attempt will be made to change the UID.
+            this is L{None}, no attempt will be made to change the UID.
 
         @param gid: The group ID as whom to execute the process.  If
-            this is C{None}, no attempt will be made to change the GID.
+            this is L{None}, no attempt will be made to change the GID.
         """
         self.uid = uid
         self.gid = gid
+
 
 
 def Application(name, uid=None, gid=None):
@@ -376,7 +389,10 @@ def Application(name, uid=None, gid=None):
     one of the interfaces.
     """
     ret = components.Componentized()
-    for comp in (MultiService(), sob.Persistent(ret, name), Process(uid, gid)):
+    availableComponents = [MultiService(), Process(uid, gid),
+                           sob.Persistent(ret, name)]
+
+    for comp in availableComponents:
         ret.addComponent(comp, ignoreClass=1)
     IService(ret).setName(name)
     return ret
@@ -397,9 +413,9 @@ def loadApplication(filename, kind, passphrase=None):
     @type passphrase: C{str}
     """
     if kind == 'python':
-        application = sob.loadValueFromFile(filename, 'application', passphrase)
+        application = sob.loadValueFromFile(filename, 'application')
     else:
-        application = sob.load(filename, kind, passphrase)
+        application = sob.load(filename, kind)
     return application
 
 

@@ -6,23 +6,28 @@
 Tests for  XML-RPC support in L{twisted.web.xmlrpc}.
 """
 
+from __future__ import division, absolute_import
+
+from twisted.python.compat import nativeString, networkString, NativeStringIO
+from io import BytesIO
+
 import datetime
-import xmlrpclib
-from StringIO import StringIO
 
 from twisted.trial import unittest
 from twisted.web import xmlrpc
-from twisted.web.xmlrpc import (
-    XMLRPC, payloadTemplate, addIntrospection, _QueryFactory, Proxy,
-    withRequest)
-from twisted.web import server, static, client, error, http
+from twisted.web.xmlrpc import XMLRPC, payloadTemplate, addIntrospection
+from twisted.web.xmlrpc import _QueryFactory, withRequest, xmlrpclib
+from twisted.web import server, client, http, static
 from twisted.internet import reactor, defer
 from twisted.internet.error import ConnectionDone
 from twisted.python import failure
-from twisted.test.proto_helpers import MemoryReactor
+from twisted.python.reflect import namedModule
+from twisted.test.proto_helpers import MemoryReactor, EventLoggingObserver
 from twisted.web.test.test_web import DummyRequest
+from twisted.logger import (globalLogPublisher, FilteringLogObserver,
+                            LogLevelFilterPredicate, LogLevel)
 try:
-    import twisted.internet.ssl
+    namedModule('twisted.internet.ssl')
 except ImportError:
     sslSkip = "OpenSSL not present"
 else:
@@ -36,7 +41,7 @@ class AsyncXMLRPCTests(unittest.TestCase):
     def setUp(self):
         self.request = DummyRequest([''])
         self.request.method = 'POST'
-        self.request.content = StringIO(
+        self.request.content = NativeStringIO(
             payloadTemplate % ('async', xmlrpclib.dumps(())))
 
         result = self.result = defer.Deferred()
@@ -57,7 +62,7 @@ class AsyncXMLRPCTests(unittest.TestCase):
 
         self.result.callback("result")
 
-        resp = xmlrpclib.loads("".join(self.request.written))
+        resp = xmlrpclib.loads(b"".join(self.request.written))
         self.assertEqual(resp, (('result',), None))
         self.assertEqual(self.request.finished, 1)
 
@@ -137,6 +142,15 @@ class Test(XMLRPC):
     def xmlrpc_deferFault(self):
         return defer.fail(xmlrpc.Fault(17, "hi"))
 
+    def xmlrpc_snowman(self, payload):
+        """
+        Used to test that we can pass Unicode.
+        """
+        snowman = u"\u2603"
+        if snowman != payload:
+            return xmlrpc.Fault(13, "Payload not unicode snowman")
+        return snowman
+
     def xmlrpc_complex(self):
         return {"a": ["b", "c", 12, []], "D": "foo"}
 
@@ -164,7 +178,7 @@ class Test(XMLRPC):
         except xmlrpc.NoSuchFunction:
             if procedurePath.startswith("SESSION"):
                 raise xmlrpc.Fault(self.SESSION_EXPIRED,
-                                   "Session non-existant/expired.")
+                                   "Session non-existent/expired.")
             else:
                 raise
 
@@ -221,9 +235,11 @@ class TestAuthHeader(Test):
         return self.request.getUser(), self.request.getPassword()
 
 
+
 class TestQueryProtocol(xmlrpc.QueryProtocol):
     """
-    QueryProtocol for tests that saves headers received inside the factory.
+    QueryProtocol for tests that saves headers received and sent,
+    inside the factory.
     """
 
     def connectionMade(self):
@@ -232,6 +248,14 @@ class TestQueryProtocol(xmlrpc.QueryProtocol):
 
     def handleHeader(self, key, val):
         self.factory.headers[key.lower()] = val
+
+    def sendHeader(self, key, val):
+        """
+        Keep sent headers so we can inspect them later.
+        """
+        self.factory.sent_headers[key.lower()] = val
+        xmlrpc.QueryProtocol.sendHeader(self, key, val)
+
 
 
 class TestQueryFactory(xmlrpc._QueryFactory):
@@ -242,6 +266,7 @@ class TestQueryFactory(xmlrpc._QueryFactory):
 
     def __init__(self, *args, **kwargs):
         self.headers = {}
+        self.sent_headers = {}
         xmlrpc._QueryFactory.__init__(self, *args, **kwargs)
 
 
@@ -255,7 +280,7 @@ class TestQueryFactoryCancel(xmlrpc._QueryFactory):
         self.connector = connector
 
 
-class XMLRPCTestCase(unittest.TestCase):
+class XMLRPCTests(unittest.TestCase):
 
     def setUp(self):
         self.p = reactor.listenTCP(0, server.Site(Test()),
@@ -282,7 +307,7 @@ class XMLRPCTestCase(unittest.TestCase):
         setUp(), using the given factory as the queryFactory, or
         self.queryFactory if no factory is provided.
         """
-        p = xmlrpc.Proxy("http://127.0.0.1:%d/" % self.port)
+        p = xmlrpc.Proxy(networkString("http://127.0.0.1:%d/" % self.port))
         if factory is None:
             p.queryFactory = self.queryFactory
         else:
@@ -295,6 +320,7 @@ class XMLRPCTestCase(unittest.TestCase):
             ("defer", ("a",), "a"),
             ("dict", ({"a": 1}, "a"), 1),
             ("pair", ("a", 1), ["a", 1]),
+            ("snowman", (u"\u2603"), u"\u2603"),
             ("complex", (), {"a": ["b", "c", 12, []], "D": "foo"})]
 
         dl = []
@@ -304,6 +330,37 @@ class XMLRPCTestCase(unittest.TestCase):
             dl.append(d)
         return defer.DeferredList(dl, fireOnOneErrback=True)
 
+
+    def test_headers(self):
+        """
+        Verify that headers sent from the client side and the ones we
+        get back from the server side are correct.
+
+        """
+        d = self.proxy().callRemote("snowman", u"\u2603")
+
+        def check_server_headers(ing):
+            self.assertEqual(
+                self.factories[0].headers[b'content-type'],
+                b'text/xml; charset=utf-8')
+            self.assertEqual(
+                self.factories[0].headers[b'content-length'], b'129')
+
+        def check_client_headers(ign):
+            self.assertEqual(
+                self.factories[0].sent_headers[b'user-agent'],
+                b'Twisted/XMLRPClib')
+            self.assertEqual(
+                self.factories[0].sent_headers[b'content-type'],
+                b'text/xml; charset=utf-8')
+            self.assertEqual(
+                self.factories[0].sent_headers[b'content-length'], b'155')
+
+        d.addCallback(check_server_headers)
+        d.addCallback(check_client_headers)
+        return d
+
+
     def test_errors(self):
         """
         Verify that for each way a method exposed via XML-RPC can fail, the
@@ -311,6 +368,13 @@ class XMLRPCTestCase(unittest.TestCase):
         client-side Deferred is errbacked with an appropriate C{Fault}
         instance.
         """
+        logObserver = EventLoggingObserver()
+        filtered = FilteringLogObserver(
+            logObserver,
+            [LogLevelFilterPredicate(defaultLogLevel=LogLevel.critical)]
+        )
+        globalLogPublisher.addObserver(filtered)
+        self.addCleanup(lambda: globalLogPublisher.removeObserver(filtered))
         dl = []
         for code, methodName in [(666, "fail"), (666, "deferFail"),
                                  (12, "fault"), (23, "noSuchMethod"),
@@ -323,8 +387,18 @@ class XMLRPCTestCase(unittest.TestCase):
         d = defer.DeferredList(dl, fireOnOneErrback=True)
         def cb(ign):
             for factory in self.factories:
-                self.assertEqual(factory.headers['content-type'],
-                                  'text/xml')
+                self.assertEqual(factory.headers[b'content-type'],
+                                  b'text/xml; charset=utf-8')
+            self.assertEquals(2, len(logObserver))
+            f1 = logObserver[0]["log_failure"].value
+            f2 = logObserver[1]["log_failure"].value
+
+            if isinstance(f1, TestValueError):
+                self.assertIsInstance(f2, TestRuntimeError)
+            else:
+                self.assertIsInstance(f1, TestRuntimeError)
+                self.assertIsInstance(f2, TestValueError)
+
             self.flushLoggedErrors(TestRuntimeError, TestValueError)
         d.addCallback(cb)
         return d
@@ -339,7 +413,7 @@ class XMLRPCTestCase(unittest.TestCase):
             factory.f = TestQueryFactoryCancel(*args, **kw)
             return factory.f
         d = self.proxy(factory).callRemote('add', 2, 3)
-        self.assertNotEquals(factory.f.connector.state, "disconnected")
+        self.assertNotEqual(factory.f.connector.state, "disconnected")
         d.cancel()
         self.assertEqual(factory.f.connector.state, "disconnected")
         d = self.assertFailure(d, defer.CancelledError)
@@ -350,18 +424,23 @@ class XMLRPCTestCase(unittest.TestCase):
         """
         A classic GET on the xml server should return a NOT_ALLOWED.
         """
-        d = client.getPage("http://127.0.0.1:%d/" % (self.port,))
-        d = self.assertFailure(d, error.Error)
-        d.addCallback(
-            lambda exc: self.assertEqual(int(exc.args[0]), http.NOT_ALLOWED))
+        agent = client.Agent(reactor)
+        d = agent.request(b"GET", networkString("http://127.0.0.1:%d/" % (self.port,)))
+        def checkResponse(response):
+            self.assertEqual(response.code, http.NOT_ALLOWED)
+        d.addCallback(checkResponse)
         return d
 
     def test_errorXMLContent(self):
         """
         Test that an invalid XML input returns an L{xmlrpc.Fault}.
         """
-        d = client.getPage("http://127.0.0.1:%d/" % (self.port,),
-                           method="POST", postdata="foo")
+        agent = client.Agent(reactor)
+        d = agent.request(
+            uri=networkString("http://127.0.0.1:%d/" % (self.port,)),
+            method=b"POST",
+            bodyProducer=client.FileBodyProducer(BytesIO(b"foo")))
+        d.addCallback(client.readBody)
         def cb(result):
             self.assertRaises(xmlrpc.Fault, xmlrpclib.loads, result)
         d.addCallback(cb)
@@ -369,6 +448,7 @@ class XMLRPCTestCase(unittest.TestCase):
 
 
     def test_datetimeRoundtrip(self):
+
         """
         If an L{xmlrpclib.DateTime} is passed as an argument to an XML-RPC
         call and then returned by the server unmodified, the result should
@@ -387,6 +467,13 @@ class XMLRPCTestCase(unittest.TestCase):
         L{Fault}) the exception which prevents the response from being
         generated is logged and the request object is finished anyway.
         """
+        logObserver = EventLoggingObserver()
+        filtered = FilteringLogObserver(
+            logObserver,
+            [LogLevelFilterPredicate(defaultLogLevel=LogLevel.critical)]
+        )
+        globalLogPublisher.addObserver(filtered)
+        self.addCleanup(lambda: globalLogPublisher.removeObserver(filtered))
         d = self.proxy().callRemote("echo", "")
 
         # *Now* break xmlrpclib.dumps.  Hopefully the client already used it.
@@ -401,6 +488,11 @@ class XMLRPCTestCase(unittest.TestCase):
 
         def cbFailed(ignored):
             # The fakeDumps exception should have been logged.
+            self.assertEquals(1, len(logObserver))
+            self.assertIsInstance(
+                logObserver[0]["log_failure"].value,
+                RuntimeError
+            )
             self.assertEqual(len(self.flushLoggedErrors(RuntimeError)), 1)
         d.addCallback(cbFailed)
         return d
@@ -425,7 +517,7 @@ class XMLRPCTestCase(unittest.TestCase):
         to the underlying connectTCP call.
         """
         reactor = MemoryReactor()
-        proxy = xmlrpc.Proxy("http://127.0.0.1:69", connectTimeout=2.0,
+        proxy = xmlrpc.Proxy(b"http://127.0.0.1:69", connectTimeout=2.0,
                              reactor=reactor)
         proxy.callRemote("someMethod")
         self.assertEqual(reactor.tcpClients[0][3], 2.0)
@@ -438,7 +530,7 @@ class XMLRPCTestCase(unittest.TestCase):
         to the underlying connectSSL call.
         """
         reactor = MemoryReactor()
-        proxy = xmlrpc.Proxy("https://127.0.0.1:69", connectTimeout=3.0,
+        proxy = xmlrpc.Proxy(b"https://127.0.0.1:69", connectTimeout=3.0,
                              reactor=reactor)
         proxy.callRemote("someMethod")
         self.assertEqual(reactor.sslClients[0][4], 3.0)
@@ -446,13 +538,13 @@ class XMLRPCTestCase(unittest.TestCase):
 
 
 
-class XMLRPCTestCase2(XMLRPCTestCase):
+class XMLRPCProxyWithoutSlashTests(XMLRPCTests):
     """
     Test with proxy that doesn't add a slash.
     """
 
     def proxy(self, factory=None):
-        p = xmlrpc.Proxy("http://127.0.0.1:%d" % self.port)
+        p = xmlrpc.Proxy(networkString("http://127.0.0.1:%d" % self.port))
         if factory is None:
             p.queryFactory = self.queryFactory
         else:
@@ -461,7 +553,7 @@ class XMLRPCTestCase2(XMLRPCTestCase):
 
 
 
-class XMLRPCTestPublicLookupProcedure(unittest.TestCase):
+class XMLRPCPublicLookupProcedureTests(unittest.TestCase):
     """
     Tests for L{XMLRPC}'s support of subclasses which override
     C{lookupProcedure} and C{listProcedures}.
@@ -472,7 +564,8 @@ class XMLRPCTestPublicLookupProcedure(unittest.TestCase):
             0, server.Site(resource), interface="127.0.0.1")
         self.addCleanup(self.p.stopListening)
         self.port = self.p.getHost().port
-        self.proxy = xmlrpc.Proxy('http://127.0.0.1:%d' % self.port)
+        self.proxy = xmlrpc.Proxy(
+            networkString('http://127.0.0.1:%d' % self.port))
 
 
     def test_lookupProcedure(self):
@@ -544,7 +637,7 @@ class SerializationConfigMixin:
         self.addCleanup(self.p.stopListening)
         self.port = self.p.getHost().port
         self.proxy = xmlrpc.Proxy(
-            "http://127.0.0.1:%d/" % (self.port,), **kwargs)
+            networkString("http://127.0.0.1:%d/" % (self.port,)), **kwargs)
 
 
     def test_roundtripValue(self):
@@ -567,24 +660,15 @@ class SerializationConfigMixin:
 
 
 
-class XMLRPCAllowNoneTestCase(SerializationConfigMixin, unittest.TestCase):
+class XMLRPCAllowNoneTests(SerializationConfigMixin, unittest.TestCase):
     """
-    Tests for passing C{None} when the C{allowNone} flag is set.
+    Tests for passing L{None} when the C{allowNone} flag is set.
     """
     flagName = "allowNone"
     value = None
 
 
-try:
-    xmlrpclib.loads(xmlrpclib.dumps(({}, {})), use_datetime=True)
-except TypeError:
-    _datetimeSupported = False
-else:
-    _datetimeSupported = True
-
-
-
-class XMLRPCUseDateTimeTestCase(SerializationConfigMixin, unittest.TestCase):
+class XMLRPCUseDateTimeTests(SerializationConfigMixin, unittest.TestCase):
     """
     Tests for passing a C{datetime.datetime} instance when the C{useDateTime}
     flag is set.
@@ -592,49 +676,14 @@ class XMLRPCUseDateTimeTestCase(SerializationConfigMixin, unittest.TestCase):
     flagName = "useDateTime"
     value = datetime.datetime(2000, 12, 28, 3, 45, 59)
 
-    if not _datetimeSupported:
-        skip = (
-            "Available version of xmlrpclib does not support datetime "
-            "objects.")
 
-
-
-class XMLRPCDisableUseDateTimeTestCase(unittest.TestCase):
+class XMLRPCAuthenticatedTests(XMLRPCTests):
     """
-    Tests for the C{useDateTime} flag on Python 2.4.
-    """
-    if _datetimeSupported:
-        skip = (
-            "Available version of xmlrpclib supports datetime objects.")
-
-    def test_cannotInitializeWithDateTime(self):
-        """
-        L{XMLRPC} raises L{RuntimeError} if passed C{True} for C{useDateTime}.
-        """
-        self.assertRaises(RuntimeError, XMLRPC, useDateTime=True)
-        self.assertRaises(
-            RuntimeError, Proxy, "http://localhost/", useDateTime=True)
-
-
-    def test_cannotSetDateTime(self):
-        """
-        Setting L{XMLRPC.useDateTime} to C{True} after initialization raises
-        L{RuntimeError}.
-        """
-        xmlrpc = XMLRPC(useDateTime=False)
-        self.assertRaises(RuntimeError, setattr, xmlrpc, "useDateTime", True)
-        proxy = Proxy("http://localhost/", useDateTime=False)
-        self.assertRaises(RuntimeError, setattr, proxy, "useDateTime", True)
-
-
-
-class XMLRPCTestAuthenticated(XMLRPCTestCase):
-    """
-    Test with authenticated proxy. We run this with the same inout/ouput as
+    Test with authenticated proxy. We run this with the same input/output as
     above.
     """
-    user = "username"
-    password = "asecret"
+    user = b"username"
+    password = b"asecret"
 
     def setUp(self):
         self.p = reactor.listenTCP(0, server.Site(TestAuthHeader()),
@@ -644,30 +693,45 @@ class XMLRPCTestAuthenticated(XMLRPCTestCase):
 
 
     def test_authInfoInURL(self):
-        p = xmlrpc.Proxy("http://%s:%s@127.0.0.1:%d/" % (
-            self.user, self.password, self.port))
+        url = "http://%s:%s@127.0.0.1:%d/" % (
+            nativeString(self.user), nativeString(self.password), self.port)
+        p = xmlrpc.Proxy(networkString(url))
         d = p.callRemote("authinfo")
         d.addCallback(self.assertEqual, [self.user, self.password])
         return d
 
 
     def test_explicitAuthInfo(self):
-        p = xmlrpc.Proxy("http://127.0.0.1:%d/" % (
-            self.port,), self.user, self.password)
+        p = xmlrpc.Proxy(networkString("http://127.0.0.1:%d/" % (
+            self.port,)), self.user, self.password)
         d = p.callRemote("authinfo")
         d.addCallback(self.assertEqual, [self.user, self.password])
+        return d
+
+
+    def test_longPassword(self):
+        """
+        C{QueryProtocol} uses the C{base64.b64encode} function to encode user
+        name and password in the I{Authorization} header, so that it doesn't
+        embed new lines when using long inputs.
+        """
+        longPassword = self.password * 40
+        p = xmlrpc.Proxy(networkString("http://127.0.0.1:%d/" % (
+            self.port,)), self.user, longPassword)
+        d = p.callRemote("authinfo")
+        d.addCallback(self.assertEqual, [self.user, longPassword])
         return d
 
 
     def test_explicitAuthInfoOverride(self):
-        p = xmlrpc.Proxy("http://wrong:info@127.0.0.1:%d/" % (
-                self.port,), self.user, self.password)
+        p = xmlrpc.Proxy(networkString("http://wrong:info@127.0.0.1:%d/" % (
+            self.port,)), self.user, self.password)
         d = p.callRemote("authinfo")
         d.addCallback(self.assertEqual, [self.user, self.password])
         return d
 
 
-class XMLRPCTestIntrospection(XMLRPCTestCase):
+class XMLRPCIntrospectionTests(XMLRPCTests):
 
     def setUp(self):
         xmlrpc = Test()
@@ -684,7 +748,7 @@ class XMLRPCTestIntrospection(XMLRPCTestCase):
                 meths,
                 ['add', 'complex', 'defer', 'deferFail',
                  'deferFault', 'dict', 'echo', 'fail', 'fault',
-                 'pair', 'system.listMethods',
+                 'pair', 'snowman', 'system.listMethods',
                  'system.methodHelp',
                  'system.methodSignature', 'withRequest'])
 
@@ -720,15 +784,16 @@ class XMLRPCTestIntrospection(XMLRPCTestCase):
         return defer.DeferredList(dl, fireOnOneErrback=True)
 
 
-class XMLRPCClientErrorHandling(unittest.TestCase):
+class XMLRPCClientErrorHandlingTests(unittest.TestCase):
     """
     Test error handling on the xmlrpc client.
     """
     def setUp(self):
         self.resource = static.Data(
-            "This text is not a valid XML-RPC response.",
-            "text/plain")
+            b"This text is not a valid XML-RPC response.",
+            b"text/plain")
         self.resource.isLeaf = True
+
         self.port = reactor.listenTCP(0, server.Site(self.resource),
                                                      interface='127.0.0.1')
 
@@ -740,13 +805,13 @@ class XMLRPCClientErrorHandling(unittest.TestCase):
         Test that calling the xmlrpc client on a static http server raises
         an exception.
         """
-        proxy = xmlrpc.Proxy("http://127.0.0.1:%d/" %
-                             (self.port.getHost().port,))
-        return self.assertFailure(proxy.callRemote("someMethod"), Exception)
+        proxy = xmlrpc.Proxy(networkString("http://127.0.0.1:%d/" %
+                                           (self.port.getHost().port,)))
+        return self.assertFailure(proxy.callRemote("someMethod"), ValueError)
 
 
 
-class TestQueryFactoryParseResponse(unittest.TestCase):
+class QueryFactoryParseResponseTests(unittest.TestCase):
     """
     Test the behaviour of L{_QueryFactory.parseResponse}.
     """
@@ -826,7 +891,7 @@ class TestQueryFactoryParseResponse(unittest.TestCase):
 
 
 
-class XMLRPCTestWithRequest(unittest.TestCase):
+class XMLRPCWithRequestTests(unittest.TestCase):
 
     def setUp(self):
         self.resource = Test()
@@ -840,7 +905,8 @@ class XMLRPCTestWithRequest(unittest.TestCase):
         """
         request = DummyRequest('/RPC2')
         request.method = "POST"
-        request.content = StringIO(xmlrpclib.dumps(("foo",), 'withRequest'))
+        request.content = NativeStringIO(xmlrpclib.dumps(
+            ("foo",), 'withRequest'))
         def valid(n, request):
             data = xmlrpclib.loads(request.written[0])
             self.assertEqual(data, (('POST foo',), None))

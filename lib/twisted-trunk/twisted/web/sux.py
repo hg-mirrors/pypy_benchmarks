@@ -20,7 +20,10 @@ does not:
     option, they're not on by default).
 """
 
+from __future__ import print_function
+
 from twisted.internet.protocol import Protocol
+from twisted.python.compat import unicode
 from twisted.python.reflect import prefixedMethodNames
 
 
@@ -132,10 +135,9 @@ class XMLParser(Protocol):
         # lenient behavior, because those may not have </script>
         # -radix
 
-        if (self.tagName == 'script'
-            and not self.tagAttributes.has_key('src')):
+        if (self.tagName == 'script' and 'src' not in self.tagAttributes):
             # we do this ourselves rather than having begin_waitforendscript
-            # becuase that can get called multiple times and we don't want
+            # because that can get called multiple times and we don't want
             # bodydata to get reset other than the first time.
             self.begin_bodydata(None)
             return 'waitforendscript'
@@ -147,17 +149,15 @@ class XMLParser(Protocol):
         stateTable = self._buildStateTable()
         if not self.state:
             # all UTF-16 starts with this string
-            if data.startswith('\xff\xfe'):
-                self._prepend = '\xff\xfe'
-                self.encodings.append('UTF-16')
-                data = data[2:]
-            elif data.startswith('\xfe\xff'):
-                self._prepend = '\xfe\xff'
+            if data.startswith((b'\xff\xfe', b'\xfe\xff')):
+                self._prepend = data[0:2]
                 self.encodings.append('UTF-16')
                 data = data[2:]
             self.state = 'begin'
         if self.encodings:
             data = self._decode(data)
+        else:
+            data = data.decode("utf-8")
         # bring state, lineno, colno into local scope
         lineno, colno = self.lineno, self.colno
         curState = self.state
@@ -171,7 +171,7 @@ class XMLParser(Protocol):
         try:
             for byte in data:
                 # do newline stuff
-                if byte == '\n':
+                if byte == u'\n':
                     lineno += 1
                     colno = 0
                 else:
@@ -596,19 +596,19 @@ class XMLParser(Protocol):
         '''Encountered an opening tag.
 
         Default behaviour is to print.'''
-        print 'begin', name, attributes
+        print('begin', name, attributes)
 
     def gotText(self, data):
         '''Encountered text
 
         Default behaviour is to print.'''
-        print 'text:', repr(data)
+        print('text:', repr(data))
 
     def gotEntityReference(self, entityRef):
         '''Encountered mnemonic entity reference
 
         Default behaviour is to print.'''
-        print 'entityRef: &%s;' % entityRef
+        print('entityRef: &%s;' % entityRef)
 
     def gotComment(self, comment):
         '''Encountered comment.
@@ -628,10 +628,10 @@ class XMLParser(Protocol):
         This is really grotty: it basically just gives you everything between
         '<!DOCTYPE' and '>' as an argument.
         """
-        print '!DOCTYPE', repr(doctype)
+        print('!DOCTYPE', repr(doctype))
 
     def gotTagEnd(self, name):
         '''Encountered closing tag
 
         Default behaviour is to print.'''
-        print 'end', name
+        print('end', name)

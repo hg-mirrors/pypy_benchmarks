@@ -30,7 +30,7 @@ a("UntilRSBs", "[^\\]]*](?:[^\\]]+])*]+")
 a("CDATA_CE", "%(UntilRSBs)s(?:[^\\]>]%(UntilRSBs)s)*>" )
 a("S", "[ \\n\\t\\r]+")
 a("Simple", "[^\"'>/]+")
-a("NameStrt", "[A-Za-z_:]|[^\\x00-\\x7F]")
+a("NameStrt", "[A-Za-z_:@]|[^\\x00-\\x7F]")
 a("NameChar", "[A-Za-z0-9_:.-]|[^\\x00-\\x7F]")
 a("Name", "(?:%(NameStrt)s)(?:%(NameChar)s)*")
 a("QuoteSE", "\"[^\"]*\"|'[^']*'")
@@ -50,7 +50,7 @@ a("DeclCE",
   "DOCTYPE(?:%(DocTypeCE)s)?")
 a("PI_CE", "%(Name)s(?:%(PI_Tail)s)?")
 a("EndTagCE", "%(Name)s(?:%(S)s)?>?")
-a("AttValSE", "\"[^\"]*\"|'[^']*'")
+a("AttValSE", r"\"[^\"]*\"|'[^']*'|[^\s=<>`]+")
 a("ElemTagCE",
   "(%(Name)s)(?:(%(S)s)(%(Name)s)(((?:%(S)s)?=(?:%(S)s)?)"
   "(?:%(AttValSE)s|%(Simple)s)|(?!(?:%(S)s)?=)))*(?:%(S)s)?(/?>)?")
@@ -98,6 +98,9 @@ class Token(str):
         return s
 
     def __add__(self, other):
+        if other is None:
+            return self
+
         return Token(
             str.__add__(self, other), self.pos, self.source, self.filename)
 

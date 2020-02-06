@@ -4,20 +4,47 @@ YAML serializer.
 Requires PyYaml (http://pyyaml.org/), but that's checked for in __init__.
 """
 
-from StringIO import StringIO
+import collections
+import decimal
+import sys
+from io import StringIO
+
 import yaml
 
+from django.core.serializers.base import DeserializationError
+from django.core.serializers.python import (
+    Deserializer as PythonDeserializer, Serializer as PythonSerializer,
+)
 from django.db import models
-from django.core.serializers.python import Serializer as PythonSerializer
-from django.core.serializers.python import Deserializer as PythonDeserializer
+from django.utils import six
+
+# Use the C (faster) implementation if possible
+try:
+    from yaml import CSafeLoader as SafeLoader
+    from yaml import CSafeDumper as SafeDumper
+except ImportError:
+    from yaml import SafeLoader, SafeDumper
+
+
+class DjangoSafeDumper(SafeDumper):
+    def represent_decimal(self, data):
+        return self.represent_scalar('tag:yaml.org,2002:str', str(data))
+
+    def represent_ordered_dict(self, data):
+        return self.represent_mapping('tag:yaml.org,2002:map', data.items())
+
+
+DjangoSafeDumper.add_representer(decimal.Decimal, DjangoSafeDumper.represent_decimal)
+DjangoSafeDumper.add_representer(collections.OrderedDict, DjangoSafeDumper.represent_ordered_dict)
+
 
 class Serializer(PythonSerializer):
     """
     Convert a queryset to YAML.
     """
-    
+
     internal_use_only = False
-    
+
     def handle_field(self, obj, field):
         # A nasty special case: base YAML doesn't support serialization of time
         # types (as opposed to dates or datetimes, which it does support). Since
@@ -29,23 +56,30 @@ class Serializer(PythonSerializer):
             self._current[field.name] = str(getattr(obj, field.name))
         else:
             super(Serializer, self).handle_field(obj, field)
-    
+
     def end_serialization(self):
-        self.options.pop('stream', None)
-        self.options.pop('fields', None)
-        yaml.safe_dump(self.objects, self.stream, **self.options)
+        yaml.dump(self.objects, self.stream, Dumper=DjangoSafeDumper, **self.options)
 
     def getvalue(self):
-        return self.stream.getvalue()
+        # Grand-parent super
+        return super(PythonSerializer, self).getvalue()
+
 
 def Deserializer(stream_or_string, **options):
     """
     Deserialize a stream or string of YAML data.
     """
-    if isinstance(stream_or_string, basestring):
+    if isinstance(stream_or_string, bytes):
+        stream_or_string = stream_or_string.decode('utf-8')
+    if isinstance(stream_or_string, six.string_types):
         stream = StringIO(stream_or_string)
     else:
         stream = stream_or_string
-    for obj in PythonDeserializer(yaml.load(stream)):
-        yield obj
-
+    try:
+        for obj in PythonDeserializer(yaml.load(stream, Loader=SafeLoader), **options):
+            yield obj
+    except GeneratorExit:
+        raise
+    except Exception as e:
+        # Map to deserializer error
+        six.reraise(DeserializationError, DeserializationError(e), sys.exc_info()[2])

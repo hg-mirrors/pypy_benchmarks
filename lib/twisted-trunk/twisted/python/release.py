@@ -1,3 +1,6 @@
+# Copyright (c) Twisted Matrix Laboratories.
+# See LICENSE for details.
+
 """
 A release-automation toolkit.
 
@@ -6,20 +9,27 @@ Don't use this outside of Twisted.
 Maintainer: Christopher Armstrong
 """
 
+from __future__ import print_function
+
 import os
-import re
+
+from twisted.python.compat import raw_input
 
 
 # errors
 
 class DirectoryExists(OSError):
-    """Some directory exists when it shouldn't."""
+    """
+    Some directory exists when it shouldn't.
+    """
     pass
 
 
 
 class DirectoryDoesntExist(OSError):
-    """Some directory doesn't exist when it should."""
+    """
+    Some directory doesn't exist when it should.
+    """
     pass
 
 
@@ -33,11 +43,11 @@ class CommandFailed(OSError):
 
 def sh(command, null=True, prompt=False):
     """
-    I'll try to execute `command', and if `prompt' is true, I'll
+    I'll try to execute C{command}, and if C{prompt} is true, I'll
     ask before running it.  If the command returns something other
-    than 0, I'll raise CommandFailed(command).
+    than 0, I'll raise C{CommandFailed(command)}.
     """
-    print "--$", command
+    print("--$", command)
 
     if prompt:
         if raw_input("run ?? ").startswith('n'):

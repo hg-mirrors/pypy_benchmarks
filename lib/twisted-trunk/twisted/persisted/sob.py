@@ -9,34 +9,19 @@ Save and load Small OBjects to and from files, using various formats.
 Maintainer: Moshe Zadka
 """
 
-import os, sys
+from __future__ import division, absolute_import
+
+import os
+import sys
+
 try:
     import cPickle as pickle
 except ImportError:
     import pickle
-try:
-    import cStringIO as StringIO
-except ImportError:
-    import StringIO
 from twisted.python import log, runtime
-from twisted.python.hashlib import md5
 from twisted.persisted import styles
-from zope.interface import implements, Interface
+from zope.interface import implementer, Interface
 
-# Note:
-# These encrypt/decrypt functions only work for data formats
-# which are immune to having spaces tucked at the end.
-# All data formats which persist saves hold that condition.
-def _encrypt(passphrase, data):
-    from Crypto.Cipher import AES as cipher
-    leftover = len(data) % cipher.block_size
-    if leftover:
-        data += ' '*(cipher.block_size - leftover)
-    return cipher.new(md5(passphrase).digest()[:16]).encrypt(data)
-
-def _decrypt(passphrase, data):
-    from Crypto.Cipher import AES
-    return AES.new(md5(passphrase).digest()[:16]).decrypt(data)
 
 
 class IPersistable(Interface):
@@ -58,9 +43,8 @@ class IPersistable(Interface):
         """
 
 
+@implementer(IPersistable)
 class Persistent:
-
-    implements(IPersistable)
 
     style = "pickle"
 
@@ -87,15 +71,9 @@ class Persistent:
             finalname = "%s.%s" % (self.name, ext)
         return finalname, filename
 
-    def _saveTemp(self, filename, passphrase, dumpFunc):
-        f = open(filename, 'wb')
-        if passphrase is None:
+    def _saveTemp(self, filename, dumpFunc):
+        with open(filename, 'wb') as f:
             dumpFunc(self.original, f)
-        else:
-            s = StringIO.StringIO()
-            dumpFunc(self.original, s)
-            f.write(_encrypt(passphrase, s.getvalue()))
-        f.close()
 
     def _getStyle(self):
         if self.style == "source":
@@ -115,11 +93,12 @@ class Persistent:
         @type passphrase: string
         """
         ext, dumpFunc = self._getStyle()
-        if passphrase:
+        if passphrase is not None:
+            raise TypeError("passphrase must be None")
             ext = 'e' + ext
         finalname, filename = self._getFilename(filename, ext, tag)
         log.msg("Saving "+self.name+" application to "+finalname+"...")
-        self._saveTemp(filename, passphrase, dumpFunc)
+        self._saveTemp(filename, dumpFunc)
         if runtime.platformType == "win32" and os.path.isfile(finalname):
             os.remove(finalname)
         os.rename(filename, finalname)
@@ -149,33 +128,30 @@ class _EverythingEphemeral(styles.Ephemeral):
                 return styles.Ephemeral()
 
 
-def load(filename, style, passphrase=None):
+def load(filename, style):
     """Load an object from a file.
 
     Deserialize an object from a file. The file can be encrypted.
 
     @param filename: string
     @param style: string (one of 'pickle' or 'source')
-    @param passphrase: string
     """
     mode = 'r'
     if style=='source':
         from twisted.persisted.aot import unjellyFromSource as _load
     else:
         _load, mode = pickle.load, 'rb'
-    if passphrase:
-        fp = StringIO.StringIO(_decrypt(passphrase,
-                                        open(filename, 'rb').read()))
-    else:
-        fp = open(filename, mode)
+
+    fp = open(filename, mode)
     ee = _EverythingEphemeral(sys.modules['__main__'])
     sys.modules['__main__'] = ee
     ee.initRun = 1
-    try:
-        value = _load(fp)
-    finally:
-        # restore __main__ if an exception is raised.
-        sys.modules['__main__'] = ee.mainMod
+    with fp:
+        try:
+            value = _load(fp)
+        finally:
+            # restore __main__ if an exception is raised.
+            sys.modules['__main__'] = ee.mainMod
 
     styles.doUpgrade()
     ee.initRun = 0
@@ -185,29 +161,20 @@ def load(filename, style, passphrase=None):
     return value
 
 
-def loadValueFromFile(filename, variable, passphrase=None):
+def loadValueFromFile(filename, variable):
     """Load the value of a variable in a Python file.
 
-    Run the contents of the file, after decrypting if C{passphrase} is
-    given, in a namespace and return the result of the variable
-    named C{variable}.
+    Run the contents of the file in a namespace and return the result of the
+    variable named C{variable}.
 
     @param filename: string
     @param variable: string
-    @param passphrase: string
     """
-    if passphrase:
-        mode = 'rb'
-    else:
-        mode = 'r'
-    fileObj = open(filename, mode)
-    d = {'__file__': filename}
-    if passphrase:
+    with open(filename, 'r') as fileObj:
         data = fileObj.read()
-        data = _decrypt(passphrase, data)
-        exec data in d, d
-    else:
-        exec fileObj in d, d
+    d = {'__file__': filename}
+    codeObj = compile(data, filename, "exec")
+    eval(codeObj, d, d)
     value = d[variable]
     return value
 

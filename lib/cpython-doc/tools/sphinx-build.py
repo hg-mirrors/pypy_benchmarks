@@ -1,32 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-    Sphinx - Python documentation toolchain
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
+    edited from the original, which was
     :copyright: 2007-2010 by Georg Brandl.
     :license: Python license.
 """
 
 import sys
-import warnings
-
-# Get rid of UserWarnings reported by pkg_resources.
-warnings.filterwarnings('ignore', category=UserWarning, module='jinja2')
+import os
 
 if __name__ == '__main__':
 
-    if sys.version_info[:3] < (2, 4, 0):
-        sys.stderr.write("""\
-Error: Sphinx needs to be executed with Python 2.4 or newer (not 3.0 though).
-(If you run this from the Makefile, you can set the PYTHON variable
-to the path of an alternative interpreter executable, e.g.,
-``make html PYTHON=python2.5``).
-""")
-        sys.exit(1)
+    # mangle imports for docutils, since it is python-version specific
+    mydir = os.path.dirname(__file__)
+    import pprint
+    pprint.pprint(sys.path)
+    sys.path.append(mydir)
+    if sys.version_info[0] < 3:
+        sys.path.append(os.path.join(mydir, 'docutils2'))
+    else:
+        sys.path.append(os.path.join(mydir, 'docutils3'))
 
     from sphinx import main
     import time
     t0 = time.time()
     r = main(sys.argv)
-    print time.time() - t0
+    print(time.time() - t0)
     sys.exit(r)

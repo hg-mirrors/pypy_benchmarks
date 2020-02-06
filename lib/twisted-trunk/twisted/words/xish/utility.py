@@ -7,7 +7,10 @@
 Event Dispatching and Callback utilities.
 """
 
+from __future__ import absolute_import, division
+
 from twisted.python import log
+from twisted.python.compat import iteritems
 from twisted.words.xish import xpath
 
 class _MethodWrapper(object):
@@ -94,7 +97,7 @@ class CallbackList:
 
         @note: Exceptions raised by callbacks are trapped and logged. They will
                not propagate up to make sure other callbacks will still be
-               called, and the event dispatching allways succeeds.
+               called, and the event dispatching always succeeds.
 
         @param args: Positional arguments to the callable.
         @type args: C{list}
@@ -102,7 +105,7 @@ class CallbackList:
         @type kwargs: C{dict}
         """
 
-        for key, (methodwrapper, onetime) in self.callbacks.items():
+        for key, (methodwrapper, onetime) in list(self.callbacks.items()):
             try:
                 methodwrapper(*args, **kwargs)
             except:
@@ -157,7 +160,7 @@ class EventDispatcher:
     observe an event, the observer is removed from the list of observers after
     the first observed event.
 
-    Obsevers can also prioritized, by providing an optional C{priority}
+    Observers can also be prioritized, by providing an optional C{priority}
     parameter to the L{addObserver} and L{addOnetimeObserver} methods. Higher
     priority observers are then called before lower priority observers.
 
@@ -267,8 +270,8 @@ class EventDispatcher:
         event, observers = self._getEventAndObservers(event)
 
         emptyLists = []
-        for priority, priorityObservers in observers.iteritems():
-            for query, callbacklist in priorityObservers.iteritems():
+        for priority, priorityObservers in iteritems(observers):
+            for query, callbacklist in iteritems(priorityObservers):
                 if event == query:
                     callbacklist.removeCallback(observerfn)
                     if callbacklist.isEmpty():
@@ -282,7 +285,7 @@ class EventDispatcher:
         """
         Dispatch an event.
 
-        When C{event} is C{None}, an XPath type event is triggered, and
+        When C{event} is L{None}, an XPath type event is triggered, and
         C{obj} is assumed to be an instance of
         L{Element<twisted.words.xish.domish.Element>}. Otherwise, C{event}
         holds the name of the named event being triggered. In the latter case,
@@ -306,13 +309,13 @@ class EventDispatcher:
             observers = self._xpathObservers
             match = lambda query, obj: query.matches(obj)
 
-        priorities = observers.keys()
+        priorities = list(observers.keys())
         priorities.sort()
         priorities.reverse()
 
         emptyLists = []
         for priority in priorities:
-            for query, callbacklist in observers[priority].iteritems():
+            for query, callbacklist in iteritems(observers[priority]):
                 if match(query, obj):
                     callbacklist.callback(obj)
                     foundTarget = True

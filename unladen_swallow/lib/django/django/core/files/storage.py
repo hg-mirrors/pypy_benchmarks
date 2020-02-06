@@ -1,16 +1,26 @@
-import os
 import errno
-import urlparse
+import os
+import warnings
+from datetime import datetime
 
 from django.conf import settings
-from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
-from django.utils.encoding import force_unicode
-from django.utils.text import get_valid_filename
-from django.utils._os import safe_join
-from django.core.files import locks, File
+from django.core.exceptions import SuspiciousFileOperation
+from django.core.files import File, locks
 from django.core.files.move import file_move_safe
+from django.core.signals import setting_changed
+from django.utils import timezone
+from django.utils._os import abspathu, safe_join
+from django.utils.crypto import get_random_string
+from django.utils.deconstruct import deconstructible
+from django.utils.deprecation import RemovedInDjango20Warning
+from django.utils.encoding import filepath_to_uri, force_text
+from django.utils.functional import LazyObject, cached_property
+from django.utils.module_loading import import_string
+from django.utils.six.moves.urllib.parse import urljoin
+from django.utils.text import get_valid_filename
 
 __all__ = ('Storage', 'FileSystemStorage', 'DefaultStorage', 'default_storage')
+
 
 class Storage(object):
     """
@@ -21,31 +31,27 @@ class Storage(object):
     # The following methods represent a public interface to private methods.
     # These shouldn't be overridden by subclasses unless absolutely necessary.
 
-    def open(self, name, mode='rb', mixin=None):
+    def open(self, name, mode='rb'):
         """
-        Retrieves the specified file from storage, using the optional mixin
-        class to customize what features are available on the File returned.
+        Retrieves the specified file from storage.
         """
-        file = self._open(name, mode)
-        if mixin:
-            # Add the mixin as a parent class of the File returned from storage.
-            file.__class__ = type(mixin.__name__, (mixin, file.__class__), {})
-        return file
+        return self._open(name, mode)
 
-    def save(self, name, content):
+    def save(self, name, content, max_length=None):
         """
-        Saves new content to the file specified by name. The content should be a
-        proper File object, ready to be read from the beginning.
+        Saves new content to the file specified by name. The content should be
+        a proper File object or any python file-like object, ready to be read
+        from the beginning.
         """
         # Get the proper name for the file, as it will actually be saved.
         if name is None:
             name = content.name
-        
-        name = self.get_available_name(name)
-        name = self._save(name, content)
 
-        # Store filenames with forward slashes, even on Windows
-        return force_unicode(name.replace('\\', '/'))
+        if not hasattr(content, 'chunks'):
+            content = File(content, name)
+
+        name = self.get_available_name(name, max_length=max_length)
+        return self._save(name, content)
 
     # These methods are part of the public API, with default implementations.
 
@@ -56,21 +62,45 @@ class Storage(object):
         """
         return get_valid_filename(name)
 
-    def get_available_name(self, name):
+    def get_available_name(self, name, max_length=None):
         """
         Returns a filename that's free on the target storage system, and
         available for new content to be written to.
         """
-        # If the filename already exists, keep adding an underscore to the name
-        # of the file until the filename doesn't exist.
-        while self.exists(name):
-            try:
-                dot_index = name.rindex('.')
-            except ValueError: # filename has no dot
-                name += '_'
-            else:
-                name = name[:dot_index] + '_' + name[dot_index:]
+        dir_name, file_name = os.path.split(name)
+        file_root, file_ext = os.path.splitext(file_name)
+        # If the filename already exists, add an underscore and a random 7
+        # character alphanumeric string (before the file extension, if one
+        # exists) to the filename until the generated filename doesn't exist.
+        # Truncate original name if required, so the new filename does not
+        # exceed the max_length.
+        while self.exists(name) or (max_length and len(name) > max_length):
+            # file_ext includes the dot.
+            name = os.path.join(dir_name, "%s_%s%s" % (file_root, get_random_string(7), file_ext))
+            if max_length is None:
+                continue
+            # Truncate file_root if max_length exceeded.
+            truncation = len(name) - max_length
+            if truncation > 0:
+                file_root = file_root[:-truncation]
+                # Entire file_root was truncated in attempt to find an available filename.
+                if not file_root:
+                    raise SuspiciousFileOperation(
+                        'Storage can not find an available filename for "%s". '
+                        'Please make sure that the corresponding file field '
+                        'allows sufficient "max_length".' % name
+                    )
+                name = os.path.join(dir_name, "%s_%s%s" % (file_root, get_random_string(7), file_ext))
         return name
+
+    def generate_filename(self, filename):
+        """
+        Validate the filename by calling get_valid_name() and return a filename
+        to be passed to the save() method.
+        """
+        # `filename` may include a path as returned by FileField.upload_to.
+        dirname, filename = os.path.split(filename)
+        return os.path.normpath(os.path.join(dirname, self.get_valid_name(filename)))
 
     def path(self, name):
         """
@@ -87,43 +117,184 @@ class Storage(object):
         """
         Deletes the specified file from the storage system.
         """
-        raise NotImplementedError()
+        raise NotImplementedError('subclasses of Storage must provide a delete() method')
 
     def exists(self, name):
         """
-        Returns True if a file referened by the given name already exists in the
+        Returns True if a file referenced by the given name already exists in the
         storage system, or False if the name is available for a new file.
         """
-        raise NotImplementedError()
+        raise NotImplementedError('subclasses of Storage must provide an exists() method')
 
     def listdir(self, path):
         """
         Lists the contents of the specified path, returning a 2-tuple of lists;
         the first item being directories, the second item being files.
         """
-        raise NotImplementedError()
+        raise NotImplementedError('subclasses of Storage must provide a listdir() method')
 
     def size(self, name):
         """
         Returns the total size, in bytes, of the file specified by name.
         """
-        raise NotImplementedError()
+        raise NotImplementedError('subclasses of Storage must provide a size() method')
 
     def url(self, name):
         """
         Returns an absolute URL where the file's contents can be accessed
-        directly by a web browser.
+        directly by a Web browser.
         """
-        raise NotImplementedError()
+        raise NotImplementedError('subclasses of Storage must provide a url() method')
 
+    def accessed_time(self, name):
+        """
+        Returns the last accessed time (as datetime object) of the file
+        specified by name. Deprecated: use get_accessed_time() instead.
+        """
+        warnings.warn(
+            'Storage.accessed_time() is deprecated in favor of get_accessed_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        raise NotImplementedError('subclasses of Storage must provide an accessed_time() method')
+
+    def created_time(self, name):
+        """
+        Returns the creation time (as datetime object) of the file
+        specified by name. Deprecated: use get_created_time() instead.
+        """
+        warnings.warn(
+            'Storage.created_time() is deprecated in favor of get_created_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        raise NotImplementedError('subclasses of Storage must provide a created_time() method')
+
+    def modified_time(self, name):
+        """
+        Returns the last modified time (as datetime object) of the file
+        specified by name. Deprecated: use get_modified_time() instead.
+        """
+        warnings.warn(
+            'Storage.modified_time() is deprecated in favor of get_modified_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        raise NotImplementedError('subclasses of Storage must provide a modified_time() method')
+
+    def get_accessed_time(self, name):
+        """
+        Return the last accessed time (as a datetime) of the file specified by
+        name. The datetime will be timezone-aware if USE_TZ=True.
+        """
+        # At the end of the deprecation:
+        # raise NotImplementedError('subclasses of Storage must provide a get_accessed_time() method')
+        warnings.warn(
+            'Storage.accessed_time() is deprecated. '
+            'Storage backends should implement get_accessed_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        dt = self.accessed_time(name)
+        return _possibly_make_aware(dt)
+
+    def get_created_time(self, name):
+        """
+        Return the creation time (as a datetime) of the file specified by name.
+        The datetime will be timezone-aware if USE_TZ=True.
+        """
+        # At the end of the deprecation:
+        # raise NotImplementedError('subclasses of Storage must provide a get_created_time() method')
+        warnings.warn(
+            'Storage.created_time() is deprecated. '
+            'Storage backends should implement get_created_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        dt = self.created_time(name)
+        return _possibly_make_aware(dt)
+
+    def get_modified_time(self, name):
+        """
+        Return the last modified time (as a datetime) of the file specified by
+        name. The datetime will be timezone-aware if USE_TZ=True.
+        """
+        # At the end of the deprecation:
+        # raise NotImplementedError('subclasses of Storage must provide a get_modified_time() method')
+        warnings.warn(
+            'Storage.modified_time() is deprecated. '
+            'Storage backends should implement get_modified_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        dt = self.modified_time(name)
+        return _possibly_make_aware(dt)
+
+
+def _possibly_make_aware(dt):
+    """
+    Convert a datetime object in the local timezone to aware
+    in UTC, if USE_TZ is True.
+    """
+    # This function is only needed to help with the deprecations above and can
+    # be removed in Django 2.0, RemovedInDjango20Warning.
+    if settings.USE_TZ:
+        tz = timezone.get_default_timezone()
+        return timezone.make_aware(dt, tz).astimezone(timezone.utc)
+    else:
+        return dt
+
+
+@deconstructible
 class FileSystemStorage(Storage):
     """
     Standard filesystem storage
     """
 
-    def __init__(self, location=settings.MEDIA_ROOT, base_url=settings.MEDIA_URL):
-        self.location = os.path.abspath(location)
-        self.base_url = base_url
+    def __init__(self, location=None, base_url=None, file_permissions_mode=None,
+                 directory_permissions_mode=None):
+        self._location = location
+        self._base_url = base_url
+        self._file_permissions_mode = file_permissions_mode
+        self._directory_permissions_mode = directory_permissions_mode
+        setting_changed.connect(self._clear_cached_properties)
+
+    def _clear_cached_properties(self, setting, **kwargs):
+        """Reset setting based property values."""
+        if setting == 'MEDIA_ROOT':
+            self.__dict__.pop('base_location', None)
+            self.__dict__.pop('location', None)
+        elif setting == 'MEDIA_URL':
+            self.__dict__.pop('base_url', None)
+        elif setting == 'FILE_UPLOAD_PERMISSIONS':
+            self.__dict__.pop('file_permissions_mode', None)
+        elif setting == 'FILE_UPLOAD_DIRECTORY_PERMISSIONS':
+            self.__dict__.pop('directory_permissions_mode', None)
+
+    def _value_or_setting(self, value, setting):
+        return setting if value is None else value
+
+    @cached_property
+    def base_location(self):
+        return self._value_or_setting(self._location, settings.MEDIA_ROOT)
+
+    @cached_property
+    def location(self):
+        return abspathu(self.base_location)
+
+    @cached_property
+    def base_url(self):
+        if self._base_url is not None and not self._base_url.endswith('/'):
+            self._base_url += '/'
+        return self._value_or_setting(self._base_url, settings.MEDIA_URL)
+
+    @cached_property
+    def file_permissions_mode(self):
+        return self._value_or_setting(self._file_permissions_mode, settings.FILE_UPLOAD_PERMISSIONS)
+
+    @cached_property
+    def directory_permissions_mode(self):
+        return self._value_or_setting(self._directory_permissions_mode, settings.FILE_UPLOAD_DIRECTORY_PERMISSIONS)
 
     def _open(self, name, mode='rb'):
         return File(open(self.path(name), mode))
@@ -131,10 +302,27 @@ class FileSystemStorage(Storage):
     def _save(self, name, content):
         full_path = self.path(name)
 
+        # Create any intermediate directories that do not exist.
+        # Note that there is a race between os.path.exists and os.makedirs:
+        # if os.makedirs fails with EEXIST, the directory was created
+        # concurrently, and we can continue normally. Refs #16082.
         directory = os.path.dirname(full_path)
         if not os.path.exists(directory):
-            os.makedirs(directory)
-        elif not os.path.isdir(directory):
+            try:
+                if self.directory_permissions_mode is not None:
+                    # os.makedirs applies the global umask, so we reset it,
+                    # for consistency with file_permissions_mode behavior.
+                    old_umask = os.umask(0)
+                    try:
+                        os.makedirs(directory, self.directory_permissions_mode)
+                    finally:
+                        os.umask(old_umask)
+                else:
+                    os.makedirs(directory)
+            except OSError as e:
+                if e.errno != errno.EEXIST:
+                    raise
+        if not os.path.isdir(directory):
             raise IOError("%s exists and is not a directory." % directory)
 
         # There's a potential race condition between get_available_name and
@@ -148,21 +336,30 @@ class FileSystemStorage(Storage):
                 # This file has a file path that we can move.
                 if hasattr(content, 'temporary_file_path'):
                     file_move_safe(content.temporary_file_path(), full_path)
-                    content.close()
 
                 # This is a normal uploadedfile that we can stream.
                 else:
                     # This fun binary flag incantation makes os.open throw an
                     # OSError if the file already exists before we open it.
-                    fd = os.open(full_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0))
+                    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                             getattr(os, 'O_BINARY', 0))
+                    # The current umask value is masked out by os.open!
+                    fd = os.open(full_path, flags, 0o666)
+                    _file = None
                     try:
                         locks.lock(fd, locks.LOCK_EX)
                         for chunk in content.chunks():
-                            os.write(fd, chunk)
+                            if _file is None:
+                                mode = 'wb' if isinstance(chunk, bytes) else 'wt'
+                                _file = os.fdopen(fd, mode)
+                            _file.write(chunk)
                     finally:
                         locks.unlock(fd)
-                        os.close(fd)
-            except OSError, e:
+                        if _file is not None:
+                            _file.close()
+                        else:
+                            os.close(fd)
+            except OSError as e:
                 if e.errno == errno.EEXIST:
                     # Ooops, the file exists. We need a new file name.
                     name = self.get_available_name(name)
@@ -172,17 +369,24 @@ class FileSystemStorage(Storage):
             else:
                 # OK, the file save worked. Break out of the loop.
                 break
-        
-        if settings.FILE_UPLOAD_PERMISSIONS is not None:
-            os.chmod(full_path, settings.FILE_UPLOAD_PERMISSIONS)
-        
-        return name
+
+        if self.file_permissions_mode is not None:
+            os.chmod(full_path, self.file_permissions_mode)
+
+        # Store filenames with forward slashes, even on Windows.
+        return force_text(name.replace('\\', '/'))
 
     def delete(self, name):
+        assert name, "The name argument is not allowed to be empty."
         name = self.path(name)
         # If the file exists, delete it from the filesystem.
-        if os.path.exists(name):
+        # If os.remove() fails with ENOENT, the file may have been removed
+        # concurrently, and it's safe to continue normally.
+        try:
             os.remove(name)
+        except OSError as e:
+            if e.errno != errno.ENOENT:
+                raise
 
     def exists(self, name):
         return os.path.exists(self.path(name))
@@ -198,11 +402,7 @@ class FileSystemStorage(Storage):
         return directories, files
 
     def path(self, name):
-        try:
-            path = safe_join(self.location, name)
-        except ValueError:
-            raise SuspiciousOperation("Attempted access to '%s' denied." % name)
-        return os.path.normpath(path)
+        return safe_join(self.location, name)
 
     def size(self, name):
         return os.path.getsize(self.path(name))
@@ -210,22 +410,66 @@ class FileSystemStorage(Storage):
     def url(self, name):
         if self.base_url is None:
             raise ValueError("This file is not accessible via a URL.")
-        return urlparse.urljoin(self.base_url, name).replace('\\', '/')
+        url = filepath_to_uri(name)
+        if url is not None:
+            url = url.lstrip('/')
+        return urljoin(self.base_url, url)
 
-def get_storage_class(import_path):
-    try:
-        dot = import_path.rindex('.')
-    except ValueError:
-        raise ImproperlyConfigured("%s isn't a storage module." % import_path)
-    module, classname = import_path[:dot], import_path[dot+1:]
-    try:
-        mod = __import__(module, {}, {}, [''])
-    except ImportError, e:
-        raise ImproperlyConfigured('Error importing storage module %s: "%s"' % (module, e))
-    try:
-        return getattr(mod, classname)
-    except AttributeError:
-        raise ImproperlyConfigured('Storage module "%s" does not define a "%s" class.' % (module, classname))
+    def accessed_time(self, name):
+        warnings.warn(
+            'FileSystemStorage.accessed_time() is deprecated in favor of '
+            'get_accessed_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        return datetime.fromtimestamp(os.path.getatime(self.path(name)))
 
-DefaultStorage = get_storage_class(settings.DEFAULT_FILE_STORAGE)
+    def created_time(self, name):
+        warnings.warn(
+            'FileSystemStorage.created_time() is deprecated in favor of '
+            'get_created_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        return datetime.fromtimestamp(os.path.getctime(self.path(name)))
+
+    def modified_time(self, name):
+        warnings.warn(
+            'FileSystemStorage.modified_time() is deprecated in favor of '
+            'get_modified_time().',
+            RemovedInDjango20Warning,
+            stacklevel=2,
+        )
+        return datetime.fromtimestamp(os.path.getmtime(self.path(name)))
+
+    def _datetime_from_timestamp(self, ts):
+        """
+        If timezone support is enabled, make an aware datetime object in UTC;
+        otherwise make a naive one in the local timezone.
+        """
+        if settings.USE_TZ:
+            # Safe to use .replace() because UTC doesn't have DST
+            return datetime.utcfromtimestamp(ts).replace(tzinfo=timezone.utc)
+        else:
+            return datetime.fromtimestamp(ts)
+
+    def get_accessed_time(self, name):
+        return self._datetime_from_timestamp(os.path.getatime(self.path(name)))
+
+    def get_created_time(self, name):
+        return self._datetime_from_timestamp(os.path.getctime(self.path(name)))
+
+    def get_modified_time(self, name):
+        return self._datetime_from_timestamp(os.path.getmtime(self.path(name)))
+
+
+def get_storage_class(import_path=None):
+    return import_string(import_path or settings.DEFAULT_FILE_STORAGE)
+
+
+class DefaultStorage(LazyObject):
+    def _setup(self):
+        self._wrapped = get_storage_class()()
+
+
 default_storage = DefaultStorage()

@@ -10,7 +10,7 @@ primarily by eval() performance.
 """
 
 # Wanted by the alphametics solver.
-from __future__ import division
+from __future__ import division, print_function
 
 __author__ = "collinwinter@google.com (Collin Winter)"
 
@@ -19,9 +19,14 @@ import optparse
 import re
 import string
 import time
+import sys
+
+if sys.version_info[1] < 3:
+    range = xrange
 
 # Local imports
 import util
+
 
 
 # Pure-Python implementation of itertools.permutations().
@@ -31,8 +36,8 @@ def permutations(iterable, r=None):
     n = len(pool)
     if r is None:
         r = n
-    indices = range(n)
-    cycles = range(n-r+1, n+1)[::-1]
+    indices = list(range(n))
+    cycles = list(range(n-r+1, n+1)[::-1])
     yield tuple(pool[i] for i in indices[:r])
     while n:
         for i in reversed(range(r)):
@@ -71,7 +76,7 @@ def n_queens(queen_count):
 
 def test_n_queens(iterations):
     times = []
-    for _ in xrange(iterations):
+    for _ in range(iterations):
         t0 = time.time()
         list(n_queens(8))
         t1 = time.time()

@@ -10,7 +10,7 @@ def test_dulwich(n):
     import time
     for i in range(20):
         t0 = time.time()
-        r.revision_history(r.head())
+        [e.commit for e in r.get_walker(r.head())]
         l.append(time.time() - t0)
     return l
 

@@ -23,33 +23,36 @@ class IRequest(Interface):
     @since: 9.0
     """
 
-    method = Attribute("A C{str} giving the HTTP method that was used.")
+    method = Attribute("A L{bytes} giving the HTTP method that was used.")
     uri = Attribute(
-        "A C{str} giving the full encoded URI which was requested (including "
-        "query arguments).")
+        "A L{bytes} giving the full encoded URI which was requested (including"
+        " query arguments).")
     path = Attribute(
-        "A C{str} giving the encoded query path of the request URI.")
+        "A L{bytes} giving the encoded query path of the request URI (not "
+        "including query arguments).")
     args = Attribute(
-        "A mapping of decoded query argument names as C{str} to "
-        "corresponding query argument values as C{list}s of C{str}.  "
-        "For example, for a URI with C{'foo=bar&foo=baz&quux=spam'} "
-        "for its query part, C{args} will be C{{'foo': ['bar', 'baz'], "
-        "'quux': ['spam']}}.")
+        "A mapping of decoded query argument names as L{bytes} to "
+        "corresponding query argument values as L{list}s of L{bytes}.  "
+        "For example, for a URI with C{foo=bar&foo=baz&quux=spam} "
+        "for its query part, C{args} will be C{{b'foo': [b'bar', b'baz'], "
+        "b'quux': [b'spam']}}.")
 
-    received_headers = Attribute(
-        "Backwards-compatibility access to C{requestHeaders}.  Use "
-        "C{requestHeaders} instead.  C{received_headers} behaves mostly "
-        "like a C{dict} and does not provide access to all header values.")
+    prepath = Attribute(
+        "The URL path segments which have been processed during resource "
+        "traversal, as a list of {bytes}.")
+
+    postpath = Attribute(
+        "The URL path segments which have not (yet) been processed "
+        "during resource traversal, as a list of L{bytes}.")
 
     requestHeaders = Attribute(
         "A L{http_headers.Headers} instance giving all received HTTP request "
         "headers.")
 
-    headers = Attribute(
-        "Backwards-compatibility access to C{responseHeaders}.  Use"
-        "C{responseHeaders} instead.  C{headers} behaves mostly like a "
-        "C{dict} and does not provide access to all header values nor "
-        "does it allow multiple values for one header to be set.")
+    content = Attribute(
+        "A file-like object giving the request body.  This may be a file on "
+        "disk, an L{io.BytesIO}, or some other type.  The implementation is "
+        "free to decide on a per-request basis.")
 
     responseHeaders = Attribute(
         "A L{http_headers.Headers} instance holding all HTTP response "
@@ -59,18 +62,26 @@ class IRequest(Interface):
         """
         Get an HTTP request header.
 
-        @type key: C{str}
+        @type key: L{bytes} or L{str}
         @param key: The name of the header to get the value of.
 
-        @rtype: C{str} or C{NoneType}
-        @return: The value of the specified header, or C{None} if that header
-            was not present in the request.
+        @rtype: L{bytes} or L{str} or L{None}
+        @return: The value of the specified header, or L{None} if that header
+            was not present in the request. The string type of the result
+            matches the type of C{key}.
         """
 
 
     def getCookie(key):
         """
         Get a cookie that was sent from the network.
+
+        @type key: L{bytes}
+        @param key: The name of the cookie to get.
+
+        @rtype: L{bytes} or L{None}
+        @returns: The value of the specified cookie, or L{None} if that cookie
+            was not present in the request.
         """
 
 
@@ -92,7 +103,7 @@ class IRequest(Interface):
         host we are listening on if the header is unavailable.
 
         @returns: the requested hostname
-        @rtype: C{str}
+        @rtype: L{str}
         """
 
 
@@ -100,7 +111,21 @@ class IRequest(Interface):
         """
         Get my originally requesting transport's host.
 
-        @return: An L{IAddress}.
+        @return: An L{IAddress<twisted.internet.interfaces.IAddress>}.
+        """
+
+
+    def getClientAddress():
+        """
+        Return the address of the client who submitted this request.
+
+        The address may not be a network address.  Callers must check
+        its type before using it.
+
+        @since: 18.4
+
+        @return: the client's address.
+        @rtype: an L{IAddress} provider.
         """
 
 
@@ -108,22 +133,11 @@ class IRequest(Interface):
         """
         Return the IP address of the client who submitted this request.
 
-        @returns: the client IP address or C{None} if the request was submitted
+        This method is B{deprecated}.  See L{getClientAddress} instead.
+
+        @returns: the client IP address or L{None} if the request was submitted
             over a transport where IP addresses do not make sense.
-        @rtype: C{str} or L{NoneType}
-        """
-
-
-    def getClient():
-        """
-        Return the hostname of the IP address of the client who submitted this
-        request, if possible.
-
-        This method is B{deprecated}.  See L{getClientIP} instead.
-
-        @rtype: L{NoneType} or L{str}
-        @return: The canonical hostname of the client, as determined by
-            performing a name lookup on the IP address of the client.
+        @rtype: L{str} or L{None}
         """
 
 
@@ -134,7 +148,7 @@ class IRequest(Interface):
         If no user was supplied, return the empty string.
 
         @returns: the HTTP user, if any
-        @rtype: C{str}
+        @rtype: L{str}
         """
 
 
@@ -145,7 +159,7 @@ class IRequest(Interface):
         If no password was supplied, return the empty string.
 
         @returns: the HTTP password, if any
-        @rtype: C{str}
+        @rtype: L{str}
         """
 
 
@@ -177,16 +191,21 @@ class IRequest(Interface):
 
     def URLPath():
         """
-        @return: A L{URLPath} instance which identifies the URL for which this
-            request is.
+        @return: A L{URLPath<twisted.python.urlpath.URLPath>} instance
+            which identifies the URL for which this request is.
         """
 
 
     def prePathURL():
         """
-        @return: At any time during resource traversal, a L{str} giving an
-            absolute URL to the most nested resource which has yet been
-            reached.
+        At any time during resource traversal or resource rendering,
+        returns an absolute URL to the most nested resource which has
+        yet been reached.
+
+        @see: {twisted.web.server.Request.prepath}
+
+        @return: An absolute URL.
+        @type: L{bytes}
         """
 
 
@@ -200,6 +219,9 @@ class IRequest(Interface):
     def getRootURL():
         """
         Get a previously-remembered URL.
+
+        @return: An absolute URL.
+        @type: L{bytes}
         """
 
 
@@ -215,6 +237,9 @@ class IRequest(Interface):
         Write some data to the body of the response to this request.  Response
         headers are written the first time this method is called, after which
         new response headers may not be added.
+
+        @param data: Bytes of the response body.
+        @type data: L{bytes}
         """
 
 
@@ -231,6 +256,9 @@ class IRequest(Interface):
     def setResponseCode(code, message=None):
         """
         Set the HTTP response code.
+
+        @type code: L{int}
+        @type message: L{bytes}
         """
 
 
@@ -239,11 +267,13 @@ class IRequest(Interface):
         Set an HTTP response header.  Overrides any previously set values for
         this header.
 
-        @type name: C{str}
-        @param name: The name of the header for which to set the value.
+        @type k: L{bytes} or L{str}
+        @param k: The name of the header for which to set the value.
 
-        @type value: C{str}
-        @param value: The value to set for the named header.
+        @type v: L{bytes} or L{str}
+        @param v: The value to set for the named header. A L{str} will be
+            UTF-8 encoded, which may not interoperable with other
+            implementations. Avoid passing non-ASCII characters if possible.
         """
 
 
@@ -264,15 +294,15 @@ class IRequest(Interface):
         value.
 
         If I am a conditional request, I may modify my response code to
-        L{NOT_MODIFIED} if appropriate for the time given.
+        L{NOT_MODIFIED<http.NOT_MODIFIED>} if appropriate for the time given.
 
         @param when: The last time the resource being returned was modified, in
             seconds since the epoch.
-        @type when: C{int}, C{long} or C{float}
+        @type when: L{int}, L{long} or L{float}
 
-        @return: If I am a C{If-Modified-Since} conditional request and the
-            time given is not newer than the condition, I return
-            L{http.CACHED<CACHED>} to indicate that you should write no body.
+        @return: If I am a C{If-Modified-Since} conditional request and the time
+            given is not newer than the condition, I return
+            L{CACHED<http.CACHED>} to indicate that you should write no body.
             Otherwise, I return a false value.
         """
 
@@ -281,17 +311,19 @@ class IRequest(Interface):
         """
         Set an C{entity tag} for the outgoing response.
 
-        That's "entity tag" as in the HTTP/1.1 C{ETag} header, "used for
+        That's "entity tag" as in the HTTP/1.1 I{ETag} header, "used for
         comparing two or more entities from the same requested resource."
 
         If I am a conditional request, I may modify my response code to
-        L{NOT_MODIFIED} or L{PRECONDITION_FAILED}, if appropriate for the tag
-        given.
+        L{NOT_MODIFIED<http.NOT_MODIFIED>} or
+        L{PRECONDITION_FAILED<http.PRECONDITION_FAILED>}, if appropriate for the
+        tag given.
 
         @param etag: The entity tag for the resource being returned.
-        @type etag: C{str}
+        @type etag: L{str}
+
         @return: If I am a C{If-None-Match} conditional request and the tag
-            matches one in the request, I return L{http.CACHED<CACHED>} to
+            matches one in the request, I return L{CACHED<http.CACHED>} to
             indicate that you should write no body.  Otherwise, I return a
             false value.
         """
@@ -315,16 +347,58 @@ class IRequest(Interface):
 
 
 
+class INonQueuedRequestFactory(Interface):
+    """
+    A factory of L{IRequest} objects that does not take a ``queued`` parameter.
+    """
+    def __call__(channel):
+        """
+        Create an L{IRequest} that is operating on the given channel. There
+        must only be one L{IRequest} object processing at any given time on a
+        channel.
+
+        @param channel: A L{twisted.web.http.HTTPChannel} object.
+        @type channel: L{twisted.web.http.HTTPChannel}
+
+        @return: A request object.
+        @rtype: L{IRequest}
+        """
+
+
+
+class IAccessLogFormatter(Interface):
+    """
+    An object which can represent an HTTP request as a line of text for
+    inclusion in an access log file.
+    """
+    def __call__(timestamp, request):
+        """
+        Generate a line for the access log.
+
+        @param timestamp: The time at which the request was completed in the
+            standard format for access logs.
+        @type timestamp: L{unicode}
+
+        @param request: The request object about which to log.
+        @type request: L{twisted.web.server.Request}
+
+        @return: One line describing the request without a trailing newline.
+        @rtype: L{unicode}
+        """
+
+
+
 class ICredentialFactory(Interface):
     """
     A credential factory defines a way to generate a particular kind of
     authentication challenge and a way to interpret the responses to these
-    challenges.  It creates L{ICredentials} providers from responses.  These
-    objects will be used with L{twisted.cred} to authenticate an authorize
-    requests.
+    challenges.  It creates
+    L{ICredentials<twisted.cred.credentials.ICredentials>} providers from
+    responses.  These objects will be used with L{twisted.cred} to authenticate
+    an authorize requests.
     """
     scheme = Attribute(
-        "A C{str} giving the name of the authentication scheme with which "
+        "A L{str} giving the name of the authentication scheme with which "
         "this factory is associated.  For example, C{'basic'} or C{'digest'}.")
 
 
@@ -336,8 +410,8 @@ class ICredentialFactory(Interface):
         @param peer: The request the response to which this challenge will be
             included.
 
-        @rtype: C{dict}
-        @return: A mapping from C{str} challenge fields to associated C{str}
+        @rtype: L{dict}
+        @return: A mapping from L{str} challenge fields to associated L{str}
             values.
         """
 
@@ -346,7 +420,7 @@ class ICredentialFactory(Interface):
         """
         Create a credentials object from the given response.
 
-        @type response: C{str}
+        @type response: L{str}
         @param response: scheme specific response string
 
         @type request: L{twisted.web.http.Request}
@@ -364,19 +438,21 @@ class ICredentialFactory(Interface):
 class IBodyProducer(IPushProducer):
     """
     Objects which provide L{IBodyProducer} write bytes to an object which
-    provides L{IConsumer} by calling its C{write} method repeatedly.
+    provides L{IConsumer<twisted.internet.interfaces.IConsumer>} by calling its
+    C{write} method repeatedly.
 
-    L{IBodyProducer} providers may start producing as soon as they have
-    an L{IConsumer} provider.  That is, they should not wait for a
-    C{resumeProducing} call to begin writing data.
+    L{IBodyProducer} providers may start producing as soon as they have an
+    L{IConsumer<twisted.internet.interfaces.IConsumer>} provider.  That is, they
+    should not wait for a C{resumeProducing} call to begin writing data.
 
-    L{IConsumer.unregisterProducer} must not be called.  Instead, the
-    L{Deferred} returned from C{startProducing} must be fired when all bytes
-    have been written.
+    L{IConsumer.unregisterProducer<twisted.internet.interfaces.IConsumer.unregisterProducer>}
+    must not be called.  Instead, the
+    L{Deferred<twisted.internet.defer.Deferred>} returned from C{startProducing}
+    must be fired when all bytes have been written.
 
-    L{IConsumer.write} may synchronously invoke any of C{pauseProducing},
-    C{resumeProducing}, or C{stopProducing}.  These methods must be implemented
-    with this in mind.
+    L{IConsumer.write<twisted.internet.interfaces.IConsumer.write>} may
+    synchronously invoke any of C{pauseProducing}, C{resumeProducing}, or
+    C{stopProducing}.  These methods must be implemented with this in mind.
 
     @since: 9.0
     """
@@ -390,25 +466,30 @@ class IBodyProducer(IPushProducer):
 
     length = Attribute(
         """
-        C{length} is a C{int} indicating how many bytes in total this
+        C{length} is a L{int} indicating how many bytes in total this
         L{IBodyProducer} will write to the consumer or L{UNKNOWN_LENGTH}
         if this is not known in advance.
         """)
 
     def startProducing(consumer):
         """
-        Start producing to the given L{IConsumer} provider.
+        Start producing to the given
+        L{IConsumer<twisted.internet.interfaces.IConsumer>} provider.
 
-        @return: A L{Deferred} which fires with C{None} when all bytes have
-            been produced or with a L{Failure} if there is any problem before
-            all bytes have been produced.
+        @return: A L{Deferred<twisted.internet.defer.Deferred>} which stops
+            production of data when L{Deferred.cancel} is called, and which
+            fires with L{None} when all bytes have been produced or with a
+            L{Failure<twisted.python.failure.Failure>} if there is any problem
+            before all bytes have been produced.
         """
 
 
     def stopProducing():
         """
-        In addition to the standard behavior of L{IProducer.stopProducing}
-        (stop producing data), make sure the L{Deferred} returned by
+        In addition to the standard behavior of
+        L{IProducer.stopProducing<twisted.internet.interfaces.IProducer.stopProducing>}
+        (stop producing data), make sure the
+        L{Deferred<twisted.internet.defer.Deferred>} returned by
         C{startProducing} is never fired.
         """
 
@@ -424,7 +505,7 @@ class IRenderable(Interface):
         """
         Look up and return the render method associated with the given name.
 
-        @type name: C{str}
+        @type name: L{str}
         @param name: The value of a render directive encountered in the
             document returned by a call to L{IRenderable.render}.
 
@@ -438,7 +519,7 @@ class IRenderable(Interface):
         """
         Get the document for this L{IRenderable}.
 
-        @type request: L{IRequest} provider or L{NoneType}
+        @type request: L{IRequest} provider or L{None}
         @param request: The request in response to which this method is being
             invoked.
 
@@ -457,7 +538,7 @@ class ITemplateLoader(Interface):
         """
         Load a template suitable for rendering.
 
-        @return: a C{list} of C{list}s, C{unicode} objects, C{Element}s and
+        @return: a L{list} of L{list}s, L{unicode} objects, C{Element}s and
             other L{IRenderable} providers.
         """
 
@@ -472,31 +553,42 @@ class IResponse(Interface):
 
     version = Attribute(
         "A three-tuple describing the protocol and protocol version "
-        "of the response.  The first element is of type C{str}, the second "
-        "and third are of type C{int}.  For example, C{('HTTP', 1, 1)}.")
+        "of the response.  The first element is of type L{str}, the second "
+        "and third are of type L{int}.  For example, C{(b'HTTP', 1, 1)}.")
 
 
-    code = Attribute("The HTTP status code of this response, as a C{int}.")
+    code = Attribute("The HTTP status code of this response, as a L{int}.")
 
 
     phrase = Attribute(
-        "The HTTP reason phrase of this response, as a C{str}.")
+        "The HTTP reason phrase of this response, as a L{str}.")
 
 
     headers = Attribute("The HTTP response L{Headers} of this response.")
 
 
     length = Attribute(
-        "The C{int} number of bytes expected to be in the body of this "
+        "The L{int} number of bytes expected to be in the body of this "
         "response or L{UNKNOWN_LENGTH} if the server did not indicate how "
         "many bytes to expect.  For I{HEAD} responses, this will be 0; if "
         "the response includes a I{Content-Length} header, it will be "
         "available in C{headers}.")
 
 
+    request = Attribute(
+        "The L{IClientRequest} that resulted in this response.")
+
+
+    previousResponse = Attribute(
+        "The previous L{IResponse} from a redirect, or L{None} if there was no "
+        "previous response. This can be used to walk the response or request "
+        "history for redirections.")
+
+
     def deliverBody(protocol):
         """
-        Register an L{IProtocol} provider to receive the response body.
+        Register an L{IProtocol<twisted.internet.interfaces.IProtocol>} provider
+        to receive the response body.
 
         The protocol will be connected to a transport which provides
         L{IPushProducer}.  The protocol's C{connectionLost} method will be
@@ -516,11 +608,221 @@ class IResponse(Interface):
         """
 
 
+    def setPreviousResponse(response):
+        """
+        Set the reference to the previous L{IResponse}.
+
+        The value of the previous response can be read via
+        L{IResponse.previousResponse}.
+        """
+
+
+
+class _IRequestEncoder(Interface):
+    """
+    An object encoding data passed to L{IRequest.write}, for example for
+    compression purpose.
+
+    @since: 12.3
+    """
+
+    def encode(data):
+        """
+        Encode the data given and return the result.
+
+        @param data: The content to encode.
+        @type data: L{str}
+
+        @return: The encoded data.
+        @rtype: L{str}
+        """
+
+
+    def finish():
+        """
+        Callback called when the request is closing.
+
+        @return: If necessary, the pending data accumulated from previous
+            C{encode} calls.
+        @rtype: L{str}
+        """
+
+
+
+class _IRequestEncoderFactory(Interface):
+    """
+    A factory for returing L{_IRequestEncoder} instances.
+
+    @since: 12.3
+    """
+
+    def encoderForRequest(request):
+        """
+        If applicable, returns a L{_IRequestEncoder} instance which will encode
+        the request.
+        """
+
+
+
+class IClientRequest(Interface):
+    """
+    An object representing an HTTP request to make to an HTTP server.
+
+    @since: 13.1
+    """
+    method = Attribute(
+        "The HTTP method for this request, as L{bytes}. For example: "
+        "C{b'GET'}, C{b'HEAD'}, C{b'POST'}, etc.")
+
+
+    absoluteURI = Attribute(
+        "The absolute URI of the requested resource, as L{bytes}; or L{None} "
+        "if the absolute URI cannot be determined.")
+
+
+    headers = Attribute(
+        "Headers to be sent to the server, as "
+        "a L{twisted.web.http_headers.Headers} instance.")
+
+
+
+class IAgent(Interface):
+    """
+    An agent makes HTTP requests.
+
+    The way in which requests are issued is left up to each implementation.
+    Some may issue them directly to the server indicated by the net location
+    portion of the request URL.  Others may use a proxy specified by system
+    configuration.
+
+    Processing of responses is also left very widely specified.  An
+    implementation may perform no special handling of responses, or it may
+    implement redirect following or content negotiation, it may implement a
+    cookie store or automatically respond to authentication challenges.  It may
+    implement many other unforeseen behaviors as well.
+
+    It is also intended that L{IAgent} implementations be composable.  An
+    implementation which provides cookie handling features should re-use an
+    implementation that provides connection pooling and this combination could
+    be used by an implementation which adds content negotiation functionality.
+    Some implementations will be completely self-contained, such as those which
+    actually perform the network operations to send and receive requests, but
+    most or all other implementations should implement a small number of new
+    features (perhaps one new feature) and delegate the rest of the
+    request/response machinery to another implementation.
+
+    This allows for great flexibility in the behavior an L{IAgent} will
+    provide.  For example, an L{IAgent} with web browser-like behavior could be
+    obtained by combining a number of (hypothetical) implementations::
+
+        baseAgent = Agent(reactor)
+        redirect = BrowserLikeRedirectAgent(baseAgent, limit=10)
+        authenticate = AuthenticateAgent(
+            redirect, [diskStore.credentials, GtkAuthInterface()])
+        cookie = CookieAgent(authenticate, diskStore.cookie)
+        decode = ContentDecoderAgent(cookie, [(b"gzip", GzipDecoder())])
+        cache = CacheAgent(decode, diskStore.cache)
+
+        doSomeRequests(cache)
+    """
+    def request(method, uri, headers=None, bodyProducer=None):
+        """
+        Request the resource at the given location.
+
+        @param method: The request method to use, such as C{"GET"}, C{"HEAD"},
+            C{"PUT"}, C{"POST"}, etc.
+        @type method: L{bytes}
+
+        @param uri: The location of the resource to request.  This should be an
+            absolute URI but some implementations may support relative URIs
+            (with absolute or relative paths).  I{HTTP} and I{HTTPS} are the
+            schemes most likely to be supported but others may be as well.
+        @type uri: L{bytes}
+
+        @param headers: The headers to send with the request (or L{None} to
+            send no extra headers).  An implementation may add its own headers
+            to this (for example for client identification or content
+            negotiation).
+        @type headers: L{Headers} or L{None}
+
+        @param bodyProducer: An object which can generate bytes to make up the
+            body of this request (for example, the properly encoded contents of
+            a file for a file upload).  Or, L{None} if the request is to have
+            no body.
+        @type bodyProducer: L{IBodyProducer} provider
+
+        @return: A L{Deferred} that fires with an L{IResponse} provider when
+            the header of the response has been received (regardless of the
+            response status code) or with a L{Failure} if there is any problem
+            which prevents that response from being received (including
+            problems that prevent the request from being sent).
+        @rtype: L{Deferred}
+        """
+
+
+class IPolicyForHTTPS(Interface):
+    """
+    An L{IPolicyForHTTPS} provides a policy for verifying the certificates of
+    HTTPS connections, in the form of a L{client connection creator
+    <twisted.internet.interfaces.IOpenSSLClientConnectionCreator>} per network
+    location.
+
+    @since: 14.0
+    """
+
+    def creatorForNetloc(hostname, port):
+        """
+        Create a L{client connection creator
+        <twisted.internet.interfaces.IOpenSSLClientConnectionCreator>}
+        appropriate for the given URL "netloc"; i.e. hostname and port number
+        pair.
+
+        @param hostname: The name of the requested remote host.
+        @type hostname: L{bytes}
+
+        @param port: The number of the requested remote port.
+        @type port: L{int}
+
+        @return: A client connection creator expressing the security
+            requirements for the given remote host.
+        @rtype: L{client connection creator
+            <twisted.internet.interfaces.IOpenSSLClientConnectionCreator>}
+        """
+
+
+
+class IAgentEndpointFactory(Interface):
+    """
+    An L{IAgentEndpointFactory} provides a way of constructing an endpoint
+    used for outgoing Agent requests. This is useful in the case of needing to
+    proxy outgoing connections, or to otherwise vary the transport used.
+
+    @since: 15.0
+    """
+
+    def endpointForURI(uri):
+        """
+        Construct and return an L{IStreamClientEndpoint} for the outgoing
+        request's connection.
+
+        @param uri: The URI of the request.
+        @type uri: L{twisted.web.client.URI}
+
+        @return: An endpoint which will have its C{connect} method called to
+            issue the request.
+        @rtype: an L{IStreamClientEndpoint} provider
+
+        @raises twisted.internet.error.SchemeNotSupported: If the given
+            URI's scheme cannot be handled by this factory.
+        """
+
+
 
 UNKNOWN_LENGTH = u"twisted.web.iweb.UNKNOWN_LENGTH"
 
 __all__ = [
     "IUsernameDigestHash", "ICredentialFactory", "IRequest",
-    "IBodyProducer", "IRenderable", "IResponse",
+    "IBodyProducer", "IRenderable", "IResponse", "_IRequestEncoder",
+    "_IRequestEncoderFactory", "IClientRequest",
 
     "UNKNOWN_LENGTH"]

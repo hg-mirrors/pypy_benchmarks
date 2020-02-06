@@ -1,6 +1,10 @@
-Pyxl is an open source package that extends Python to support inline HTML. It converts HTML fragments into valid Python expressions, and is meant as a replacement for traditional python templating systems like [Mako](http://www.makotemplates.org/) or [Cheetah](http://www.cheetahtemplate.org/). It automatically escapes data, enforces correct markup and makes it easier to write reusable and well structured UI code. Pyxl was inspired by the [XHP](https://github.com/facebook/xhp/wiki) project at Facebook.
+## NOTE: This is a limited Python 3 port
 
-This project only supports Python 2. However, a [Python 3 fork](https://github.com/gvanrossum/pyxl3) is available.
+**This port does not accept feature requests.** For feature requests see https://github.com/pyxl4/pyxl4
+
+For Python 2, see https://github.com/dropbox/pyxl
+
+Pyxl is an open source package that extends Python to support inline HTML. It converts HTML fragments into valid Python expressions, and is meant as a replacement for traditional python templating systems like [Mako](http://www.makotemplates.org/) or [Cheetah](http://www.cheetahtemplate.org/). It automatically escapes data, enforces correct markup and makes it easier to write reusable and well structured UI code. Pyxl was inspired by the [XHP](https://github.com/facebook/xhp/wiki) project at Facebook.
 
 ## Motivation
 
@@ -10,7 +14,7 @@ Existing templating systems do support things like logic and reusable modules - 
 
 ```py
 import html
-print (
+print(
     html.head().appendChild(
         html.body().appendChild(
                 html.text("Hello World!"))))
@@ -20,36 +24,33 @@ To get around these limitations, we developed Pyxl which allowed us to treat HTM
 
 ```py
 # coding: pyxl
-print <html><body>Hello World!</body></html>
+print(<html><body>Hello World!</body></html>)
 ```
 
 This meant no longer dealing with a separate "templating" language, and a lot more control over how we wrote our front-end code. Also, since Pyxl maps HTML to structured python objects and expressions instead of arbitrary blobs of strings, adding support for things like automatically escaping data was trivial. Switching to Pyxl led to much cleaner and modularized UI code, and allowed us to write new features and pages a lot quicker.
 
 ## Installation
 
-Clone the repo and run the following commands from the directory you cloned to.
+Clone the repo and run the following commands from the directory you cloned to.  (Sudo not needed if you use a virtualenv.)
 
 ```sh
-python setup.py build
-sudo python setup.py install
-sudo python finish_install.py
+sudo python3 -m pip install .
+sudo python3 finish_install.py
 ```
 
 To confirm that Pyxl was correctly installed, run the following command from the same directory:
 
 ```sh
-python pyxl/examples/hello_world.py
+python3 pyxl/examples/hello_world.py
 ```
 
 You should see the string `<html><body>Hello World!</body></html>` printed out. Thats it! You're ready to use Pyxl.
 
 ## Running the tests
 
-After installing pyxl:
-
 ```sh
-easy_install unittest2
-python pyxl_tests.py
+python3 -m pip install pytest
+python3 -m pytest
 ```
 
 ## How it works
@@ -57,7 +58,7 @@ python pyxl_tests.py
 Pyxl converts HTML tags into python objects before the file is run through the interpreter, so the code that actually runs is regular python. For example, the `Hello World` example above is converted into:
 
 ```py
-print x_head().append_children(x_body().append_children("Hello World!"))
+print(x_head().append_children(x_body().append_children("Hello World!")))
 ```
 
 Pyxl's usefulness comes from being able to write HTML rather than unwieldy object instantiations and function calls. Note that Pyxl automatically adds objects for all HTML tags to Python builtins, so there is no need to import `x_head` or `x_body` in the example above.
@@ -125,10 +126,10 @@ Pyxl automatically escapes all data and attribute values, therefore all your mar
 safe_value = "<b>Puppies!</b>"
 unsafe_value = "<script>bad();</script>"
 unsafe_attr = '">'
-print (<div class="{unsafe_attr}">
-           {unsafe_value}
-           {rawhtml(safe_value)}
-       </div>)
+print(<div class="{unsafe_attr}">
+          {unsafe_value}
+          {rawhtml(safe_value)}
+      </div>)
 ```
 
 The above script will print out:
@@ -175,7 +176,7 @@ from some_module import x_user_badge
 
 user = User.get(some_user_id)
 content = <div>Any arbitrary content...</div>
-print <user_badge user="{user}">{content}</user_badge>
+print(<user_badge user="{user}">{content}</user_badge>)
 ```
 
 Some things to note about UI modules.

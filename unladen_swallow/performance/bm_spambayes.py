@@ -13,6 +13,11 @@ __contact__ = "collinwinter@google.com (Collin Winter)"
 import optparse
 import os.path
 import time
+import sys
+
+if sys.version_info[0] > 2:
+    print('cannot run spambayes on Python3')
+    sys.exit(42)
 
 # SpamBayes imports
 from spambayes import hammie, mboxutils

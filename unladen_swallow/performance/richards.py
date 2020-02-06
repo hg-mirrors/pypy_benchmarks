@@ -6,6 +6,10 @@
 #  Java version:  Copyright (C) 1995 Sun Microsystems, Inc.
 #  Translation from C++, Mario Wolczko
 #  Outer loop added by Alex Jacoby
+from __future__ import print_function, division
+import sys
+if sys.version_info[0] > 2:
+    xrange = range
 
 # Task IDs
 I_IDLE = 1
@@ -137,7 +141,7 @@ def trace(a):
     if layout <= 0:
         print
         layout = 50
-    print a,
+    print(a, end='')
 
 
 TASKTABSIZE = 10
@@ -302,10 +306,10 @@ class IdleTask(Task):
         if i.count == 0:
             return self.hold()
         elif i.control & 1 == 0:
-            i.control /= 2
+            i.control //= 2
             return self.release(I_DEVA)
         else:
-            i.control = i.control/2 ^ 0xd008
+            i.control = i.control// 2 ^ 0xd008
             return self.release(I_DEVB)
             
 
@@ -351,7 +355,7 @@ def schedule():
         pkt = None
 
         if tracing:
-            print "tcb =",t.ident
+            print("tcb =",t.ident)
 
         if t.isTaskHoldingOrWaiting():
             t = t.link
@@ -403,15 +407,15 @@ def entry_point(iterations):
     return result, startTime, endTime
 
 def main(entry_point = entry_point, iterations = 10):
-    print "Richards benchmark (Python) starting... [%r]" % entry_point
+    print("Richards benchmark (Python) starting... [%r]" % entry_point)
     result, startTime, endTime = entry_point(iterations)
     if not result:
-        print "Incorrect results!"
+        print("Incorrect results!")
         return -1
-    print "finished."
+    print("finished.")
     total_s = endTime - startTime
-    print "Total time for %d iterations: %.2f secs" %(iterations,total_s)
-    print "Average time per iteration: %.2f ms" %(total_s*1000/iterations)
+    print("Total time for %d iterations: %.2f secs" %(iterations,total_s))
+    print("Average time per iteration: %.2f ms" %(total_s*1000/iterations))
     return 42
 
 

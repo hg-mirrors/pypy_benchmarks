@@ -15,7 +15,7 @@ listeners or connectors are added)::
 
 LIMITATIONS:
  1. WaitForMultipleObjects and thus the event loop can only handle 64 objects.
- 2. Process running has some problems (see L{Process} docstring).
+ 2. Process running has some problems (see L{twisted.internet.process} docstring).
 
 
 TODO:
@@ -48,26 +48,37 @@ The 2nd solution is probably what will get implemented.
 import time
 import sys
 from threading import Thread
+from weakref import WeakKeyDictionary
 
-from zope.interface import implements
+from zope.interface import implementer
 
 # Win32 imports
-from win32file import WSAEventSelect, FD_READ, FD_CLOSE, FD_ACCEPT, FD_CONNECT
+from win32file import FD_READ, FD_CLOSE, FD_ACCEPT, FD_CONNECT, WSAEventSelect
+try:
+    # WSAEnumNetworkEvents was added in pywin32 215
+    from win32file import WSAEnumNetworkEvents
+except ImportError:
+    import warnings
+    warnings.warn(
+        'Reliable disconnection notification requires pywin32 215 or later',
+        category=UserWarning)
+    def WSAEnumNetworkEvents(fd, event):
+        return set([FD_READ])
+
 from win32event import CreateEvent, MsgWaitForMultipleObjects
-from win32event import WAIT_OBJECT_0, WAIT_TIMEOUT, QS_ALLINPUT, QS_ALLEVENTS
+from win32event import WAIT_OBJECT_0, WAIT_TIMEOUT, QS_ALLINPUT
 
 import win32gui
 
 # Twisted imports
 from twisted.internet import posixbase
 from twisted.python import log, threadable, failure
-from twisted.internet.interfaces import IReactorFDSet, IReactorProcess
+from twisted.internet.interfaces import IReactorFDSet
 from twisted.internet.interfaces import IReactorWin32Events
 from twisted.internet.threads import blockingCallFromThread
 
-from twisted.internet._dumbwin32proc import Process
 
-
+@implementer(IReactorFDSet, IReactorWin32Events)
 class Win32Reactor(posixbase.PosixReactorBase):
     """
     Reactor that uses Win32 event APIs.
@@ -81,15 +92,41 @@ class Win32Reactor(posixbase.PosixReactorBase):
 
     @ivar _events: A dictionary mapping win32 event object to tuples of
         L{FileDescriptor} instances and event masks.
-    """
-    implements(IReactorFDSet, IReactorProcess, IReactorWin32Events)
 
+    @ivar _closedAndReading: Along with C{_closedAndNotReading}, keeps track of
+        descriptors which have had close notification delivered from the OS but
+        which we have not finished reading data from.  MsgWaitForMultipleObjects
+        will only deliver close notification to us once, so we remember it in
+        these two dictionaries until we're ready to act on it.  The OS has
+        delivered close notification for each descriptor in this dictionary, and
+        the descriptors are marked as allowed to handle read events in the
+        reactor, so they can be processed.  When a descriptor is marked as not
+        allowed to handle read events in the reactor (ie, it is passed to
+        L{IReactorFDSet.removeReader}), it is moved out of this dictionary and
+        into C{_closedAndNotReading}.  The descriptors are keys in this
+        dictionary.  The values are arbitrary.
+    @type _closedAndReading: C{dict}
+
+    @ivar _closedAndNotReading: These descriptors have had close notification
+        delivered from the OS, but are not marked as allowed to handle read
+        events in the reactor.  They are saved here to record their closed
+        state, but not processed at all.  When one of these descriptors is
+        passed to L{IReactorFDSet.addReader}, it is moved out of this dictionary
+        and into C{_closedAndReading}.  The descriptors are keys in this
+        dictionary.  The values are arbitrary.  This is a weak key dictionary so
+        that if an application tells the reactor to stop reading from a
+        descriptor and then forgets about that descriptor itself, the reactor
+        will also forget about it.
+    @type _closedAndNotReading: C{WeakKeyDictionary}
+    """
     dummyEvent = CreateEvent(None, 0, 0, None)
 
     def __init__(self):
         self._reads = {}
         self._writes = {}
         self._events = {}
+        self._closedAndReading = {}
+        self._closedAndNotReading = WeakKeyDictionary()
         posixbase.PosixReactorBase.__init__(self)
 
 
@@ -124,6 +161,12 @@ class Win32Reactor(posixbase.PosixReactorBase):
         if reader not in self._reads:
             self._reads[reader] = self._makeSocketEvent(
                 reader, 'doRead', FD_READ | FD_ACCEPT | FD_CONNECT | FD_CLOSE)
+            # If the reader is closed, move it over to the dictionary of reading
+            # descriptors.
+            if reader in self._closedAndNotReading:
+                self._closedAndReading[reader] = True
+                del self._closedAndNotReading[reader]
+
 
     def addWriter(self, writer):
         """
@@ -132,6 +175,7 @@ class Win32Reactor(posixbase.PosixReactorBase):
         if writer not in self._writes:
             self._writes[writer] = 1
 
+
     def removeReader(self, reader):
         """Remove a Selectable for notification of data available to read.
         """
@@ -139,11 +183,19 @@ class Win32Reactor(posixbase.PosixReactorBase):
             del self._events[self._reads[reader]]
             del self._reads[reader]
 
+            # If the descriptor is closed, move it out of the dictionary of
+            # reading descriptors into the dictionary of waiting descriptors.
+            if reader in self._closedAndReading:
+                self._closedAndNotReading[reader] = True
+                del self._closedAndReading[reader]
+
+
     def removeWriter(self, writer):
         """Remove a Selectable for notification of data available to write.
         """
         if writer in self._writes:
             del self._writes[writer]
+
 
     def removeAll(self):
         """
@@ -153,36 +205,49 @@ class Win32Reactor(posixbase.PosixReactorBase):
 
 
     def getReaders(self):
-        return self._reads.keys()
+        return list(self._reads.keys())
 
 
     def getWriters(self):
-        return self._writes.keys()
+        return list(self._writes.keys())
 
 
     def doWaitForMultipleEvents(self, timeout):
         log.msg(channel='system', event='iteration', reactor=self)
         if timeout is None:
-            #timeout = INFINITE
             timeout = 100
-        else:
-            timeout = int(timeout * 1000)
+
+        # Keep track of whether we run any application code before we get to the
+        # MsgWaitForMultipleObjects.  If so, there's a chance it will schedule a
+        # new timed call or stop the reactor or do something else that means we
+        # shouldn't block in MsgWaitForMultipleObjects for the full timeout.
+        ranUserCode = False
+
+        # If any descriptors are trying to close, try to get them out of the way
+        # first.
+        for reader in list(self._closedAndReading.keys()):
+            ranUserCode = True
+            self._runAction('doRead', reader)
+
+        for fd in list(self._writes.keys()):
+            ranUserCode = True
+            log.callWithLogger(fd, self._runWrite, fd)
+
+        if ranUserCode:
+            # If application code *might* have scheduled an event, assume it
+            # did.  If we're wrong, we'll get back here shortly anyway.  If
+            # we're right, we'll be sure to handle the event (including reactor
+            # shutdown) in a timely manner.
+            timeout = 0
 
         if not (self._events or self._writes):
             # sleep so we don't suck up CPU time
-            time.sleep(timeout / 1000.0)
+            time.sleep(timeout)
             return
 
-        canDoMoreWrites = 0
-        for fd in self._writes.keys():
-            if log.callWithLogger(fd, self._runWrite, fd):
-                canDoMoreWrites = 1
-
-        if canDoMoreWrites:
-            timeout = 0
-
-        handles = self._events.keys() or [self.dummyEvent]
-        val = MsgWaitForMultipleObjects(handles, 0, timeout, QS_ALLINPUT | QS_ALLEVENTS)
+        handles = list(self._events.keys()) or [self.dummyEvent]
+        timeout = int(timeout * 1000)
+        val = MsgWaitForMultipleObjects(handles, 0, timeout, QS_ALLINPUT)
         if val == WAIT_TIMEOUT:
             return
         elif val == WAIT_OBJECT_0 + len(handles):
@@ -191,8 +256,26 @@ class Win32Reactor(posixbase.PosixReactorBase):
                 self.callLater(0, self.stop)
                 return
         elif val >= WAIT_OBJECT_0 and val < WAIT_OBJECT_0 + len(handles):
-            fd, action = self._events[handles[val - WAIT_OBJECT_0]]
+            event = handles[val - WAIT_OBJECT_0]
+            fd, action = self._events[event]
+
+            if fd in self._reads:
+                # Before anything, make sure it's still a valid file descriptor.
+                fileno = fd.fileno()
+                if fileno == -1:
+                    self._disconnectSelectable(fd, posixbase._NO_FILEDESC, False)
+                    return
+
+                # Since it's a socket (not another arbitrary event added via
+                # addEvent) and we asked for FD_READ | FD_CLOSE, check to see if
+                # we actually got FD_CLOSE.  This needs a special check because
+                # it only gets delivered once.  If we miss it, it's gone forever
+                # and we'll never know that the connection is closed.
+                events = WSAEnumNetworkEvents(fileno, event)
+                if FD_CLOSE in events:
+                    self._closedAndReading[fd] = True
             log.callWithLogger(fd, self._runAction, action, fd)
+
 
     def _runWrite(self, fd):
         closed = 0
@@ -218,26 +301,10 @@ class Win32Reactor(posixbase.PosixReactorBase):
         except:
             closed = sys.exc_info()[1]
             log.deferr()
-
         if closed:
             self._disconnectSelectable(fd, closed, action == 'doRead')
 
     doIteration = doWaitForMultipleEvents
-
-    def spawnProcess(self, processProtocol, executable, args=(), env={}, path=None, uid=None, gid=None, usePTY=0, childFDs=None):
-        """Spawn a process."""
-        if uid is not None:
-            raise ValueError("Setting UID is unsupported on this platform.")
-        if gid is not None:
-            raise ValueError("Setting GID is unsupported on this platform.")
-        if usePTY:
-            raise ValueError("PTYs are unsupported on this platform.")
-        if childFDs is not None:
-            raise ValueError(
-                "Custom child file descriptor mappings are unsupported on "
-                "this platform.")
-        args, env = self._checkProcessArgs(args, env)
-        return Process(self, processProtocol, executable, args, env, path)
 
 
 
@@ -291,18 +358,18 @@ class _ThreadFDWrapper(object):
 
 
 
+@implementer(IReactorWin32Events)
 class _ThreadedWin32EventsMixin(object):
     """
     This mixin implements L{IReactorWin32Events} for another reactor by running
     a L{Win32Reactor} in a separate thread and dispatching work to it.
 
     @ivar _reactor: The L{Win32Reactor} running in the other thread.  This is
-        C{None} until it is actually needed.
+        L{None} until it is actually needed.
 
     @ivar _reactorThread: The L{threading.Thread} which is running the
-        L{Win32Reactor}.  This is C{None} until it is actually needed.
+        L{Win32Reactor}.  This is L{None} until it is actually needed.
     """
-    implements(IReactorWin32Events)
 
     _reactor = None
     _reactorThread = None
@@ -355,7 +422,7 @@ class _ThreadedWin32EventsMixin(object):
 def install():
     threadable.init(1)
     r = Win32Reactor()
-    import main
+    from . import main
     main.installReactor(r)
 
 

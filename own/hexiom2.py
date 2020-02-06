@@ -6,7 +6,12 @@ Source: https://github.com/slowfrog/hexiom : hexiom2.py, level36.txt
 """
 
 from __future__ import division, print_function
-import sys, time, StringIO
+import sys, time
+if sys.version_info[0] > 2:
+    import io
+    xrange = range
+else:
+    import StringIO as io
 
 ##################################
 class Dir(object):
@@ -503,7 +508,7 @@ def run_level36():
 """
     order = DESCENDING
     strategy = Done.FIRST_STRATEGY
-    captured = StringIO.StringIO()
+    captured = io.StringIO()
     original_sys_stdout = sys.stdout
     try:
         sys.stdout = captured

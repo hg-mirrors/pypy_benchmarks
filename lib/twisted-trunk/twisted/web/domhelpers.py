@@ -6,10 +6,14 @@
 A library for performing interesting tasks with DOM objects.
 """
 
-import StringIO
+from io import StringIO
 
 from twisted.web import microdom
 from twisted.web.microdom import getElementsByTagName, escape, unescape
+# These modules are imported here as a shortcut.
+escape
+getElementsByTagName
+
 
 
 class NodeLookupError(Exception):
@@ -53,13 +57,13 @@ def get(node, nodeId):
     """
     result = _get(node, nodeId)
     if result: return result
-    raise NodeLookupError, nodeId
+    raise NodeLookupError(nodeId)
 
 def getIfExists(node, nodeId):
     """
     Get a node with the specified C{nodeId} as any of the C{class},
     C{id} or C{pattern} attributes.  If there is no such node, return
-    C{None}.
+    L{None}.
     """
     return _get(node, nodeId)
 
@@ -243,13 +247,13 @@ def findNodesNamed(parent, name):
 def writeNodeData(node, oldio):
     for subnode in node.childNodes:
         if hasattr(subnode, 'data'):
-            oldio.write(subnode.data)
+            oldio.write(u"" + subnode.data)
         else:
             writeNodeData(subnode, oldio)
 
 
 def getNodeText(node):
-    oldio = StringIO.StringIO()
+    oldio = StringIO()
     writeNodeData(node, oldio)
     return oldio.getvalue()
 

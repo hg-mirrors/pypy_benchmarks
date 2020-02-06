@@ -1,8 +1,19 @@
-import _base
+from __future__ import absolute_import, division, unicode_literals
 
-class Filter(_base.Filter):
+from . import base
+
+
+class Filter(base.Filter):
+    """Injects ``<meta charset=ENCODING>`` tag into head of document"""
     def __init__(self, source, encoding):
-        _base.Filter.__init__(self, source)
+        """Creates a Filter
+
+        :arg source: the source token stream
+
+        :arg encoding: the encoding to set
+
+        """
+        base.Filter.__init__(self, source)
         self.encoding = encoding
 
     def __iter__(self):
@@ -10,7 +21,7 @@ class Filter(_base.Filter):
         meta_found = (self.encoding is None)
         pending = []
 
-        for token in _base.Filter.__iter__(self):
+        for token in base.Filter.__iter__(self):
             type = token["type"]
             if type == "StartTag":
                 if token["name"].lower() == "head":
@@ -18,29 +29,28 @@ class Filter(_base.Filter):
 
             elif type == "EmptyTag":
                 if token["name"].lower() == "meta":
-                   # replace charset with actual encoding
-                   has_http_equiv_content_type = False
-                   content_index = -1
-                   for i,(name,value) in enumerate(token["data"]):
-                       if name.lower() == 'charset':
-                          token["data"][i] = (u'charset', self.encoding)
-                          meta_found = True
-                          break
-                       elif name == 'http-equiv' and value.lower() == 'content-type':
-                           has_http_equiv_content_type = True
-                       elif name == 'content':
-                           content_index = i
-                   else:
-                       if has_http_equiv_content_type and content_index >= 0:
-                           token["data"][content_index] = (u'content', u'text/html; charset=%s' % self.encoding)
-                           meta_found = True
+                    # replace charset with actual encoding
+                    has_http_equiv_content_type = False
+                    for (namespace, name), value in token["data"].items():
+                        if namespace is not None:
+                            continue
+                        elif name.lower() == 'charset':
+                            token["data"][(namespace, name)] = self.encoding
+                            meta_found = True
+                            break
+                        elif name == 'http-equiv' and value.lower() == 'content-type':
+                            has_http_equiv_content_type = True
+                    else:
+                        if has_http_equiv_content_type and (None, "content") in token["data"]:
+                            token["data"][(None, "content")] = 'text/html; charset=%s' % self.encoding
+                            meta_found = True
 
                 elif token["name"].lower() == "head" and not meta_found:
                     # insert meta into empty head
                     yield {"type": "StartTag", "name": "head",
                            "data": token["data"]}
                     yield {"type": "EmptyTag", "name": "meta",
-                           "data": [["charset", self.encoding]]}
+                           "data": {(None, "charset"): self.encoding}}
                     yield {"type": "EndTag", "name": "head"}
                     meta_found = True
                     continue
@@ -51,7 +61,7 @@ class Filter(_base.Filter):
                     yield pending.pop(0)
                     if not meta_found:
                         yield {"type": "EmptyTag", "name": "meta",
-                               "data": [["charset", self.encoding]]}
+                               "data": {(None, "charset"): self.encoding}}
                     while pending:
                         yield pending.pop(0)
                     meta_found = True

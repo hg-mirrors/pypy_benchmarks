@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """ Usage: runner.py <result filename> <path to pypy-c> <revnumber>
 """
+from __future__ import division, print_function
 
 import json
 import socket
@@ -13,8 +14,12 @@ import benchmarks
 from saveresults import save
 from unladen_swallow import perf
 
-BENCHMARK_SET = ['richards', 'slowspitfire', 'django', 'spambayes',
-                 'rietveld', 'html5lib', 'ai']
+BENCHMARK_SET = ['richards', 'spitfire2', 'django',
+                 'html5lib', 'ai']
+if sys.version_info[0] < 3:
+    BENCHMARK_SET += [
+                 'spambayes',  # no python3 version
+                ]
 BENCHMARK_SET += perf._FindAllBenchmarks(benchmarks.__dict__).keys()
 
 class WrongBenchmark(Exception):

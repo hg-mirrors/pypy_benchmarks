@@ -2,18 +2,34 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-
 """
 Support for generic select()able objects.
-
-Maintainer: Itamar Shtull-Trauring
 """
 
-from zope.interface import implements
+from __future__ import division, absolute_import
+
+from socket import AF_INET, AF_INET6, inet_pton, error
+
+from zope.interface import implementer
 
 # Twisted Imports
+from twisted.python.compat import unicode, lazyByteSlice, _PY3
 from twisted.python import reflect, failure
 from twisted.internet import interfaces, main
+
+if _PY3:
+    # Python 3.4+ can join bytes and memoryviews; using a
+    # memoryview prevents the slice from copying
+    def _concatenate(bObj, offset, bArray):
+        return b''.join([memoryview(bObj)[offset:]] + bArray)
+else:
+    from __builtin__ import buffer
+
+    def _concatenate(bObj, offset, bArray):
+        # Avoid one extra string copy by using a buffer to limit what
+        # we include in the result.
+        return buffer(bObj, offset) + b"".join(bArray)
+
 
 
 class _ConsumerMixin(object):
@@ -25,7 +41,7 @@ class _ConsumerMixin(object):
     Subclasses must provide three attributes which L{_ConsumerMixin} will read
     but not write:
 
-      - connected: A C{bool} which is C{True} as long as the the consumer has
+      - connected: A C{bool} which is C{True} as long as the consumer has
         someplace to send bytes (for example, a TCP connection), and then
         C{False} when it no longer does.
 
@@ -39,12 +55,12 @@ class _ConsumerMixin(object):
 
     Subclasses must also override the C{startWriting} method.
 
-    @ivar producer: C{None} if no producer is registered, otherwise the
+    @ivar producer: L{None} if no producer is registered, otherwise the
         registered producer.
 
     @ivar producerPaused: A flag indicating whether the producer is currently
         paused.
-    @type producerPaused: C{bool} or C{int}
+    @type producerPaused: L{bool}
 
     @ivar streamingProducer: A flag indicating whether the producer was
         registered as a streaming (ie push) producer or not (ie a pull
@@ -107,8 +123,44 @@ class _ConsumerMixin(object):
 
 
 
-class FileDescriptor(_ConsumerMixin):
-    """An object which can be operated on by select().
+@implementer(interfaces.ILoggingContext)
+class _LogOwner(object):
+    """
+    Mixin to help implement L{interfaces.ILoggingContext} for transports which
+    have a protocol, the log prefix of which should also appear in the
+    transport's log prefix.
+    """
+
+    def _getLogPrefix(self, applicationObject):
+        """
+        Determine the log prefix to use for messages related to
+        C{applicationObject}, which may or may not be an
+        L{interfaces.ILoggingContext} provider.
+
+        @return: A C{str} giving the log prefix to use.
+        """
+        if interfaces.ILoggingContext.providedBy(applicationObject):
+            return applicationObject.logPrefix()
+        return applicationObject.__class__.__name__
+
+
+    def logPrefix(self):
+        """
+        Override this method to insert custom logging behavior.  Its
+        return value will be inserted in front of every line.  It may
+        be called more times than the number of output lines.
+        """
+        return "-"
+
+
+
+@implementer(
+    interfaces.IPushProducer, interfaces.IReadWriteDescriptor,
+    interfaces.IConsumer, interfaces.ITransport,
+    interfaces.IHalfCloseableDescriptor)
+class FileDescriptor(_ConsumerMixin, _LogOwner):
+    """
+    An object which can be operated on by select().
 
     This is an abstract superclass of all objects which may be notified when
     they are readable or writable; e.g. they have a file-descriptor that is
@@ -119,26 +171,23 @@ class FileDescriptor(_ConsumerMixin):
     disconnecting = 0
     _writeDisconnecting = False
     _writeDisconnected = False
-    dataBuffer = ""
+    dataBuffer = b""
     offset = 0
 
     SEND_LIMIT = 128*1024
 
-    implements(interfaces.IProducer, interfaces.IReadWriteDescriptor,
-               interfaces.IConsumer, interfaces.ITransport, interfaces.IHalfCloseableDescriptor)
-
-    def logPrefix(self):
-        """
-        Returns the default log prefix
-        """
-        return "-"
-
     def __init__(self, reactor=None):
+        """
+        @param reactor: An L{IReactorFDSet} provider which this descriptor will
+            use to get readable and writeable event notifications.  If no value
+            is given, the global reactor will be used.
+        """
         if not reactor:
             from twisted.internet import reactor
         self.reactor = reactor
         self._tempDataBuffer = [] # will be added to dataBuffer in doWrite
         self._tempDataLen = 0
+
 
     def connectionLost(self, reason):
         """The connection was lost.
@@ -150,7 +199,6 @@ class FileDescriptor(_ConsumerMixin):
 
         Clean up state here, but make sure to call back up to FileDescriptor.
         """
-
         self.disconnected = 1
         self.connected = 0
         if self.producer is not None:
@@ -188,40 +236,36 @@ class FileDescriptor(_ConsumerMixin):
         """
         Called when data can be written.
 
-        A result that is true (which will be a negative number or an
-        exception instance) indicates that the connection was lost. A false
-        result implies the connection is still there; a result of 0
-        indicates no write was done, and a result of None indicates that a
-        write was done.
+        @return: L{None} on success, an exception or a negative integer on
+            failure.
+
+        @see: L{twisted.internet.interfaces.IWriteDescriptor.doWrite}.
         """
         if len(self.dataBuffer) - self.offset < self.SEND_LIMIT:
             # If there is currently less than SEND_LIMIT bytes left to send
             # in the string, extend it with the array data.
-            self.dataBuffer = buffer(self.dataBuffer, self.offset) + "".join(self._tempDataBuffer)
+            self.dataBuffer = _concatenate(
+                self.dataBuffer, self.offset, self._tempDataBuffer)
             self.offset = 0
             self._tempDataBuffer = []
             self._tempDataLen = 0
 
         # Send as much data as you can.
         if self.offset:
-            l = self.writeSomeData(buffer(self.dataBuffer, self.offset))
+            l = self.writeSomeData(lazyByteSlice(self.dataBuffer, self.offset))
         else:
             l = self.writeSomeData(self.dataBuffer)
 
         # There is no writeSomeData implementation in Twisted which returns
-        # 0, but the documentation for writeSomeData used to claim negative
+        # < 0, but the documentation for writeSomeData used to claim negative
         # integers meant connection lost.  Keep supporting this here,
         # although it may be worth deprecating and removing at some point.
-        if l < 0 or isinstance(l, Exception):
+        if isinstance(l, Exception) or l < 0:
             return l
-        if l == 0 and self.dataBuffer:
-            result = 0
-        else:
-            result = None
         self.offset += l
         # If there is nothing left to send,
         if self.offset == len(self.dataBuffer) and not self._tempDataLen:
-            self.dataBuffer = ""
+            self.dataBuffer = b""
             self.offset = 0
             # stop writing.
             self.stopWriting()
@@ -229,18 +273,21 @@ class FileDescriptor(_ConsumerMixin):
             if self.producer is not None and ((not self.streamingProducer)
                                               or self.producerPaused):
                 # tell them to supply some more.
-                self.producerPaused = 0
+                self.producerPaused = False
                 self.producer.resumeProducing()
             elif self.disconnecting:
                 # But if I was previously asked to let the connection die, do
                 # so.
                 return self._postLoseConnection()
             elif self._writeDisconnecting:
-                # I was previously asked to to half-close the connection.
-                result = self._closeWriteConnection()
+                # I was previously asked to half-close the connection.  We
+                # set _writeDisconnected before calling handler, in case the
+                # handler calls loseConnection(), which will want to check for
+                # this attribute.
                 self._writeDisconnected = True
+                result = self._closeWriteConnection()
                 return result
-        return result
+        return None
 
     def _postLoseConnection(self):
         """Called after a loseConnection(), when all data has been written.
@@ -262,6 +309,34 @@ class FileDescriptor(_ConsumerMixin):
         # override in subclasses
         self.connectionLost(reason)
 
+
+    def _isSendBufferFull(self):
+        """
+        Determine whether the user-space send buffer for this transport is full
+        or not.
+
+        When the buffer contains more than C{self.bufferSize} bytes, it is
+        considered full.  This might be improved by considering the size of the
+        kernel send buffer and how much of it is free.
+
+        @return: C{True} if it is full, C{False} otherwise.
+        """
+        return len(self.dataBuffer) + self._tempDataLen > self.bufferSize
+
+
+    def _maybePauseProducer(self):
+        """
+        Possibly pause a producer, if there is one and the send buffer is full.
+        """
+        # If we are responsible for pausing our producer,
+        if self.producer is not None and self.streamingProducer:
+            # and our buffer is full,
+            if self._isSendBufferFull():
+                # pause it.
+                self.producerPaused = True
+                self.producer.pauseProducing()
+
+
     def write(self, data):
         """Reliably write some data.
 
@@ -277,17 +352,13 @@ class FileDescriptor(_ConsumerMixin):
         if data:
             self._tempDataBuffer.append(data)
             self._tempDataLen += len(data)
-            # If we are responsible for pausing our producer,
-            if self.producer is not None and self.streamingProducer:
-                # and our buffer is full,
-                if len(self.dataBuffer) + self._tempDataLen > self.bufferSize:
-                    # pause it.
-                    self.producerPaused = 1
-                    self.producer.pauseProducing()
+            self._maybePauseProducer()
             self.startWriting()
 
+
     def writeSequence(self, iovec):
-        """Reliably write a sequence of data.
+        """
+        Reliably write a sequence of data.
 
         Currently, this is a convenience method roughly equivalent to::
 
@@ -301,19 +372,17 @@ class FileDescriptor(_ConsumerMixin):
         streaming producer is registered, it will be paused until the buffered
         data is written to the underlying file descriptor.
         """
+        for i in iovec:
+            if isinstance(i, unicode): # no, really, I mean it
+                raise TypeError("Data must not be unicode")
         if not self.connected or not iovec or self._writeDisconnected:
             return
         self._tempDataBuffer.extend(iovec)
         for i in iovec:
             self._tempDataLen += len(i)
-        # If we are responsible for pausing our producer,
-        if self.producer is not None and self.streamingProducer:
-            # and our buffer is full,
-            if len(self.dataBuffer) + self._tempDataLen > self.bufferSize:
-                # pause it.
-                self.producerPaused = 1
-                self.producer.pauseProducing()
+        self._maybePauseProducer()
         self.startWriting()
+
 
     def loseConnection(self, _connDone=failure.Failure(main.CONNECTION_DONE)):
         """Close the connection at the next available opportunity.
@@ -394,8 +463,8 @@ class FileDescriptor(_ConsumerMixin):
     # producer interface implementation
 
     def resumeProducing(self):
-        assert self.connected and not self.disconnecting
-        self.startReading()
+        if self.connected and not self.disconnecting:
+            self.startReading()
 
     def pauseProducing(self):
         self.stopReading()
@@ -413,30 +482,65 @@ class FileDescriptor(_ConsumerMixin):
         return -1
 
 
-def isIPAddress(addr):
+
+def isIPAddress(addr, family=AF_INET):
     """
-    Determine whether the given string represents an IPv4 address.
+    Determine whether the given string represents an IP address of the given
+    family; by default, an IPv4 address.
 
     @type addr: C{str}
     @param addr: A string which may or may not be the decimal dotted
-    representation of an IPv4 address.
+        representation of an IPv4 address.
+
+    @param family: The address family to test for; one of the C{AF_*} constants
+        from the L{socket} module.  (This parameter has only been available
+        since Twisted 17.1.0; previously L{isIPAddress} could only test for IPv4
+        addresses.)
+    @type family: C{int}
 
     @rtype: C{bool}
-    @return: C{True} if C{addr} represents an IPv4 address, C{False}
-    otherwise.
+    @return: C{True} if C{addr} represents an IPv4 address, C{False} otherwise.
     """
-    dottedParts = addr.split('.')
-    if len(dottedParts) == 4:
-        for octet in dottedParts:
-            try:
-                value = int(octet)
-            except ValueError:
-                return False
-            else:
-                if value < 0 or value > 255:
-                    return False
-        return True
-    return False
+    if isinstance(addr, bytes):
+        try:
+            addr = addr.decode("ascii")
+        except UnicodeDecodeError:
+            return False
+    if family == AF_INET6:
+        # On some platforms, inet_ntop fails unless the scope ID is valid; this
+        # is a test for whether the given string *is* an IP address, so strip
+        # any potential scope ID before checking.
+        addr = addr.split(u"%", 1)[0]
+    elif family == AF_INET:
+        # On Windows, where 3.5+ implement inet_pton, "0" is considered a valid
+        # IPv4 address, but we want to ensure we have all 4 segments.
+        if addr.count(u".") != 3:
+            return False
+    else:
+        raise ValueError("unknown address family {!r}".format(family))
+    try:
+        # This might be a native implementation or the one from
+        # twisted.python.compat.
+        inet_pton(family, addr)
+    except (ValueError, error):
+        return False
+    return True
 
 
-__all__ = ["FileDescriptor"]
+
+def isIPv6Address(addr):
+    """
+    Determine whether the given string represents an IPv6 address.
+
+    @param addr: A string which may or may not be the hex
+        representation of an IPv6 address.
+    @type addr: C{str}
+
+    @return: C{True} if C{addr} represents an IPv6 address, C{False}
+        otherwise.
+    @rtype: C{bool}
+    """
+    return isIPAddress(addr, AF_INET6)
+
+
+__all__ = ["FileDescriptor", "isIPAddress", "isIPv6Address"]

@@ -16,11 +16,12 @@
 try:
     import ast
 except ImportError:
-    from chameleon import ast24 as ast
+    from chameleon import ast25 as ast
 
 import sys
 import logging
 import weakref
+import collections
 
 node_annotations = weakref.WeakKeyDictionary()
 
@@ -78,6 +79,45 @@ def walk_names(target, mode):
             yield node.id
 
 
+def iter_fields(node):
+    """
+    Yield a tuple of ``(fieldname, value)`` for each field in ``node._fields``
+    that is present on *node*.
+    """
+    for field in node._fields:
+        try:
+            yield field, getattr(node, field)
+        except AttributeError:
+            pass
+
+
+def iter_child_nodes(node):
+    """
+    Yield all direct child nodes of *node*, that is, all fields that are nodes
+    and all items of fields that are lists of nodes.
+    """
+    for name, field in iter_fields(node):
+        if isinstance(field, Node):
+            yield field
+        elif isinstance(field, list):
+            for item in field:
+                if isinstance(item, Node):
+                    yield item
+
+
+def walk(node):
+    """
+    Recursively yield all descendant nodes in the tree starting at *node*
+    (including *node* itself), in no specified order.  This is useful if you
+    only want to modify nodes in place and don't care about the context.
+    """
+    todo = collections.deque([node])
+    while todo:
+        node = todo.popleft()
+        todo.extend(iter_child_nodes(node))
+        yield node
+
+
 def copy(source, target):
     target.__class__ = source.__class__
     target.__dict__ = source.__dict__
@@ -119,6 +159,14 @@ class Node(object):
             id(self)
             )
 
+    def extract(self, condition):
+        result = []
+        for node in walk(self):
+            if condition(node):
+                result.append(node)
+
+        return result
+
 
 class Builtin(Node):
     """Represents a Python builtin.
@@ -152,6 +200,12 @@ class Comment(Node):
 
     stmt = None
     space = ""
+
+
+class TokenRef(Node):
+    """Represents a source-code token reference."""
+
+    _fields = "pos", "length"
 
 
 class ASTCodeGenerator(object):
@@ -269,6 +323,9 @@ class ASTCodeGenerator(object):
             else:
                 first = False
             self._write('**' + node.kwarg)
+
+    def visit_arg(self, node):
+        self._write(node.arg)
 
     # FunctionDef(identifier name, arguments args,
     #                           stmt* body, expr* decorators)
@@ -430,7 +487,11 @@ class ASTCodeGenerator(object):
         self._new_line()
         self._write('raise')
         if not getattr(node, "type", None):
-            return
+            exc = getattr(node, "exc", None)
+            if exc is None:
+                return
+            self._write(' ')
+            return self.visit(exc)
         self._write(' ')
         self.visit(node.type)
         if not node.inst:
@@ -441,6 +502,34 @@ class ASTCodeGenerator(object):
             return
         self._write(', ')
         self.visit(node.tback)
+
+    # Try(stmt* body, excepthandler* handlers, stmt* orelse, stmt* finalbody)
+    def visit_Try(self, node):
+        self._new_line()
+        self._write('try:')
+        self._change_indent(1)
+        for statement in node.body:
+            self.visit(statement)
+        self._change_indent(-1)
+        if getattr(node, 'handlers', None):
+            for handler in node.handlers:
+                self.visit(handler)
+        self._new_line()
+
+        if getattr(node, 'orelse', None):
+            self._write('else:')
+            self._change_indent(1)
+            for statement in node.orelse:
+                self.visit(statement)
+            self._change_indent(-1)
+
+        if getattr(node, 'finalbody', None):
+            self._new_line()
+            self._write('finally:')
+            self._change_indent(1)
+            for statement in node.finalbody:
+                self.visit(statement)
+            self._change_indent(-1)
 
     # TryExcept(stmt* body, excepthandler* handlers, stmt* orelse)
     def visit_TryExcept(self, node):
@@ -744,9 +833,13 @@ class ASTCodeGenerator(object):
                 self._write(', ')
             first = False
             # keyword = (identifier arg, expr value)
-            self._write(keyword.arg)
-            self._write('=')
+            if keyword.arg is not None:
+                self._write(keyword.arg)
+                self._write('=')
+            else:
+                self._write('**')
             self.visit(keyword.value)
+        # Attribute removed in Python 3.5
         if getattr(node, 'starargs', None):
             if not first:
                 self._write(', ')
@@ -754,6 +847,7 @@ class ASTCodeGenerator(object):
             self._write('*')
             self.visit(node.starargs)
 
+        # Attribute removed in Python 3.5
         if getattr(node, 'kwargs', None):
             if not first:
                 self._write(', ')
@@ -768,6 +862,13 @@ class ASTCodeGenerator(object):
         self.visit(node.value)
         self._write('`')
 
+    # Constant(object value)
+    def visit_Constant(self, node):
+        if node.value is Ellipsis:
+            self._write('...')
+        else:
+            self._write(repr(node.value))
+
     # Num(object n)
     def visit_Num(self, node):
         self._write(repr(node.n))
@@ -775,6 +876,9 @@ class ASTCodeGenerator(object):
     # Str(string s)
     def visit_Str(self, node):
         self._write(repr(node.s))
+
+    def visit_Ellipsis(self, node):
+        self._write('...')
 
     # Attribute(expr value, identifier attr, expr_context ctx)
     def visit_Attribute(self, node):
@@ -786,30 +890,47 @@ class ASTCodeGenerator(object):
     def visit_Subscript(self, node):
         self.visit(node.value)
         self._write('[')
-
-        def _process_slice(node):
-            if isinstance(node, ast.Ellipsis):
-                self._write('...')
-            elif isinstance(node, ast.Slice):
-                if getattr(node, 'lower', 'None'):
-                    self.visit(node.lower)
-                self._write(':')
-                if getattr(node, 'upper', None):
-                    self.visit(node.upper)
-                if getattr(node, 'step', None):
-                    self._write(':')
-                    self.visit(node.step)
-            elif isinstance(node, ast.Index):
-                self.visit(node.value)
-            elif isinstance(node, ast.ExtSlice):
-                self.visit(node.dims[0])
-                for dim in node.dims[1:]:
+        if isinstance(node.slice, ast.Tuple) and node.slice.elts:
+            self.visit(node.slice.elts[0])
+            if len(node.slice.elts) == 1:
+                self._write(', ')
+            else:
+                for dim in node.slice.elts[1:]:
                     self._write(', ')
                     self.visit(dim)
-            else:
-                raise NotImplemented('Slice type not implemented')
-        _process_slice(node.slice)
+        else:
+            self.visit(node.slice)
         self._write(']')
+
+    # Slice(expr? lower, expr? upper, expr? step)
+    def visit_Slice(self, node):
+        if getattr(node, 'lower', None) is not None:
+            self.visit(node.lower)
+        self._write(':')
+        if getattr(node, 'upper', None) is not None:
+            self.visit(node.upper)
+        if getattr(node, 'step', None) is not None:
+            self._write(':')
+            self.visit(node.step)
+
+    # Index(expr value)
+    def visit_Index(self, node):
+        self.visit(node.value)
+
+    # ExtSlice(slice* dims)
+    def visit_ExtSlice(self, node):
+        self.visit(node.dims[0])
+        if len(node.dims) == 1:
+            self._write(', ')
+        else:
+            for dim in node.dims[1:]:
+                self._write(', ')
+                self.visit(dim)
+
+    # Starred(expr value, expr_context ctx)
+    def visit_Starred(self, node):
+        self._write('*')
+        self.visit(node.value)
 
     # Name(identifier id, expr_context ctx)
     def visit_Name(self, node):
@@ -831,6 +952,9 @@ class ASTCodeGenerator(object):
             self._write(', ')
         self._write(')')
 
+    # NameConstant(singleton value)
+    def visit_NameConstant(self, node):
+        self._write(str(node.value))
 
 class AnnotationAwareVisitor(ast.NodeVisitor):
     def visit(self, node):
@@ -858,6 +982,10 @@ class NameLookupRewriteVisitor(AnnotationAwareVisitor):
         self.visit(node)
         return self.transformed
 
+    def visit_arg(self, node):
+        scope = self.scopes[-1]
+        scope.add(node.arg)
+
     def visit_Name(self, node):
         scope = self.scopes[-1]
         if isinstance(node.ctx, ast.Param):
@@ -865,6 +993,13 @@ class NameLookupRewriteVisitor(AnnotationAwareVisitor):
         elif node.id not in scope:
             self.transformed.add(node.id)
             self.apply_transform(node)
+
+    def visit_FunctionDef(self, node):
+        self.scopes[-1].add(node.name)
+
+    def visit_alias(self, node):
+        name = node.asname if node.asname is not None else node.name
+        self.scopes[-1].add(name)
 
     def visit_Lambda(self, node):
         self.scopes.append(set())

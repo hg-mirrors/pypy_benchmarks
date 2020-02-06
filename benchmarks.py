@@ -1,4 +1,7 @@
+from __future__ import division, print_function
+
 import os
+import sys
 import logging
 from unladen_swallow.perf import SimpleBenchmark, MeasureGeneric
 from unladen_swallow.perf import RawResult, ResultError, _FindAllBenchmarks
@@ -22,7 +25,7 @@ def _register_new_bm(name, bm_name, d, **opts):
 def _register_new_bm_twisted(name, bm_name, d, **opts):
     def Measure(python, options, bench_data):
         def parser(line):
-            number = float(line.split(" ")[0])
+            number = float(line.split(b" ")[0])
             if name == 'tcp':
                 return 100*1024*1024/number
             elif name == 'iteration':
@@ -49,23 +52,32 @@ def _register_new_bm_base_only(name, bm_name, d, **opts):
         try:
             data = benchmark_function(python, options,
                                       *args, **kwargs)
-        except subprocess.CalledProcessError, e:
+        except subprocess.CalledProcessError as e:
             return ResultError(e)
         return RawResult(data[0])
     BM.func_name = 'BM_' + bm_name
 
     d[BM.func_name] = BM
 
-TWISTED = [relative('lib/twisted-trunk'), relative('lib/zope.interface-3.5.3/src'), relative('own/twisted')]
+TWISTED = [relative('lib/twisted-trunk'), relative('lib/zope.interface'), relative('own/twisted')]
 
 opts = {
+    'gcbench' : {'iteration_scaling' : .10},
+    'pidigits': {'iteration_scaling' : .10},
     'pyxl_bench': {'bm_env': {'PYTHONPATH': relative('lib/pyxl')}},
     'eparse'  : {'bm_env': {'PYTHONPATH': relative('lib/monte')}},
     'bm_mako' : {'bm_env': {'PYTHONPATH': relative('lib/mako')}},
-    'bm_dulwich_log': {'bm_env': {'PYTHONPATH': relative('lib/dulwich-0.9.1')}},
-    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')}},
-    'sqlalchemy_declarative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')}},
-    'sqlalchemy_imperative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')}},
+    'bm_dulwich_log': {'bm_env': {'PYTHONPATH': relative('lib/dulwich-0.19.13')}},
+    'bm_chameleon': {'bm_env': {'PYTHONPATH': relative('lib/chameleon/src')},
+                     'iteration_scaling': 3},
+    'bm_mdp': {'iteration_scaling': .1},
+    'nqueens': {'iteration_scaling': .1},
+    'hexiom2': {'iteration_scaling': .1},
+    'sqlalchemy_declarative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')},
+                               'iteration_scaling': 3},
+    'sqlalchemy_imperative': {'bm_env': {'PYTHONPATH': relative('lib/sqlalchemy/lib')},
+                              'iteration_scaling': 10},
+    'sqlitesynth': {'iteration_scaling': .2},
 }
 
 for name in ['expand', 'integrate', 'sum', 'str']:
@@ -82,18 +94,23 @@ for name in ['nbody_modified', 'meteor-contest', 'fannkuch',
              'spectral-norm', 'chaos', 'telco', 'go', 'pyflate-fast',
              'raytrace-simple', 'crypto_pyaes', 'bm_mako', 'bm_chameleon',
              'json_bench', 'pidigits', 'hexiom2', 'eparse',
-             'bm_dulwich_log', 'bm_krakatau', 'bm_mdp', 'pypy_interp',
+             'bm_dulwich_log', 'bm_mdp', 
              'sqlitesynth', 'pyxl_bench', 'sqlalchemy_declarative',
              'sqlalchemy_imperative']:
     _register_new_bm(name, name, globals(), **opts.get(name, {}))
+
+if sys.version_info[0] < 3:
+    # does not support python 3
+    for name in ['bm_krakatau', 'pypy_interp']:
+        _register_new_bm(name, name, globals(), **opts.get(name, {}))
 
 for name in ['names', 'iteration', 'tcp', 'pb', ]:#'web']:#, 'accepts']:
     _register_new_bm_twisted(name, 'twisted_' + name,
                      globals(), bm_env={'PYTHONPATH': os.pathsep.join(TWISTED)})
 
-_register_new_bm('spitfire', 'spitfire', globals(),
-    extra_args=['--benchmark=spitfire_o4'])
-_register_new_bm('spitfire', 'spitfire_cstringio', globals(),
+_register_new_bm('spitfire', 'spitfire2', globals(),
+    extra_args=['--benchmark=spitfire_o3'])
+_register_new_bm('spitfire', 'spitfire_cstringio2', globals(),
     extra_args=['--benchmark=python_cstringio'])
 
 # =========================================================================
@@ -140,46 +157,54 @@ def test_parse_timer():
         ('database', 0.4)
         ]
 
-def BM_translate(python, options, bench_data):
-    """
-    Run translate.py and returns a benchmark result for each of the phases.
-    Note that we run it only with ``base_python`` (which corresponds to
-    pypy-c-jit in the nightly benchmarks, we are not interested in
-    ``changed_python`` (aka pypy-c-nojit) right now.
-    """
-    translate_py = relative('lib/pypy/rpython/bin/rpython')
-    target = relative('lib/pypy/pypy/goal/targetpypystandalone.py')
-    #targetnop = relative('lib/pypy/pypy/translator/goal/targetnopstandalone.py')
-    args = python + [translate_py, '--source', '--dont-write-c-files', '-O2', target]
-    logging.info('Running %s', ' '.join(args))
-    environ = os.environ.copy()
-    environ['PYTHONPATH'] = relative('lib/pypy')
-    proc = subprocess.Popen(args, stderr=subprocess.PIPE,
-                            stdout=subprocess.PIPE, env=environ)
-    out, err = proc.communicate()
-    retcode = proc.poll()
-    if retcode != 0:
-        if out is not None:
-            print '---------- stdout ----------'
-            print out
-        if err is not None:
-            print '---------- stderr ----------'
-            print err
-        raise Exception("translate.py failed, retcode %r" % (retcode,))
+if sys.version_info[0] < 3:
+    def BM_translate(base_python, options, *args):
+        """
+        Run translate.py and returns a benchmark result for each of the phases.
+        Note that we run it only with ``base_python`` (which corresponds to
+        pypy-c-jit in the nightly benchmarks, we are not interested in
+        ``changed_python`` (aka pypy-c-nojit) right now.
+        """
+        args = base_python + ['-c','import sys;print(sys.version_info[0])']
+        major = subprocess.check_output(args)
+        major = int(major)
+        if major > 2:
+            return [('translate', RawResult([], None))]
 
-    lines = err.splitlines()
-    timings = parse_timer(lines)
+        translate_py = relative('lib/pypy/rpython/bin/rpython')
+        target = relative('lib/pypy/pypy/goal/targetpypystandalone.py')
+        #targetnop = relative('lib/pypy/pypy/translator/goal/targetnopstandalone.py')
+        args = base_python + [translate_py, '--source', '--dont-write-c-files', '-O2', target]
+        logging.info('Running %s', ' '.join(args))
+        environ = os.environ.copy()
+        environ['PYTHONPATH'] = relative('lib/pypy')
+        proc = subprocess.Popen(args, stderr=subprocess.PIPE,
+                                stdout=subprocess.PIPE, env=environ)
+        out, err = proc.communicate()
+        retcode = proc.poll()
+        if retcode != 0:
+            if out is not None:
+                print('---------- stdout ----------')
+                print(out)
+            if err is not None:
+                print('---------- stderr ----------')
+                print(err)
+            raise Exception("translate.py failed, retcode %r" % (retcode,))
 
-    result = []
-    for name, time in timings:
-        data = RawResult([time])
-        result.append((name, data))
-    return result
-BM_translate.benchmark_name = 'trans2'
+        lines = err.splitlines()
+        timings = parse_timer(lines)
+
+        result = []
+        for name, time in timings:
+            data = RawResult([time])
+            result.append((name, data))
+        return result
+    BM_translate.benchmark_name = 'trans2'
 
 def BM_cpython_doc(python, options, bench_data):
     from unladen_swallow.perf import RawResult
     import subprocess, shutil
+    t = []
 
     maindir = relative('lib/cpython-doc')
     builddir = os.path.join(os.path.join(maindir, 'tools'), 'build')
@@ -198,8 +223,8 @@ def BM_cpython_doc(python, options, bench_data):
     out, err = proc.communicate()
     retcode = proc.poll()
     if retcode != 0:
-        print out
-        print err
+        print(out)
+        print(err)
         raise Exception("sphinx-build.py failed")
     res = float(out.splitlines()[-1])
     return RawResult([res], None)

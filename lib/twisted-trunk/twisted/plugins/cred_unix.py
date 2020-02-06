@@ -7,7 +7,9 @@
 Cred plugin for UNIX user accounts.
 """
 
-from zope.interface import implements
+from __future__ import absolute_import, division
+
+from zope.interface import implementer
 
 from twisted import plugin
 from twisted.cred.strcred import ICheckerFactory
@@ -15,14 +17,22 @@ from twisted.cred.checkers import ICredentialsChecker
 from twisted.cred.credentials import IUsernamePassword
 from twisted.cred.error import UnauthorizedLogin
 from twisted.internet import defer
+from twisted.python.compat import StringType
 
 
 
 def verifyCryptedPassword(crypted, pw):
-    if crypted[0] == '$': # md5_crypt encrypted
-        salt = '$1$' + crypted.split('$')[2]
-    else:
-        salt = crypted[:2]
+    """
+    Use L{crypt.crypt} to Verify that an unencrypted
+    password matches the encrypted password.
+
+    @param crypted: The encrypted password, obtained from
+                    the Unix password database or Unix shadow
+                    password database.
+    @param pw: The unencrypted password.
+    @return: L{True} if there is successful match, else L{False}.
+    @rtype: L{bool}
+    """
     try:
         import crypt
     except ImportError:
@@ -30,10 +40,15 @@ def verifyCryptedPassword(crypted, pw):
 
     if crypt is None:
         raise NotImplementedError("cred_unix not supported on this platform")
-    return crypt.crypt(pw, salt) == crypted
+    if not isinstance(pw, StringType):
+        pw = pw.decode('utf-8')
+    if not isinstance(crypted, StringType):
+        crypted = crypted.decode('utf-8')
+    return crypt.crypt(pw, crypted) == crypted
 
 
 
+@implementer(ICredentialsChecker)
 class UNIXChecker(object):
     """
     A credentials checker for a UNIX server. This will check that
@@ -44,13 +59,27 @@ class UNIXChecker(object):
     Right now this supports Python's pwd and spwd modules, if they are
     installed. It does not support PAM.
     """
-    implements(ICredentialsChecker)
     credentialInterfaces = (IUsernamePassword,)
 
 
     def checkPwd(self, pwd, username, password):
+        """
+        Obtain the encrypted password for C{username} from the Unix password
+        database using L{pwd.getpwnam}, and see if it it matches it matches
+        C{password}.
+
+        @param pwd: Module which provides functions which
+                    access to the Unix password database.
+        @type pwd: C{module}
+        @param username: The user to look up in the Unix password database.
+        @type username: L{unicode}/L{str} or L{bytes}
+        @param password: The password to compare.
+        @type username: L{unicode}/L{str} or L{bytes}
+        """
         try:
-            cryptedPass = pwd.getpwnam(username)[1]
+            if not isinstance(username, StringType):
+                username = username.decode('utf-8')
+            cryptedPass = pwd.getpwnam(username).pw_passwd
         except KeyError:
             return defer.fail(UnauthorizedLogin())
         else:
@@ -62,8 +91,28 @@ class UNIXChecker(object):
 
 
     def checkSpwd(self, spwd, username, password):
+        """
+        Obtain the encrypted password for C{username} from the
+        Unix shadow password database using L{spwd.getspnam},
+        and see if it it matches it matches C{password}.
+
+        @param spwd: Module which provides functions which
+                    access to the Unix shadow password database.
+        @type pwd: C{module}
+        @param username: The user to look up in the Unix password database.
+        @type username: L{unicode}/L{str} or L{bytes}
+        @param password: The password to compare.
+        @type username: L{unicode}/L{str} or L{bytes}
+        """
         try:
-            cryptedPass = spwd.getspnam(username)[1]
+            if not isinstance(username, StringType):
+                username = username.decode('utf-8')
+            if getattr(spwd.struct_spwd, "sp_pwdp", None):
+                # Python 3
+                cryptedPass = spwd.getspnam(username).sp_pwdp
+            else:
+                # Python 2
+                cryptedPass = spwd.getspnam(username).sp_pwd
         except KeyError:
             return defer.fail(UnauthorizedLogin())
         else:
@@ -113,12 +162,11 @@ Future versions may include support for PAM authentication.
 """
 
 
-
+@implementer(ICheckerFactory, plugin.IPlugin)
 class UNIXCheckerFactory(object):
     """
     A factory for L{UNIXChecker}.
     """
-    implements(ICheckerFactory, plugin.IPlugin)
     authType = 'unix'
     authHelp = unixCheckerFactoryHelp
     argStringFormat = 'No argstring required.'
@@ -135,4 +183,3 @@ class UNIXCheckerFactory(object):
 
 
 theUnixCheckerFactory = UNIXCheckerFactory()
-

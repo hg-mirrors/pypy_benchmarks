@@ -5,7 +5,7 @@
 """
 Implementation module for the I{cftp} command.
 """
-
+from __future__ import division, print_function
 import os, sys, getpass, struct, tty, fcntl, stat
 import fnmatch, pwd, glob
 
@@ -13,8 +13,10 @@ from twisted.conch.client import connect, default, options
 from twisted.conch.ssh import connection, common
 from twisted.conch.ssh import channel, filetransfer
 from twisted.protocols import basic
+from twisted.python.compat import _PY3, unicode
 from twisted.internet import reactor, stdio, defer, utils
 from twisted.python import log, usage, failure
+from twisted.python.filepath import FilePath
 
 class ClientOptions(options.ConchOptions):
 
@@ -30,12 +32,12 @@ class ClientOptions(options.ConchOptions):
                     ['batchfile', 'b', None, 'File to read commands from, or \'-\' for stdin.'],
                     ['requests', 'R', 5, 'Number of requests to make before waiting for a reply.'],
                     ['subsystem', 's', 'sftp', 'Subsystem/server program to connect to.']]
-    zsh_altArgDescr = {"buffersize":"Size of send/receive buffer (default: 32768)"}
-    #zsh_multiUse = ["foo", "bar"]
-    #zsh_mutuallyExclusive = [("foo", "bar"), ("bar", "baz")]
-    #zsh_actions = {"foo":'_files -g "*.foo"', "bar":"(one two three)"}
-    #zsh_actionDescr = {"logfile":"log file name", "random":"random seed"}
-    zsh_extras = ['2::localfile:{if [[ $words[1] == *:* ]]; then; _files; fi}']
+
+    compData = usage.Completions(
+        descriptions={
+            "buffersize": "Size of send/receive buffer (default: 32768)"},
+        extraActions=[usage.CompleteUserAtHost(),
+                      usage.CompleteFiles(descr="local file")])
 
     def parseArgs(self, host, localPath=None):
         self['remotePath'] = ''
@@ -57,8 +59,8 @@ def run():
     options = ClientOptions()
     try:
         options.parseOptions(args)
-    except usage.UsageError, u:
-        print 'ERROR: %s' % u
+    except usage.UsageError as u:
+        print('ERROR: %s' % u)
         sys.exit(1)
     if options['log']:
         realout = sys.stdout
@@ -105,7 +107,7 @@ def _ebExit(f):
         s = f.value.value
     else:
         s = str(f)
-    print s
+    print(s)
     #exitStatus = "conch: exiting with error %s" % f
     try:
         reactor.stop()
@@ -129,7 +131,7 @@ class StdioClient(basic.LineReceiver):
     _pwd = pwd
 
     ps = 'cftp> '
-    delimiter = '\n'
+    delimiter = b'\n'
 
     reactor = reactor
 
@@ -146,10 +148,17 @@ class StdioClient(basic.LineReceiver):
         self.currentDirectory = path
         self._newLine()
 
+    def _writeToTransport(self, msg):
+        if isinstance(msg, unicode):
+            msg = msg.encode("utf-8")
+        return self.transport.write(msg)
+
     def lineReceived(self, line):
         if self.client.transport.localClosed:
             return
-        log.msg('got line %s' % repr(line))
+        if _PY3 and isinstance(line, bytes):
+            line = line.decode("utf-8")
+        log.msg('got line %s' % line)
         line = line.lstrip()
         if not line:
             self._newLine()
@@ -181,40 +190,42 @@ class StdioClient(basic.LineReceiver):
         if f is not None:
             return defer.maybeDeferred(f, rest)
         else:
-            self._ebCommand(failure.Failure(NotImplementedError(
-                "No command called `%s'" % command)))
+            errMsg = "No command called `%s'" % (command)
+            self._ebCommand(failure.Failure(NotImplementedError(errMsg)))
             self._newLine()
 
     def _printFailure(self, f):
         log.msg(f)
         e = f.trap(NotImplementedError, filetransfer.SFTPError, OSError, IOError)
         if e == NotImplementedError:
-            self.transport.write(self.cmd_HELP(''))
+            self._writeToTransport(self.cmd_HELP(''))
         elif e == filetransfer.SFTPError:
-            self.transport.write("remote error %i: %s\n" %
-                    (f.value.code, f.value.message))
+            errMsg = "remote error %i: %s\n" % (f.value.code, f.value.message)
+            self._writeToTransport(errMsg)
         elif e in (OSError, IOError):
-            self.transport.write("local error %i: %s\n" %
-                    (f.value.errno, f.value.strerror))
+            errMsg = "local error %i: %s\n" % (f.value.errno, f.value.strerror)
+            self._writeToTransport(errMsg)
 
     def _newLine(self):
         if self.client.transport.localClosed:
             return
-        self.transport.write(self.ps)
+        self._writeToTransport(self.ps)
         self.ignoreErrors = 0
         if self.file:
             l = self.file.readline()
             if not l:
                 self.client.transport.loseConnection()
             else:
-                self.transport.write(l)
+                self._writeToTransport(l)
                 self.lineReceived(l.strip())
 
     def _cbCommand(self, result):
         if result is not None:
-            self.transport.write(result)
-            if not result.endswith('\n'):
-                self.transport.write('\n')
+            if isinstance(result, unicode):
+                result = result.encode("utf-8")
+            self._writeToTransport(result)
+            if not result.endswith(b'\n'):
+                self._writeToTransport(b'\n')
         self._newLine()
 
     def _ebCommand(self, f):
@@ -282,7 +293,7 @@ class StdioClient(basic.LineReceiver):
                 if not os.path.isdir(local):
                     return "Wildcard get with non-directory target."
             else:
-                local = ''
+                local = b''
             d = self._remoteGlob(remote)
             d.addCallback(self._cbGetMultiple, local)
             return d
@@ -291,9 +302,9 @@ class StdioClient(basic.LineReceiver):
         else:
             local = os.path.split(remote)[1]
         log.msg((remote, local))
-        lf = file(local, 'w', 0)
-        path = os.path.join(self.currentDirectory, remote)
-        d = self.client.openFile(path, filetransfer.FXF_READ, {})
+        lf = open(local, 'wb', 0)
+        path = FilePath(self.currentDirectory).child(remote)
+        d = self.client.openFile(path.path, filetransfer.FXF_READ, {})
         d.addCallback(self._cbGetOpenFile, lf)
         d.addErrback(self._ebCloseLf, lf)
         return d
@@ -307,15 +318,15 @@ class StdioClient(basic.LineReceiver):
         if isinstance(res, failure.Failure):
             self._printFailure(res)
         elif res:
-            self.transport.write(res)
+            self._writeToTransport(res)
             if not res.endswith('\n'):
-                self.transport.write('\n')
+                self._writeToTransport('\n')
         if not files:
             return
         f = files.pop(0)[0]
-        lf = file(os.path.join(local, os.path.split(f)[1]), 'w', 0)
-        path = os.path.join(self.currentDirectory, f)
-        d = self.client.openFile(path, filetransfer.FXF_READ, {})
+        lf = open(os.path.join(local, os.path.split(f)[1]), 'wb', 0)
+        path = FilePath(self.currentDirectory).child(f)
+        d = self.client.openFile(path.path, filetransfer.FXF_READ, {})
         d.addCallback(self._cbGetOpenFile, lf)
         d.addErrback(self._ebCloseLf, lf)
         d.addBoth(self._cbGetMultipleNext, files, local)
@@ -397,65 +408,152 @@ class StdioClient(basic.LineReceiver):
         rf.close()
         lf.close()
         if self.useProgressBar:
-            self.transport.write('\n')
+            self._writeToTransport('\n')
         return "Transferred %s to %s" % (rf.name, lf.name)
 
+
     def cmd_PUT(self, rest):
+        """
+        Do an upload request for a single local file or a globing expression.
+
+        @param rest: Requested command line for the PUT command.
+        @type rest: L{str}
+
+        @return: A deferred which fires with L{None} when transfer is done.
+        @rtype: L{defer.Deferred}
+        """
         local, rest = self._getFilename(rest)
-        if '*' in local or '?' in local: # wildcard
+
+        # FIXME: https://twistedmatrix.com/trac/ticket/7241
+        # Use a better check for globbing expression.
+        if '*' in local or '?' in local:
             if rest:
                 remote, rest = self._getFilename(rest)
-                path = os.path.join(self.currentDirectory, remote)
-                d = self.client.getAttrs(path)
-                d.addCallback(self._cbPutTargetAttrs, remote, local)
-                return d
+                remote = os.path.join(self.currentDirectory, remote)
             else:
                 remote = ''
-                files = glob.glob(local)
-                return self._cbPutMultipleNext(None, files, remote)
-        if rest:
-            remote, rest = self._getFilename(rest)
+
+            files = glob.glob(local)
+            return self._putMultipleFiles(files, remote)
+
         else:
-            remote = os.path.split(local)[1]
-        lf = file(local, 'r')
-        path = os.path.join(self.currentDirectory, remote)
-        flags = filetransfer.FXF_WRITE|filetransfer.FXF_CREAT|filetransfer.FXF_TRUNC
-        d = self.client.openFile(path, flags, {})
-        d.addCallback(self._cbPutOpenFile, lf)
-        d.addErrback(self._ebCloseLf, lf)
-        return d
+            if rest:
+                remote, rest = self._getFilename(rest)
+            else:
+                remote = os.path.split(local)[1]
+            return self._putSingleFile(local, remote)
 
-    def _cbPutTargetAttrs(self, attrs, path, local):
-        if not stat.S_ISDIR(attrs['permissions']):
-            return "Wildcard put with non-directory target."
-        return self._cbPutMultipleNext(None, files, path)
 
-    def _cbPutMultipleNext(self, res, files, path):
-        if isinstance(res, failure.Failure):
-            self._printFailure(res)
-        elif res:
-            self.transport.write(res)
-            if not res.endswith('\n'):
-                self.transport.write('\n')
-        f = None
-        while files and not f:
+    def _putSingleFile(self, local, remote):
+        """
+        Perform an upload for a single file.
+
+        @param local: Path to local file.
+        @type local: L{str}.
+
+        @param remote: Remote path for the request relative to current working
+            directory.
+        @type remote: L{str}
+
+        @return: A deferred which fires when transfer is done.
+        """
+        return self._cbPutMultipleNext(None, [local], remote, single=True)
+
+
+    def _putMultipleFiles(self, files, remote):
+        """
+        Perform an upload for a list of local files.
+
+        @param files: List of local files.
+        @type files: C{list} of L{str}.
+
+        @param remote: Remote path for the request relative to current working
+            directory.
+        @type remote: L{str}
+
+        @return: A deferred which fires when transfer is done.
+        """
+        return self._cbPutMultipleNext(None, files, remote)
+
+
+    def _cbPutMultipleNext(
+            self, previousResult, files, remotePath, single=False):
+        """
+        Perform an upload for the next file in the list of local files.
+
+        @param previousResult: Result form previous file form the list.
+        @type previousResult: L{str}
+
+        @param files: List of local files.
+        @type files: C{list} of L{str}
+
+        @param remotePath: Remote path for the request relative to current
+            working directory.
+        @type remotePath: L{str}
+
+        @param single: A flag which signals if this is a transfer for a single
+            file in which case we use the exact remote path
+        @type single: L{bool}
+
+        @return: A deferred which fires when transfer is done.
+        """
+        if isinstance(previousResult, failure.Failure):
+            self._printFailure(previousResult)
+        elif previousResult:
+            if isinstance(previousResult, unicode):
+                previousResult = previousResult.encode("utf-8")
+            self._writeToTransport(previousResult)
+            if not previousResult.endswith(b'\n'):
+                self._writeToTransport(b'\n')
+
+        currentFile = None
+        while files and not currentFile:
             try:
-                f = files.pop(0)
-                lf = file(f, 'r')
+                currentFile = files.pop(0)
+                localStream = open(currentFile, 'rb')
             except:
                 self._printFailure(failure.Failure())
-                f = None
-        if not f:
-            return
-        name = os.path.split(f)[1]
-        remote = os.path.join(self.currentDirectory, path, name)
-        log.msg((name, remote, path))
-        flags = filetransfer.FXF_WRITE|filetransfer.FXF_CREAT|filetransfer.FXF_TRUNC
-        d = self.client.openFile(remote, flags, {})
-        d.addCallback(self._cbPutOpenFile, lf)
-        d.addErrback(self._ebCloseLf, lf)
-        d.addBoth(self._cbPutMultipleNext, files, path)
+                currentFile = None
+
+        # No more files to transfer.
+        if not currentFile:
+            return None
+
+        if single:
+            remote = remotePath
+        else:
+            name = os.path.split(currentFile)[1]
+            remote = os.path.join(remotePath, name)
+            log.msg((name, remote, remotePath))
+
+        d = self._putRemoteFile(localStream, remote)
+        d.addBoth(self._cbPutMultipleNext, files, remotePath)
         return d
+
+
+    def _putRemoteFile(self, localStream, remotePath):
+        """
+        Do an upload request.
+
+        @param localStream: Local stream from where data is read.
+        @type localStream: File like object.
+
+        @param remotePath: Remote path for the request relative to current working directory.
+        @type remotePath: L{str}
+
+        @return: A deferred which fires when transfer is done.
+        """
+        remote = os.path.join(self.currentDirectory, remotePath)
+        flags = (
+            filetransfer.FXF_WRITE |
+            filetransfer.FXF_CREAT |
+            filetransfer.FXF_TRUNC
+            )
+        d = self.client.openFile(remote, flags, {})
+        d.addCallback(self._cbPutOpenFile, localStream)
+        d.addErrback(self._ebCloseLf, localStream)
+        return d
+
 
     def _cbPutOpenFile(self, rf, lf):
         numRequests = self.client.transport.conn.options['requests']
@@ -491,7 +589,7 @@ class StdioClient(basic.LineReceiver):
         lf.close()
         rf.close()
         if self.useProgressBar:
-            self.transport.write('\n')
+            self._writeToTransport('\n')
         return 'Transferred %s to %s' % (lf.name, rf.name)
 
     def cmd_LCD(self, path):
@@ -533,7 +631,7 @@ class StdioClient(basic.LineReceiver):
     def _cbDisplayFiles(self, files, options):
         files.sort()
         if 'all' not in options:
-            files = [f for f in files if not f[0].startswith('.')]
+            files = [f for f in files if not f[0].startswith(b'.')]
         if 'verbose' in options:
             lines = [f[1] for f in files]
         else:
@@ -541,7 +639,7 @@ class StdioClient(basic.LineReceiver):
         if not lines:
             return None
         else:
-            return '\n'.join(lines)
+            return b'\n'.join(lines)
 
     def cmd_MKDIR(self, path):
         path, rest = self._getFilename(path)
@@ -578,7 +676,10 @@ class StdioClient(basic.LineReceiver):
     cmd_QUIT = cmd_EXIT
 
     def cmd_VERSION(self, ignored):
-        return "SFTP version %i" % self.client.version
+        version = "SFTP version %i" % self.client.version
+        if isinstance(version, unicode):
+            version = version.encode("utf-8")
+        return version
 
     def cmd_HELP(self, ignored):
         return """Available commands:
@@ -664,6 +765,8 @@ version                         Print the SFTP version.
     def _cbReadFile(self, files, l, directory, glob):
         if not isinstance(files, failure.Failure):
             if glob:
+                if _PY3:
+                    glob = glob.encode("utf-8")
                 l.extend([f for f in files if fnmatch.fnmatch(f[0], glob)])
             else:
                 l.extend(files)
@@ -679,11 +782,11 @@ version                         Print the SFTP version.
     def _abbrevSize(self, size):
         # from http://mail.python.org/pipermail/python-list/1999-December/018395.html
         _abbrevs = [
-            (1<<50L, 'PB'),
-            (1<<40L, 'TB'),
-            (1<<30L, 'GB'),
-            (1<<20L, 'MB'),
-            (1<<10L, 'kB'),
+            (1<<50, 'PB'),
+            (1<<40, 'TB'),
+            (1<<30, 'GB'),
+            (1<<20, 'MB'),
+            (1<<10, 'kB'),
             (1, 'B')
             ]
 
@@ -716,7 +819,7 @@ version                         Print the SFTP version.
         @type f: L{FileWrapper}
 
         @param startTime: The time at which the operation being tracked began.
-        @type startTime: C{float}
+        @type startTime: L{float}
         """
         diff = self.reactor.seconds() - startTime
         total = f.total
@@ -734,18 +837,33 @@ version                         Print the SFTP version.
         else:
             timeLeft = 0
         front = f.name
-        back = '%3i%% %s %sps %s ' % ((total / f.size) * 100,
+        if f.size:
+            percentage = (total / f.size) * 100
+        else:
+            percentage = 100
+        back = '%3i%% %s %sps %s ' % (percentage,
                                       self._abbrevSize(total),
                                       self._abbrevSize(speed),
                                       self._abbrevTime(timeLeft))
         spaces = (winSize[1] - (len(front) + len(back) + 1)) * ' '
-        self.transport.write('\r%s%s%s' % (front, spaces, back))
+        command = '\r%s%s%s' % (front, spaces, back)
+        self._writeToTransport(command)
 
 
     def _getFilename(self, line):
-        line.lstrip()
+        """
+        Parse line received as command line input and return first filename
+        together with the remaining line.
+
+        @param line: Arguments received from command line input.
+        @type line: L{str}
+
+        @return: Tupple with filename and rest. Return empty values when no path was not found.
+        @rtype: C{tupple}
+        """
+        line = line.strip()
         if not line:
-            return None, ''
+            return '', ''
         if line[0] in '\'"':
             ret = []
             line = list(line)
@@ -757,19 +875,19 @@ version                         Print the SFTP version.
                     elif c == '\\': # quoted character
                         del line[i]
                         if line[i] not in '\'"\\':
-                            raise IndexError, "bad quote: \\%s" % line[i]
+                            raise IndexError("bad quote: \\%s" % (line[i],))
                         ret.append(line[i])
                     else:
                         ret.append(line[i])
             except IndexError:
-                raise IndexError, "unterminated quote"
+                raise IndexError("unterminated quote")
         ret = line.split(None, 1)
         if len(ret) == 1:
             return ret[0], ''
         else:
-            return ret
+            return ret[0], ret[1]
 
-StdioClient.__dict__['cmd_?'] = StdioClient.cmd_HELP
+setattr(StdioClient, 'cmd_?', StdioClient.cmd_HELP)
 
 class SSHConnection(connection.SSHConnection):
     def serviceStarted(self):
@@ -777,7 +895,7 @@ class SSHConnection(connection.SSHConnection):
 
 class SSHSession(channel.SSHChannel):
 
-    name = 'session'
+    name = b'session'
 
     def channelOpen(self, foo):
         log.msg('session %s open' % self.id)
@@ -798,7 +916,7 @@ class SSHSession(channel.SSHChannel):
         if self.conn.options['batchfile']:
             fn = self.conn.options['batchfile']
             if fn != '-':
-                f = file(fn)
+                f = open(fn)
         self.stdio = stdio.StandardIO(StdioClient(self.client, f))
 
     def extReceived(self, t, data):
@@ -809,7 +927,7 @@ class SSHSession(channel.SSHChannel):
 
     def eofReceived(self):
         log.msg('got eof')
-        self.stdio.closeStdin()
+        self.stdio.loseWriteConnection()
 
     def closeReceived(self):
         log.msg('remote side closed %s' % self)
@@ -829,4 +947,3 @@ class SSHSession(channel.SSHChannel):
 
 if __name__ == '__main__':
     run()
-

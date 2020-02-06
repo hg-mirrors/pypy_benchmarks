@@ -5,13 +5,13 @@
 Tests for IRC portions of L{twisted.words.service}.
 """
 
-from twisted.trial import unittest
-from twisted.test import proto_helpers
-from twisted.words.service import InMemoryWordsRealm, IRCFactory, IRCUser
-from twisted.words.protocols import irc
 from twisted.cred import checkers, portal
+from twisted.test import proto_helpers
+from twisted.words.protocols import irc
+from twisted.words.service import InMemoryWordsRealm, IRCFactory, IRCUser
+from twisted.words.test.test_irc import IRCTestCase
 
-class IRCUserTestCase(unittest.TestCase):
+class IRCUserTests(IRCTestCase):
     """
     Isolated tests for L{IRCUser}
     """
@@ -21,10 +21,11 @@ class IRCUserTestCase(unittest.TestCase):
         Sets up a Realm, Portal, Factory, IRCUser, Transport, and Connection
         for our tests.
         """
-        self.wordsRealm = InMemoryWordsRealm("example.com")
-        self.portal = portal.Portal(self.wordsRealm,
-            [checkers.InMemoryUsernamePasswordDatabaseDontUse(john="pass")])
-        self.factory = IRCFactory(self.wordsRealm, self.portal)
+        self.realm = InMemoryWordsRealm("example.com")
+        self.checker = checkers.InMemoryUsernamePasswordDatabaseDontUse()
+        self.portal = portal.Portal(self.realm, [self.checker])
+        self.checker.addUser(u"john", u"pass")
+        self.factory = IRCFactory(self.realm, self.portal)
         self.ircUser = self.factory.buildProtocol(None)
         self.stringTransport = proto_helpers.StringTransport()
         self.ircUser.makeConnection(self.stringTransport)
@@ -38,17 +39,44 @@ class IRCUserTestCase(unittest.TestCase):
         self.ircUser.irc_NICK("", ["mynick"])
         self.stringTransport.clear()
         self.ircUser.sendMessage("foo")
-        self.assertEqual(":example.com foo mynick\r\n",
-                          self.stringTransport.value())
+        self.assertEqualBufferValue(self.stringTransport.value(), ":example.com foo mynick\r\n")
+
+
+    def test_utf8Messages(self):
+        """
+        When a UTF8 message is sent with sendMessage and the current IRCUser
+        has a UTF8 nick and is set to UTF8 encoding, the message will be
+        written to the transport.
+        """
+        expectedResult = (u":example.com \u0442\u0435\u0441\u0442 "
+                          u"\u043d\u0438\u043a\r\n").encode('utf-8')
+
+        self.ircUser.irc_NICK("", [u"\u043d\u0438\u043a".encode('utf-8')])
+        self.stringTransport.clear()
+        self.ircUser.sendMessage(u"\u0442\u0435\u0441\u0442".encode('utf-8'))
+        self.assertEqualBufferValue(self.stringTransport.value(), expectedResult)
+
+
+    def test_invalidEncodingNick(self):
+        """
+        A NICK command sent with a nickname that cannot be decoded with the
+        current IRCUser's encoding results in a PRIVMSG from NickServ
+        indicating that the nickname could not be decoded.
+        """
+        self.ircUser.irc_NICK("", [b"\xd4\xc5\xd3\xd4"])
+        self.assertRaises(UnicodeError)
 
 
     def response(self):
         """
         Grabs our responses and then clears the transport
         """
-        response = self.ircUser.transport.value().splitlines()
+        response = self.ircUser.transport.value()
         self.ircUser.transport.clear()
-        return map(irc.parsemsg, response)
+        if bytes != str and isinstance(response, bytes):
+            response = response.decode("utf-8")
+        response = response.splitlines()
+        return [irc.parsemsg(r) for r in response]
 
 
     def scanResponse(self, response, messageType):
@@ -56,7 +84,7 @@ class IRCUserTestCase(unittest.TestCase):
         Gets messages out of a response
 
         @param response: The parsed IRC messages of the response, as returned
-        by L{IRCServiceTestCase.response}
+        by L{IRCUserTests.response}
 
         @param messageType: The string type of the desired messages.
 
@@ -110,17 +138,54 @@ class IRCUserTestCase(unittest.TestCase):
                'w', 'n'])])
 
 
+    def test_PART(self):
+        """
+        irc_PART
+        """
+        self.ircUser.irc_NICK("testuser", ["mynick"])
+        response = self.response()
+        self.ircUser.transport.clear()
+        self.assertEqual(response[0][1], irc.RPL_MOTDSTART)
+        self.ircUser.irc_JOIN("testuser", ["somechannel"])
+        response = self.response()
+        self.ircUser.transport.clear()
+        self.assertEqual(response[0][1], irc.ERR_NOSUCHCHANNEL)
+        self.ircUser.irc_PART("testuser", [b"somechannel", b"booga"])
+        response = self.response()
+        self.ircUser.transport.clear()
+        self.assertEqual(response[0][1], irc.ERR_NOTONCHANNEL)
+        self.ircUser.irc_PART("testuser", [u"somechannel", u"booga"])
+        response = self.response()
+        self.ircUser.transport.clear()
+        self.assertEqual(response[0][1], irc.ERR_NOTONCHANNEL)
+
+
+    def test_NAMES(self):
+        """
+        irc_NAMES
+        """
+        self.ircUser.irc_NICK("", ["testuser"])
+        self.ircUser.irc_JOIN("", ["somechannel"])
+        self.ircUser.transport.clear()
+        self.ircUser.irc_NAMES("", ["somechannel"])
+        response = self.response()
+        self.assertEqual(response[0][1], irc.RPL_ENDOFNAMES)
+
+
 
 class MocksyIRCUser(IRCUser):
     def __init__(self):
+        self.realm = InMemoryWordsRealm("example.com")
         self.mockedCodes = []
+
 
     def sendMessage(self, code, *_, **__):
         self.mockedCodes.append(code)
 
-BADTEXT = '\xff'
 
-class IRCUserBadEncodingTestCase(unittest.TestCase):
+BADTEXT = b'\xff'
+
+class IRCUserBadEncodingTests(IRCTestCase):
     """
     Verifies that L{IRCUser} sends the correct error messages back to clients
     when given indecipherable bytes
@@ -128,7 +193,8 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
     # TODO: irc_NICK -- but NICKSERV is used for that, so it isn't as easy.
 
     def setUp(self):
-        self.ircuser = MocksyIRCUser()
+        self.ircUser = MocksyIRCUser()
+
 
     def assertChokesOnBadBytes(self, irc_x, error):
         """
@@ -141,10 +207,11 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
         @param error: the error code irc_x should send. For example,
         irc.ERR_NOTONCHANNEL
         """
-        getattr(self.ircuser, 'irc_%s' % irc_x)(None, [BADTEXT])
-        self.assertEqual(self.ircuser.mockedCodes, [error])
+        getattr(self.ircUser, 'irc_%s' % irc_x)(None, [BADTEXT])
+        self.assertEqual(self.ircUser.mockedCodes, [error])
 
-    # no such channel
+    # No such channel
+
 
     def test_JOIN(self):
         """
@@ -153,12 +220,14 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
         """
         self.assertChokesOnBadBytes('JOIN', irc.ERR_NOSUCHCHANNEL)
 
+
     def test_NAMES(self):
         """
         Tests that irc_NAMES sends ERR_NOSUCHCHANNEL if the channel name can't
         be decoded.
         """
         self.assertChokesOnBadBytes('NAMES', irc.ERR_NOSUCHCHANNEL)
+
 
     def test_TOPIC(self):
         """
@@ -167,6 +236,7 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
         """
         self.assertChokesOnBadBytes('TOPIC', irc.ERR_NOSUCHCHANNEL)
 
+
     def test_LIST(self):
         """
         Tests that irc_LIST sends ERR_NOSUCHCHANNEL if the channel name can't
@@ -174,7 +244,8 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
         """
         self.assertChokesOnBadBytes('LIST', irc.ERR_NOSUCHCHANNEL)
 
-    # no such nick
+    # No such nick
+
 
     def test_MODE(self):
         """
@@ -183,12 +254,14 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
         """
         self.assertChokesOnBadBytes('MODE', irc.ERR_NOSUCHNICK)
 
+
     def test_PRIVMSG(self):
         """
         Tests that irc_PRIVMSG sends ERR_NOSUCHNICK if the target name can't
         be decoded.
         """
         self.assertChokesOnBadBytes('PRIVMSG', irc.ERR_NOSUCHNICK)
+
 
     def test_WHOIS(self):
         """
@@ -197,7 +270,8 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
         """
         self.assertChokesOnBadBytes('WHOIS', irc.ERR_NOSUCHNICK)
 
-    # not on channel
+    # Not on channel
+
 
     def test_PART(self):
         """
@@ -206,7 +280,8 @@ class IRCUserBadEncodingTestCase(unittest.TestCase):
         """
         self.assertChokesOnBadBytes('PART', irc.ERR_NOTONCHANNEL)
 
-    # probably nothing
+    # Probably nothing
+
 
     def test_WHO(self):
         """

@@ -1,7 +1,7 @@
 try:
     import ast
 except ImportError:
-    from chameleon import ast24 as ast
+    from chameleon import ast25 as ast
 
 import inspect
 import textwrap
@@ -13,9 +13,14 @@ try:
 except ImportError:
     import builtins
 
-reverse_builtin_map = dict(
-    (value, name) for (name, value) in builtins.__dict__.items()
-    )
+reverse_builtin_map = {}
+for name, value in builtins.__dict__.items():
+    try:
+        hash(value)
+    except TypeError:
+        continue
+
+    reverse_builtin_map[value] = name
 
 try:
     basestring
@@ -39,12 +44,24 @@ except NameError:
     NATIVE_NUMBERS = int, float, bool
 
 
-def template(function, mode='exec', **kw):
+def template(source, mode='exec', is_func=False, func_args=(), func_defaults=(), **kw):
     def wrapper(*vargs, **kwargs):
         symbols = dict(zip(args, vargs + defaults))
         symbols.update(kwargs)
 
         class Visitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
+                self.generic_visit(node)
+
+                name = symbols.get(node.name, self)
+                if name is not self:
+                    node_annotations[node] = ast.FunctionDef(
+                        name=name,
+                        args=node.args,
+                        body=node.body,
+                        decorator_list=getattr(node, "decorator_list", []),
+                        )
+
             def visit_Name(self, node):
                 value = symbols.get(node.id, self)
                 if value is not self:
@@ -61,23 +78,18 @@ def template(function, mode='exec', **kw):
                     assert hasattr(value, '_fields')
                     node_annotations[node] = value
 
-        expr = parse(source, mode=mode)
-        if not isinstance(function, basestring):
-            expr = expr.body[0]
+        expr = parse(textwrap.dedent(source), mode=mode)
 
         Visitor().visit(expr)
         return expr.body
 
-    if isinstance(function, basestring):
-        source = function
-        defaults = args = ()
+    assert isinstance(source, basestring)
+    defaults = func_defaults
+    args = func_args
+    if is_func:
+        return wrapper
+    else:
         return wrapper(**kw)
-
-    source = textwrap.dedent(inspect.getsource(function))
-    argspec = inspect.getargspec(function)
-    args = argspec[0]
-    defaults = argspec[3] or ()
-    return wrapper
 
 
 class TemplateCodeGenerator(ASTCodeGenerator):
@@ -93,10 +105,12 @@ class TemplateCodeGenerator(ASTCodeGenerator):
 
     names = ()
 
-    def __init__(self, tree):
+    def __init__(self, tree, source=None):
         self.imports = {}
         self.defines = {}
         self.markers = {}
+        self.source = source
+        self.tokens = []
 
         # Generate code
         super(TemplateCodeGenerator, self).__init__(tree)
@@ -174,7 +188,8 @@ class TemplateCodeGenerator(ASTCodeGenerator):
         node = self.imports.get(value)
         if node is None:
             # we come up with a unique symbol based on the class name
-            name = "_%s" % getattr(value, '__name__', str(value))
+            name = "_%s" % getattr(value, '__name__', str(value)).\
+                   rsplit('.', 1)[-1]
             node = load(name)
             self.imports[value] = store(node.id)
 
@@ -207,9 +222,13 @@ class TemplateCodeGenerator(ASTCodeGenerator):
 
     def visit_Static(self, node):
         if node.name is None:
-            name = "_static_%d" % id(node.value)
+            name = "_static_%s" % str(id(node.value)).replace('-', '_')
         else:
             name = node.name
 
         node = self.define(name, node.value)
         self.visit(node)
+
+    def visit_TokenRef(self, node):
+        self.tokens.append((node.pos, node.length))
+        super(TemplateCodeGenerator, self).visit(ast.Num(n=node.pos))

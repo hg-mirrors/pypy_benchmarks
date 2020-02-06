@@ -12,44 +12,55 @@
 #
 ##############################################################################
 
+import re
+
 from .exc import CompilationError
-from .namespaces import I18N_NS as ZOPE_I18N_NS
+from .utils import unicode_string
+
+NAME_RE = r"[a-zA-Z][-a-zA-Z0-9_]*"
 
 WHITELIST = frozenset([
     "translate",
     "domain",
+    "context",
     "target",
     "source",
     "attributes",
     "data",
     "name",
+    "mode",
+    "xmlns",
+    "xml",
+    "comment",
+    "ignore",
+    "ignore-attributes",
     ])
+
+_interp_regex = re.compile(r'(?<!\$)(\$(?:(%(n)s)|{(%(n)s)}))'
+    % ({'n': NAME_RE}))
+
 
 try:  # pragma: no cover
     str = unicode
 except NameError:
     pass
 
+# BBB: The ``fast_translate`` function here is kept for backwards
+# compatibility reasons. Do not use!
+
 try:  # pragma: no cover
-    # optional: `zope.i18n`, `zope.i18nmessageid`
     from zope.i18n import interpolate
     from zope.i18n import translate
     from zope.i18nmessageid import Message
 except ImportError:   # pragma: no cover
-
-    def fast_translate(msgid, domain=None, mapping=None, context=None,
-                       target_language=None, default=None):
-        if default is None:
-            return msgid
-
-        return default
+    pass
 else:   # pragma: no cover
     def fast_translate(msgid, domain=None, mapping=None, context=None,
                        target_language=None, default=None):
         if msgid is None:
             return
 
-        if target_language is not None:
+        if target_language is not None or context is not None:
             result = translate(
                 msgid, domain=domain, mapping=mapping, context=context,
                 target_language=target_language, default=default)
@@ -68,6 +79,24 @@ else:   # pragma: no cover
 
         return interpolate(default, mapping)
 
+
+def simple_translate(msgid, domain=None, mapping=None, context=None,
+                   target_language=None, default=None):
+    if default is None:
+        default = getattr(msgid, "default", msgid)
+
+    if mapping is None:
+        mapping = getattr(msgid, "mapping", None)
+
+    if mapping:
+        def replace(match):
+            whole, param1, param2 = match.groups()
+            return unicode_string(mapping.get(param1 or param2, whole))
+        return _interp_regex.sub(replace, default)
+
+    return default
+
+
 def parse_attributes(attrs, xml=True):
     d = {}
 
@@ -77,6 +106,11 @@ def parse_attributes(attrs, xml=True):
     attrs = [spec for spec in attrs.split(";") if spec]
 
     for spec in attrs:
+        if ',' in spec:
+            raise CompilationError(
+                "Attribute must not contain comma. Use semicolon to "
+                "list multiple attributes", spec
+                )
         parts = spec.split()
         if len(parts) == 2:
             attr, msgid = parts
@@ -88,6 +122,7 @@ def parse_attributes(attrs, xml=True):
                 "Illegal i18n:attributes specification.", spec)
         if not xml:
             attr = attr.lower()
+        attr = attr.strip()
         if attr in d:
             raise CompilationError(
                 "Attribute may only be specified once in i18n:attributes", attr)

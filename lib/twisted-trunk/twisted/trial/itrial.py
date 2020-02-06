@@ -7,6 +7,8 @@ Interfaces for Trial.
 Maintainer: Jonathan Lange
 """
 
+from __future__ import division, absolute_import
+
 import zope.interface as zi
 from zope.interface import Attribute
 
@@ -167,27 +169,33 @@ class IReporter(zi.Interface):
         """
 
 
-    def addExpectedFailure(test, failure, todo):
+    def addExpectedFailure(test, failure, todo=None):
         """
         Record that the given test failed, and was expected to do so.
 
-        @type test: L{pyunit.TestCase}
+        In Twisted 15.5 and prior, C{todo} was a mandatory parameter.
+
+        @type test: L{unittest.TestCase}
         @param test: The test which this is about.
         @type error: L{failure.Failure}
         @param error: The error which this test failed with.
         @type todo: L{unittest.Todo}
-        @param todo: The reason for the test's TODO status.
+        @param todo: The reason for the test's TODO status. If L{None}, a
+            generic reason is used.
         """
 
 
-    def addUnexpectedSuccess(test, todo):
+    def addUnexpectedSuccess(test, todo=None):
         """
         Record that the given test failed, and was expected to do so.
 
-        @type test: L{pyunit.TestCase}
+        In Twisted 15.5 and prior, C{todo} was a mandatory parameter.
+
+        @type test: L{unittest.TestCase}
         @param test: The test which this is about.
         @type todo: L{unittest.Todo}
-        @param todo: The reason for the test's TODO status.
+        @param todo: The reason for the test's TODO status. If L{None}, a
+            generic reason is used.
         """
 
 
@@ -213,7 +221,7 @@ class IReporter(zi.Interface):
         """
         Deprecated in Twisted 8.0, use L{done} instead.
 
-        Present the errors that have occured during the test run. This method
+        Present the errors that have occurred during the test run. This method
         will be called after all tests have been run.
         """
 

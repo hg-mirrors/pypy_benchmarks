@@ -4,6 +4,7 @@ __version__ = '$Revision: 1.3 $'[11:-2]
 
 from twisted.trial import unittest
 from twisted.protocols import htb
+from .test_pcp import DummyConsumer
 
 class DummyClock:
     time = 0
@@ -13,9 +14,13 @@ class DummyClock:
     def __call__(self):
         return self.time
 
+
+
 class SomeBucket(htb.Bucket):
     maxburst = 100
     rate = 2
+
+
 
 class TestBucketBase(unittest.TestCase):
     def setUp(self):
@@ -26,33 +31,58 @@ class TestBucketBase(unittest.TestCase):
     def tearDown(self):
         htb.time = self._realTimeFunc
 
-class TestBucket(TestBucketBase):
+
+
+class BucketTests(TestBucketBase):
     def testBucketSize(self):
-        """Testing the size of the bucket."""
+        """
+        Testing the size of the bucket.
+        """
         b = SomeBucket()
         fit = b.add(1000)
         self.assertEqual(100, fit)
 
-    def testBucketDrian(self):
-        """Testing the bucket's drain rate."""
+
+    def testBucketDrain(self):
+        """
+        Testing the bucket's drain rate.
+        """
         b = SomeBucket()
         fit = b.add(1000)
         self.clock.set(10)
         fit = b.add(1000)
         self.assertEqual(20, fit)
 
-class TestBucketNesting(TestBucketBase):
+
+    def test_bucketEmpty(self):
+        """
+        L{htb.Bucket.drip} returns C{True} if the bucket is empty after that drip.
+        """
+        b = SomeBucket()
+        b.add(20)
+        self.clock.set(9)
+        empty = b.drip()
+        self.assertFalse(empty)
+        self.clock.set(10)
+        empty = b.drip()
+        self.assertTrue(empty)
+
+
+
+class BucketNestingTests(TestBucketBase):
     def setUp(self):
         TestBucketBase.setUp(self)
         self.parent = SomeBucket()
         self.child1 = SomeBucket(self.parent)
         self.child2 = SomeBucket(self.parent)
 
+
     def testBucketParentSize(self):
         # Use up most of the parent bucket.
         self.child1.add(90)
         fit = self.child2.add(90)
         self.assertEqual(10, fit)
+
 
     def testBucketParentRate(self):
         # Make the parent bucket drain slower.
@@ -70,17 +100,16 @@ class TestBucketNesting(TestBucketBase):
 
 # TODO: Test the Transport stuff?
 
-from test_pcp import DummyConsumer
-
-class ConsumerShaperTest(TestBucketBase):
+class ConsumerShaperTests(TestBucketBase):
     def setUp(self):
         TestBucketBase.setUp(self)
         self.underlying = DummyConsumer()
         self.bucket = SomeBucket()
         self.shaped = htb.ShapedConsumer(self.underlying, self.bucket)
 
+
     def testRate(self):
-        # Start off with a full bucket, so the burst-size dosen't factor in
+        # Start off with a full bucket, so the burst-size doesn't factor in
         # to the calculations.
         delta_t = 10
         self.bucket.add(100)
@@ -89,6 +118,7 @@ class ConsumerShaperTest(TestBucketBase):
         self.shaped.resumeProducing()
         self.assertEqual(len(self.underlying.getvalue()),
                              delta_t * self.bucket.rate)
+
 
     def testBucketRefs(self):
         self.assertEqual(self.bucket._refcount, 1)

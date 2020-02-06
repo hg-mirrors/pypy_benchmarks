@@ -1,11 +1,6 @@
 import re
 import sys
 
-try:
-    import ast
-except ImportError:
-    from chameleon import ast24 as ast
-
 from .astutil import parse
 from .astutil import store
 from .astutil import load
@@ -18,9 +13,10 @@ from .astutil import Symbol
 from .exc import ExpressionError
 from .utils import resolve_dotted
 from .utils import Markup
+from .utils import ast
 from .tokenize import Token
-from .parser import groupdict
 from .parser import substitute
+from .compiler import Interpolator
 
 try:
     from .py26 import lookup_attr
@@ -29,13 +25,15 @@ except SyntaxError:
 
 
 split_parts = re.compile(r'(?<!\\)\|')
-match_prefix = re.compile(r'^\s*([a-z\-_]+):').match
+match_prefix = re.compile(r'^\s*([a-z][a-z0-9\-_]*):').match
 re_continuation = re.compile(r'\\\s*$', re.MULTILINE)
 
 try:
     from __builtin__ import basestring
 except ImportError:
     basestring = str
+
+exc_clear = getattr(sys, "exc_clear", None)
 
 
 def resolve_global(value):
@@ -54,6 +52,8 @@ def test(expression, engine=None, **env):
     module = ast.Module(body)
     module = ast.fix_missing_locations(module)
     env['rcontext'] = {}
+    if exc_clear is not None:
+        env['__exc_clear'] = exc_clear
     source = TemplateCodeGenerator(module).code
     code = compile(source, '<string>', 'exec')
     exec(code, env)
@@ -117,6 +117,8 @@ class TalesExpr(object):
                  LookupError, \
                  TypeError
 
+    ignore_prefix = True
+
     def __init__(self, expression):
         self.expression = expression
 
@@ -125,7 +127,7 @@ class TalesExpr(object):
         assignments = []
 
         while remaining:
-            if match_prefix(remaining) is not None:
+            if self.ignore_prefix and match_prefix(remaining) is not None:
                 compiler = engine.parse(remaining)
                 assignment = compiler.assign_value(target)
                 remaining = ""
@@ -139,12 +141,15 @@ class TalesExpr(object):
                     remaining = ""
 
                 expression = expression.replace('\\|', '|')
-                assignment = self.translate(expression, target)
+                assignment = self.translate_proxy(engine, expression, target)
             assignments.append(assignment)
 
         if not assignments:
+            if not remaining:
+                raise ExpressionError("No input:", remaining)
+
             assignments.append(
-                self.translate(remaining, target)
+                self.translate_proxy(engine, remaining, target)
                 )
 
         for i, assignment in enumerate(reversed(assignments)):
@@ -158,11 +163,26 @@ class TalesExpr(object):
                             elts=map(resolve_global, self.exceptions),
                             ctx=ast.Load()),
                         name=None,
-                        body=body,
-                        )],
-                    )]
+                        body=body if exc_clear is None else body + [
+                            ast.Expr(
+                                ast.Call(
+                                    func=load("__exc_clear"),
+                                    args=[],
+                                    keywords=[],
+                                    starargs=None,
+                                    kwargs=None,
+                                )
+                            )
+                        ],
+                    )],
+                )]
 
         return body
+
+    def translate_proxy(self, engine, *args):
+        """Default implementation delegates to ``translate`` method."""
+
+        return self.translate(*args)
 
     def translate(self, expression, target):
         """Return statements that assign a value to ``target``."""
@@ -209,7 +229,7 @@ class PathExpr(TalesExpr):
 
 
 class PythonExpr(TalesExpr):
-    """Python expression compiler.
+    r"""Python expression compiler.
 
     >>> test(PythonExpr('2 + 2'))
     4
@@ -222,7 +242,7 @@ class PythonExpr(TalesExpr):
 
     To include a pipe character, use a backslash escape sequence:
 
-    >>> test(PythonExpr('\"\|\"'))
+    >>> test(PythonExpr(r'"\|"'))
     '|'
     """
 
@@ -251,22 +271,6 @@ class PythonExpr(TalesExpr):
         self.transform.visit(value)
 
         return [ast.Assign(targets=[target], value=value)]
-
-
-class ProxyExpr(TalesExpr):
-    def __init__(self, name, *args):
-        super(ProxyExpr, self).__init__(*args)
-        self.name = name
-
-    def translate(self, expression, target):
-        path = expression.strip()
-        return [ast.Assign(targets=[target], value=ast.Call(
-            func=load(self.name),
-            args=[ast.Str(s=path)],
-            keywords=[],
-            starargs=None,
-            kwargs=None
-            ))]
 
 
 class ImportExpr(object):
@@ -312,7 +316,7 @@ class StructureExpr(object):
     >>> engine = SimpleEngine(PythonExpr)
 
     >>> test(StructureExpr('\"<tt>foo</tt>\"'), engine)
-    s'<tt>foo</tt>'
+    '<tt>foo</tt>'
     """
 
     wrapper_class = Symbol(Markup)
@@ -349,6 +353,7 @@ class IdentityExpr(object):
 
 class StringExpr(object):
     """Similar to the built-in ``string.Template``, but uses an
+
     expression engine to support pluggable string substitution
     expressions.
 
@@ -376,27 +381,54 @@ class StringExpr(object):
     >>> test(StringExpr('Hello $name!', True))
     'Hello $name!'
 
-    We can escape interpolation using the standard escaping
-    syntax:
+    To avoid interpolation, use two dollar symbols. Note that only a
+    single symbol will appear in the output.
 
-    >>> test(StringExpr('\\${name}'))
-    '\\\${name}'
+    >>> test(StringExpr('$${name}'))
+    '${name}'
+
+    In previous versions, it was possible to escape using a regular
+    backslash coding, but this is no longer supported.
+
+    >>> test(StringExpr(r'\${name}'), name='Hello world!')
+    '\\\\Hello world!'
 
     Multiple interpolations in one:
 
-    >>> test(StringExpr(\"Hello ${'a'}${'b'}${'c'}!\"))
+    >>> test(StringExpr("Hello ${'a'}${'b'}${'c'}!"))
     'Hello abc!'
 
     Here's a more involved example taken from a javascript source:
 
     >>> result = test(StringExpr(\"\"\"
-    ... function(oid) {
+    ... function($$, oid) {
     ...     $('#' + oid).autocomplete({source: ${'source'}});
     ... }
     ... \"\"\"))
 
     >>> 'source: source' in result
     True
+
+    As noted previously, the double-dollar escape also affects
+    non-interpolation expressions.
+
+    >>> 'function($, oid)' in result
+    True
+
+    >>> test(StringExpr('test ${1}${2}'))
+    'test 12'
+
+    >>> test(StringExpr('test $${1}${2}'))
+    'test ${1}2'
+
+    >>> test(StringExpr('test $$'))
+    'test $'
+
+    >>> test(StringExpr('$$.ajax(...)'))
+    '$.ajax(...)'
+
+    >>> test(StringExpr('test $$ ${1}'))
+    'test $ 1'
 
     In the above examples, the expression is evaluated using the
     dummy engine which just returns the input as a string.
@@ -407,7 +439,7 @@ class StringExpr(object):
 
     >>> class engine:
     ...     @staticmethod
-    ...     def parse(expression):
+    ...     def parse(expression, char_escape=None):
     ...         class compiler:
     ...             @staticmethod
     ...             def assign_text(target):
@@ -431,106 +463,38 @@ class StringExpr(object):
     'There are 11 characters in \"hello world\"'
     """
 
-    braces_required_regex = re.compile(
-        r'(?<!\\)\$({(?P<expression>.*)})')
-
-    braces_optional_regex = re.compile(
-        r'(?<!\\)\$({(?P<expression>.*)}|(?P<variable>[A-Za-z][A-Za-z0-9_]*))')
-
     def __init__(self, expression, braces_required=False):
         # The code relies on the expression being a token string
         if not isinstance(expression, Token):
             expression = Token(expression, 0)
 
-        self.expression = expression
-        self.regex = self.braces_required_regex if braces_required else \
-                     self.braces_optional_regex
+        self.translator = Interpolator(expression, braces_required)
 
     def __call__(self, name, engine):
-        """The strategy is to find possible expression strings and
-        call the ``validate`` function of the parser to validate.
+        return self.translator(name, engine)
 
-        For every possible starting point, the longest possible
-        expression is tried first, then the second longest and so
-        forth.
 
-        Example 1:
+class ProxyExpr(TalesExpr):
+    braces_required = False
 
-          ${'expressions use the ${<expression>} format'}
+    def __init__(self, name, expression, ignore_prefix=True):
+        super(ProxyExpr, self).__init__(expression)
+        self.ignore_prefix = ignore_prefix
+        self.name = name
 
-        The entire expression is attempted first and it is also the
-        only one that validates.
+    def translate_proxy(self, engine, expression, target):
+        translator = Interpolator(expression, self.braces_required)
+        assignment = translator(target, engine)
 
-        Example 2:
-
-          ${'Hello'} ${'world!'}
-
-        Validation of the longest possible expression (the entire
-        string) will fail, while the second round of attempts,
-        ``${'Hello'}`` and ``${'world!'}`` respectively, validate.
-
-        """
-
-        body = []
-        nodes = []
-        text = self.expression
-
-        while text:
-            matched = text
-            m = self.regex.search(matched)
-            if m is None:
-                nodes.append(ast.Str(s=text))
-                break
-
-            part = text[:m.start()]
-            text = text[m.start():]
-
-            if part:
-                node = ast.Str(s=part)
-                nodes.append(node)
-
-            if not body:
-                target = name
-            else:
-                target = store("%s_%d" % (name.id, text.pos))
-
-            while True:
-                d = groupdict(m, matched)
-                string = d["expression"] or d["variable"] or ""
-
-                try:
-                    compiler = engine.parse(string)
-                    body += compiler.assign_text(target)
-                except ExpressionError:
-                    matched = matched[m.start():m.end() - 1]
-                    m = self.regex.search(matched)
-                    if m is None:
-                        raise
-                else:
-                    break
-
-            # if this is the first expression, use the provided
-            # assignment name; otherwise, generate one (here based
-            # on the string position)
-            node = load(target.id)
-            nodes.append(node)
-            text = text[len(m.group()):]
-
-        if len(nodes) == 1:
-            target = nodes[0]
-        else:
-            nodes = [
-                template("NODE if NODE is not None else ''", NODE=node, mode="eval")
-                for node in nodes
-                ]
-
-            target = ast.BinOp(
-                left=ast.Str(s="%s" * len(nodes)),
-                op=ast.Mod(),
-                right=ast.Tuple(elts=nodes, ctx=ast.Load()))
-
-        body += [ast.Assign(targets=[name], value=target)]
-        return body
+        return assignment + [
+            ast.Assign(targets=[target], value=ast.Call(
+                func=load(self.name),
+                args=[target],
+                keywords=[],
+                starargs=None,
+                kwargs=None
+            ))
+        ]
 
 
 class ExistsExpr(object):
@@ -557,7 +521,7 @@ class ExistsExpr(object):
 
     def __call__(self, target, engine):
         ignore = store("_ignore")
-        compiler = engine.parse(self.expression)
+        compiler = engine.parse(self.expression, False)
         body = compiler.assign_value(ignore)
 
         classes = map(resolve_global, self.exceptions)
@@ -571,8 +535,8 @@ class ExistsExpr(object):
                     body=template("target = 0", target=target),
                     )],
                 orelse=template("target = 1", target=target)
-                )
-            ]
+            )
+        ]
 
 
 class ExpressionParser(object):
@@ -606,7 +570,7 @@ class SimpleEngine(object):
         if expression is not None:
             self.expression = expression
 
-    def parse(self, string):
+    def parse(self, string, handle_errors=False, char_escape=None):
         compiler = self.expression(string)
         return SimpleCompiler(compiler, self)
 

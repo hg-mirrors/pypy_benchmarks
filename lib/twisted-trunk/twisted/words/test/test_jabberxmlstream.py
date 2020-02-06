@@ -5,6 +5,8 @@
 Tests for L{twisted.words.protocols.jabber.xmlstream}.
 """
 
+from __future__ import absolute_import, division
+
 from twisted.trial import unittest
 
 from zope.interface.verify import verifyObject
@@ -13,18 +15,27 @@ from twisted.internet import defer, task
 from twisted.internet.error import ConnectionLost
 from twisted.internet.interfaces import IProtocolFactory
 from twisted.python import failure
+from twisted.python.compat import unicode
 from twisted.test import proto_helpers
 from twisted.words.test.test_xmlstream import GenericXmlStreamFactoryTestsMixin
 from twisted.words.xish import domish
 from twisted.words.protocols.jabber import error, ijabber, jid, xmlstream
 
-
+try:
+    from twisted.internet import ssl
+except ImportError:
+    ssl = None
+    skipWhenNoSSL = "SSL not available"
+else:
+    skipWhenNoSSL = None
+    from twisted.internet.ssl import CertificateOptions
+    from twisted.internet._sslverify import ClientTLSOptions
 
 NS_XMPP_TLS = 'urn:ietf:params:xml:ns:xmpp-tls'
 
 
 
-class HashPasswordTest(unittest.TestCase):
+class HashPasswordTests(unittest.TestCase):
     """
     Tests for L{xmlstream.hashPassword}.
     """
@@ -41,7 +52,7 @@ class HashPasswordTest(unittest.TestCase):
         """
         The session identifier must be a unicode object.
         """
-        self.assertRaises(TypeError, xmlstream.hashPassword, "\xc2\xb92345",
+        self.assertRaises(TypeError, xmlstream.hashPassword, b"\xc2\xb92345",
                                                              u"secret")
 
 
@@ -50,7 +61,7 @@ class HashPasswordTest(unittest.TestCase):
         The password must be a unicode object.
         """
         self.assertRaises(TypeError, xmlstream.hashPassword, u"12345",
-                                                             "secr\xc3\xa9t")
+                                                             b"secr\xc3\xa9t")
 
 
     def test_unicodeSecret(self):
@@ -62,7 +73,7 @@ class HashPasswordTest(unittest.TestCase):
 
 
 
-class IQTest(unittest.TestCase):
+class IQTests(unittest.TestCase):
     """
     Tests both IQ and the associated IIQResponseTracker callback.
     """
@@ -88,8 +99,11 @@ class IQTest(unittest.TestCase):
     def testSend(self):
         self.xmlstream.transport.clear()
         self.iq.send()
-        self.assertEqual("<iq type='get' id='%s'/>" % self.iq['id'],
-                          self.xmlstream.transport.value())
+        idBytes = self.iq['id'].encode('utf-8')
+        self.assertIn(self.xmlstream.transport.value(), [
+                      b"<iq type='get' id='" + idBytes + b"'/>",
+                      b"<iq id='" + idBytes + b"' type='get'/>"
+                      ])
 
 
     def testResultResponse(self):
@@ -226,7 +240,7 @@ class IQTest(unittest.TestCase):
 
 
 
-class XmlStreamTest(unittest.TestCase):
+class XmlStreamTests(unittest.TestCase):
 
     def onStreamStart(self, obj):
         self.gotStreamStart = True
@@ -264,12 +278,12 @@ class XmlStreamTest(unittest.TestCase):
         """
         xs = self.xmlstream
         xs.sendHeader()
-        splitHeader = self.xmlstream.transport.value()[0:-1].split(' ')
-        self.assertIn("<stream:stream", splitHeader)
-        self.assertIn("xmlns:stream='http://etherx.jabber.org/streams'",
+        splitHeader = self.xmlstream.transport.value()[0:-1].split(b' ')
+        self.assertIn(b"<stream:stream", splitHeader)
+        self.assertIn(b"xmlns:stream='http://etherx.jabber.org/streams'",
                       splitHeader)
-        self.assertIn("xmlns='testns'", splitHeader)
-        self.assertIn("version='1.0'", splitHeader)
+        self.assertIn(b"xmlns='testns'", splitHeader)
+        self.assertIn(b"version='1.0'", splitHeader)
         self.assertTrue(xs._headerSent)
 
 
@@ -280,13 +294,13 @@ class XmlStreamTest(unittest.TestCase):
         xs = self.xmlstream
         xs.prefixes['jabber:server:dialback'] = 'db'
         xs.sendHeader()
-        splitHeader = self.xmlstream.transport.value()[0:-1].split(' ')
-        self.assertIn("<stream:stream", splitHeader)
-        self.assertIn("xmlns:stream='http://etherx.jabber.org/streams'",
+        splitHeader = self.xmlstream.transport.value()[0:-1].split(b' ')
+        self.assertIn(b"<stream:stream", splitHeader)
+        self.assertIn(b"xmlns:stream='http://etherx.jabber.org/streams'",
                       splitHeader)
-        self.assertIn("xmlns:db='jabber:server:dialback'", splitHeader)
-        self.assertIn("xmlns='testns'", splitHeader)
-        self.assertIn("version='1.0'", splitHeader)
+        self.assertIn(b"xmlns:db='jabber:server:dialback'", splitHeader)
+        self.assertIn(b"xmlns='testns'", splitHeader)
+        self.assertIn(b"version='1.0'", splitHeader)
         self.assertTrue(xs._headerSent)
 
 
@@ -299,9 +313,9 @@ class XmlStreamTest(unittest.TestCase):
         xs.otherEntity = jid.JID('otherHost')
         xs.initiating = True
         xs.sendHeader()
-        splitHeader = xs.transport.value()[0:-1].split(' ')
-        self.assertIn("to='otherhost'", splitHeader)
-        self.assertIn("from='thishost'", splitHeader)
+        splitHeader = xs.transport.value()[0:-1].split(b' ')
+        self.assertIn(b"to='otherhost'", splitHeader)
+        self.assertIn(b"from='thishost'", splitHeader)
 
 
     def test_sendHeaderReceiving(self):
@@ -314,10 +328,10 @@ class XmlStreamTest(unittest.TestCase):
         xs.initiating = False
         xs.sid = 'session01'
         xs.sendHeader()
-        splitHeader = xs.transport.value()[0:-1].split(' ')
-        self.assertIn("to='otherhost'", splitHeader)
-        self.assertIn("from='thishost'", splitHeader)
-        self.assertIn("id='session01'", splitHeader)
+        splitHeader = xs.transport.value()[0:-1].split(b' ')
+        self.assertIn(b"to='otherhost'", splitHeader)
+        self.assertIn(b"from='thishost'", splitHeader)
+        self.assertIn(b"id='session01'", splitHeader)
 
 
     def test_receiveStreamError(self):
@@ -344,7 +358,7 @@ class XmlStreamTest(unittest.TestCase):
         xs.sendHeader()
         xs.transport.clear()
         xs.sendStreamError(error.StreamError('version-unsupported'))
-        self.assertNotEqual('', xs.transport.value())
+        self.assertNotEqual(b'', xs.transport.value())
         self.assertTrue(self.gotStreamEnd)
 
 
@@ -361,7 +375,7 @@ class XmlStreamTest(unittest.TestCase):
         xs.transport.clear()
         xs.sendStreamError(error.StreamError('version-unsupported'))
         self.assertNot(xs._headerSent)
-        self.assertEqual('', xs.transport.value())
+        self.assertEqual(b'', xs.transport.value())
         self.assertTrue(self.gotStreamEnd)
 
 
@@ -376,7 +390,7 @@ class XmlStreamTest(unittest.TestCase):
         xs.sendHeader()
         xs.transport.clear()
         xs.sendStreamError(error.StreamError('version-unsupported'))
-        self.assertNotEqual('', xs.transport.value())
+        self.assertNotEqual(b'', xs.transport.value())
         self.assertTrue(self.gotStreamEnd)
 
 
@@ -393,7 +407,7 @@ class XmlStreamTest(unittest.TestCase):
         xs.transport.clear()
         xs.sendStreamError(error.StreamError('version-unsupported'))
         self.assertTrue(xs._headerSent)
-        self.assertNotEqual('', xs.transport.value())
+        self.assertNotEqual(b'', xs.transport.value())
         self.assertTrue(self.gotStreamEnd)
 
 
@@ -415,17 +429,17 @@ class XmlStreamTest(unittest.TestCase):
         """
         xs = self.xmlstream
         xs.send('<presence/>')
-        self.assertEqual(xs.transport.value(), '<presence/>')
+        self.assertEqual(xs.transport.value(), b'<presence/>')
 
         xs.transport.clear()
         el = domish.Element(('testns', 'presence'))
         xs.send(el)
-        self.assertEqual(xs.transport.value(), '<presence/>')
+        self.assertEqual(xs.transport.value(), b'<presence/>')
 
         xs.transport.clear()
         el = domish.Element(('http://etherx.jabber.org/streams', 'features'))
         xs.send(el)
-        self.assertEqual(xs.transport.value(), '<stream:features/>')
+        self.assertEqual(xs.transport.value(), b'<stream:features/>')
 
 
     def test_authenticator(self):
@@ -465,7 +479,7 @@ class TestError(Exception):
 
 
 
-class AuthenticatorTest(unittest.TestCase):
+class AuthenticatorTests(unittest.TestCase):
     def setUp(self):
         self.authenticator = xmlstream.Authenticator()
         self.xmlstream = xmlstream.XmlStream(self.authenticator)
@@ -529,7 +543,7 @@ class AuthenticatorTest(unittest.TestCase):
 
 
 
-class ConnectAuthenticatorTest(unittest.TestCase):
+class ConnectAuthenticatorTests(unittest.TestCase):
 
     def setUp(self):
         self.gotAuthenticated = False
@@ -608,7 +622,7 @@ class ConnectAuthenticatorTest(unittest.TestCase):
 
 
 
-class ListenAuthenticatorTest(unittest.TestCase):
+class ListenAuthenticatorTests(unittest.TestCase):
     """
     Tests for L{xmlstream.ListenAuthenticator}
     """
@@ -632,7 +646,7 @@ class ListenAuthenticatorTest(unittest.TestCase):
                          "version='1.0'>")
         self.assertEqual((1, 0), xs.version)
         self.assertNotIdentical(None, xs.sid)
-        self.assertNotEquals('12345', xs.sid)
+        self.assertNotEqual('12345', xs.sid)
         self.assertEqual('jabber:client', xs.namespace)
         self.assertIdentical(None, xs.otherEntity)
         self.assertEqual('example.com', xs.thisEntity.host)
@@ -652,14 +666,14 @@ class ListenAuthenticatorTest(unittest.TestCase):
 
 
 
-class TLSInitiatingInitializerTest(unittest.TestCase):
+class TLSInitiatingInitializerTests(unittest.TestCase):
     def setUp(self):
         self.output = []
         self.done = []
 
         self.savedSSL = xmlstream.ssl
 
-        self.authenticator = xmlstream.Authenticator()
+        self.authenticator = xmlstream.ConnectAuthenticator(u'example.com')
         self.xmlstream = xmlstream.XmlStream(self.authenticator)
         self.xmlstream.send = self.output.append
         self.xmlstream.connectionMade()
@@ -673,9 +687,18 @@ class TLSInitiatingInitializerTest(unittest.TestCase):
         xmlstream.ssl = self.savedSSL
 
 
-    def testWantedSupported(self):
+    def test_initRequired(self):
         """
-        Test start when TLS is wanted and the SSL library available.
+        Passing required sets the instance variable.
+        """
+        self.init = xmlstream.TLSInitiatingInitializer(self.xmlstream,
+                                                       required=True)
+        self.assertTrue(self.init.required)
+
+
+    def test_wantedSupported(self):
+        """
+        When TLS is wanted and SSL available, StartTLS is initiated.
         """
         self.xmlstream.transport = proto_helpers.StringTransport()
         self.xmlstream.transport.startTLS = lambda ctx: self.done.append('TLS')
@@ -684,7 +707,8 @@ class TLSInitiatingInitializerTest(unittest.TestCase):
 
         d = self.init.start()
         d.addCallback(self.assertEqual, xmlstream.Reset)
-        starttls = self.output[0]
+        self.assertEqual(2, len(self.output))
+        starttls = self.output[1]
         self.assertEqual('starttls', starttls.name)
         self.assertEqual(NS_XMPP_TLS, starttls.uri)
         self.xmlstream.dataReceived("<proceed xmlns='%s'/>" % NS_XMPP_TLS)
@@ -692,40 +716,90 @@ class TLSInitiatingInitializerTest(unittest.TestCase):
 
         return d
 
-    if not xmlstream.ssl:
-        testWantedSupported.skip = "SSL not available"
+    test_wantedSupported.skip = skipWhenNoSSL
 
 
-    def testWantedNotSupportedNotRequired(self):
+    def test_certificateVerify(self):
         """
-        Test start when TLS is wanted and the SSL library available.
+        The server certificate will be verified.
+        """
+
+        def fakeStartTLS(contextFactory):
+            self.assertIsInstance(contextFactory, ClientTLSOptions)
+            self.assertEqual(contextFactory._hostname, u"example.com")
+            self.done.append('TLS')
+
+        self.xmlstream.transport = proto_helpers.StringTransport()
+        self.xmlstream.transport.startTLS = fakeStartTLS
+        self.xmlstream.reset = lambda: self.done.append('reset')
+        self.xmlstream.sendHeader = lambda: self.done.append('header')
+
+        d = self.init.start()
+        self.xmlstream.dataReceived("<proceed xmlns='%s'/>" % NS_XMPP_TLS)
+        self.assertEqual(['TLS', 'reset', 'header'], self.done)
+        return d
+
+    test_certificateVerify.skip = skipWhenNoSSL
+
+
+    def test_certificateVerifyContext(self):
+        """
+        A custom contextFactory is passed through to startTLS.
+        """
+        ctx = CertificateOptions()
+        self.init = xmlstream.TLSInitiatingInitializer(
+            self.xmlstream, configurationForTLS=ctx)
+
+        self.init.contextFactory = ctx
+
+        def fakeStartTLS(contextFactory):
+            self.assertIs(ctx, contextFactory)
+            self.done.append('TLS')
+
+        self.xmlstream.transport = proto_helpers.StringTransport()
+        self.xmlstream.transport.startTLS = fakeStartTLS
+        self.xmlstream.reset = lambda: self.done.append('reset')
+        self.xmlstream.sendHeader = lambda: self.done.append('header')
+
+        d = self.init.start()
+        self.xmlstream.dataReceived("<proceed xmlns='%s'/>" % NS_XMPP_TLS)
+        self.assertEqual(['TLS', 'reset', 'header'], self.done)
+        return d
+
+    test_certificateVerifyContext.skip = skipWhenNoSSL
+
+
+    def test_wantedNotSupportedNotRequired(self):
+        """
+        No StartTLS is initiated when wanted, not required, SSL not available.
         """
         xmlstream.ssl = None
+        self.init.required = False
 
         d = self.init.start()
         d.addCallback(self.assertEqual, None)
-        self.assertEqual([], self.output)
+        self.assertEqual(1, len(self.output))
 
         return d
 
 
-    def testWantedNotSupportedRequired(self):
+    def test_wantedNotSupportedRequired(self):
         """
-        Test start when TLS is wanted and the SSL library available.
+        TLSNotSupported is raised when TLS is required but not available.
         """
         xmlstream.ssl = None
         self.init.required = True
 
         d = self.init.start()
         self.assertFailure(d, xmlstream.TLSNotSupported)
-        self.assertEqual([], self.output)
+        self.assertEqual(1, len(self.output))
 
         return d
 
 
-    def testNotWantedRequired(self):
+    def test_notWantedRequired(self):
         """
-        Test start when TLS is not wanted, but required by the server.
+        TLSRequired is raised when TLS is not wanted, but required by server.
         """
         tls = domish.Element(('urn:ietf:params:xml:ns:xmpp-tls', 'starttls'))
         tls.addElement('required')
@@ -733,29 +807,30 @@ class TLSInitiatingInitializerTest(unittest.TestCase):
         self.init.wanted = False
 
         d = self.init.start()
-        self.assertEqual([], self.output)
+        self.assertEqual(1, len(self.output))
         self.assertFailure(d, xmlstream.TLSRequired)
 
         return d
 
 
-    def testNotWantedNotRequired(self):
+    def test_notWantedNotRequired(self):
         """
-        Test start when TLS is not wanted, but required by the server.
+        No StartTLS is initiated when not wanted and not required.
         """
         tls = domish.Element(('urn:ietf:params:xml:ns:xmpp-tls', 'starttls'))
         self.xmlstream.features = {(tls.uri, tls.name): tls}
         self.init.wanted = False
+        self.init.required = False
 
         d = self.init.start()
         d.addCallback(self.assertEqual, None)
-        self.assertEqual([], self.output)
+        self.assertEqual(1, len(self.output))
         return d
 
 
-    def testFailed(self):
+    def test_failed(self):
         """
-        Test failed TLS negotiation.
+        TLSFailed is raised when the server responds with a failure.
         """
         # Pretend that ssl is supported, it isn't actually used when the
         # server starts out with a failure in response to our initial
@@ -777,7 +852,7 @@ class TestFeatureInitializer(xmlstream.BaseFeatureInitiatingInitializer):
 
 
 
-class BaseFeatureInitiatingInitializerTest(unittest.TestCase):
+class BaseFeatureInitiatingInitializerTests(unittest.TestCase):
 
     def setUp(self):
         self.xmlstream = xmlstream.XmlStream(xmlstream.Authenticator())
@@ -812,7 +887,7 @@ class BaseFeatureInitiatingInitializerTest(unittest.TestCase):
 
 
 
-class ToResponseTest(unittest.TestCase):
+class ToResponseTests(unittest.TestCase):
 
     def test_toResponse(self):
         """
@@ -938,7 +1013,7 @@ class FailureReasonXMPPHandler(xmlstream.XMPPHandler):
 
 
 
-class XMPPHandlerTest(unittest.TestCase):
+class XMPPHandlerTests(unittest.TestCase):
     """
     Tests for L{xmlstream.XMPPHandler}.
     """
@@ -994,7 +1069,7 @@ class XMPPHandlerTest(unittest.TestCase):
 
 
 
-class XMPPHandlerCollectionTest(unittest.TestCase):
+class XMPPHandlerCollectionTests(unittest.TestCase):
     """
     Tests for L{xmlstream.XMPPHandlerCollection}.
     """
@@ -1032,7 +1107,7 @@ class XMPPHandlerCollectionTest(unittest.TestCase):
 
 
 
-class StreamManagerTest(unittest.TestCase):
+class StreamManagerTests(unittest.TestCase):
     """
     Tests for L{xmlstream.StreamManager}.
     """
@@ -1139,7 +1214,6 @@ class StreamManagerTest(unittest.TestCase):
         sm = self.streamManager
         handler = FailureReasonXMPPHandler()
         handler.setHandlerParent(sm)
-        xs = xmlstream.XmlStream(xmlstream.Authenticator())
         sm._disconnected(failure.Failure(Exception("no reason")))
         self.assertEqual(True, handler.gotFailureReason)
 
@@ -1194,7 +1268,7 @@ class StreamManagerTest(unittest.TestCase):
                         "from='example.com' id='12345'>")
         xs.dispatch(xs, "//event/stream/authd")
         sm.send("<presence/>")
-        self.assertEqual("<presence/>", xs.transport.value())
+        self.assertEqual(b"<presence/>", xs.transport.value())
 
 
     def test_sendNotConnected(self):
@@ -1212,11 +1286,11 @@ class StreamManagerTest(unittest.TestCase):
         xs = factory.buildProtocol(None)
         xs.transport = proto_helpers.StringTransport()
         sm.send("<presence/>")
-        self.assertEqual("", xs.transport.value())
+        self.assertEqual(b"", xs.transport.value())
         self.assertEqual("<presence/>", sm._packetQueue[0])
 
         xs.connectionMade()
-        self.assertEqual("", xs.transport.value())
+        self.assertEqual(b"", xs.transport.value())
         self.assertEqual("<presence/>", sm._packetQueue[0])
 
         xs.dataReceived("<stream:stream xmlns='jabber:client' "
@@ -1224,7 +1298,7 @@ class StreamManagerTest(unittest.TestCase):
                         "from='example.com' id='12345'>")
         xs.dispatch(xs, "//event/stream/authd")
 
-        self.assertEqual("<presence/>", xs.transport.value())
+        self.assertEqual(b"<presence/>", xs.transport.value())
         self.assertFalse(sm._packetQueue)
 
 
@@ -1243,7 +1317,7 @@ class StreamManagerTest(unittest.TestCase):
                         "xmlns:stream='http://etherx.jabber.org/streams' "
                         "from='example.com' id='12345'>")
         sm.send("<presence/>")
-        self.assertEqual("", xs.transport.value())
+        self.assertEqual(b"", xs.transport.value())
         self.assertEqual("<presence/>", sm._packetQueue[0])
 
 
@@ -1265,19 +1339,19 @@ class StreamManagerTest(unittest.TestCase):
         xs.connectionLost(None)
 
         sm.send("<presence/>")
-        self.assertEqual("", xs.transport.value())
+        self.assertEqual(b"", xs.transport.value())
         self.assertEqual("<presence/>", sm._packetQueue[0])
 
 
 
-class XmlStreamServerFactoryTest(GenericXmlStreamFactoryTestsMixin):
+class XmlStreamServerFactoryTests(GenericXmlStreamFactoryTestsMixin):
     """
     Tests for L{xmlstream.XmlStreamServerFactory}.
     """
 
     def setUp(self):
         """
-        Set up a server factory with a authenticator factory function.
+        Set up a server factory with an authenticator factory function.
         """
         class TestAuthenticator(object):
             def __init__(self):

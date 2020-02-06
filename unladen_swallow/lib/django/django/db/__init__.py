@@ -1,63 +1,68 @@
-import os
-from django.conf import settings
 from django.core import signals
-from django.core.exceptions import ImproperlyConfigured
-from django.utils.functional import curry
+from django.db.utils import (
+    DEFAULT_DB_ALIAS, DJANGO_VERSION_PICKLE_KEY, ConnectionHandler,
+    ConnectionRouter, DatabaseError, DataError, Error, IntegrityError,
+    InterfaceError, InternalError, NotSupportedError, OperationalError,
+    ProgrammingError,
+)
 
-__all__ = ('backend', 'connection', 'DatabaseError', 'IntegrityError')
+__all__ = [
+    'connection', 'connections', 'router', 'DatabaseError', 'IntegrityError',
+    'InternalError', 'ProgrammingError', 'DataError', 'NotSupportedError',
+    'Error', 'InterfaceError', 'OperationalError', 'DEFAULT_DB_ALIAS',
+    'DJANGO_VERSION_PICKLE_KEY',
+]
 
-if not settings.DATABASE_ENGINE:
-    settings.DATABASE_ENGINE = 'dummy'
+connections = ConnectionHandler()
 
-try:
-    # Most of the time, the database backend will be one of the official
-    # backends that ships with Django, so look there first.
-    _import_path = 'django.db.backends.'
-    backend = __import__('%s%s.base' % (_import_path, settings.DATABASE_ENGINE), {}, {}, [''])
-except ImportError, e:
-    # If the import failed, we might be looking for a database backend
-    # distributed external to Django. So we'll try that next.
-    try:
-        _import_path = ''
-        backend = __import__('%s.base' % settings.DATABASE_ENGINE, {}, {}, [''])
-    except ImportError, e_user:
-        # The database backend wasn't found. Display a helpful error message
-        # listing all possible (built-in) database backends.
-        backend_dir = os.path.join(__path__[0], 'backends')
-        try:
-            available_backends = [f for f in os.listdir(backend_dir) if not f.startswith('_') and not f.startswith('.') and not f.endswith('.py') and not f.endswith('.pyc')]
-        except EnvironmentError:
-            available_backends = []
-        available_backends.sort()
-        if settings.DATABASE_ENGINE not in available_backends:
-            raise ImproperlyConfigured, "%r isn't an available database backend. Available options are: %s\nError was: %s" % \
-                (settings.DATABASE_ENGINE, ", ".join(map(repr, available_backends)), e_user)
-        else:
-            raise # If there's some other error, this must be an error in Django itself.
+router = ConnectionRouter()
 
-# Convenient aliases for backend bits.
-connection = backend.DatabaseWrapper(**settings.DATABASE_OPTIONS)
-DatabaseError = backend.DatabaseError
-IntegrityError = backend.IntegrityError
 
-# Register an event that closes the database connection
-# when a Django request is finished.
-def close_connection(**kwargs):
-    connection.close()
-signals.request_finished.connect(close_connection)
+# DatabaseWrapper.__init__() takes a dictionary, not a settings module, so we
+# manually create the dictionary from the settings, passing only the settings
+# that the database backends care about.
+# We load all these up for backwards compatibility, you should use
+# connections['default'] instead.
+class DefaultConnectionProxy(object):
+    """
+    Proxy for accessing the default DatabaseWrapper object's attributes. If you
+    need to access the DatabaseWrapper object itself, use
+    connections[DEFAULT_DB_ALIAS] instead.
+    """
+    def __getattr__(self, item):
+        return getattr(connections[DEFAULT_DB_ALIAS], item)
 
-# Register an event that resets connection.queries
-# when a Django request is started.
+    def __setattr__(self, name, value):
+        return setattr(connections[DEFAULT_DB_ALIAS], name, value)
+
+    def __delattr__(self, name):
+        return delattr(connections[DEFAULT_DB_ALIAS], name)
+
+    def __eq__(self, other):
+        return connections[DEFAULT_DB_ALIAS] == other
+
+    def __ne__(self, other):
+        return connections[DEFAULT_DB_ALIAS] != other
+
+
+connection = DefaultConnectionProxy()
+
+
+# Register an event to reset saved queries when a Django request is started.
 def reset_queries(**kwargs):
-    connection.queries = []
+    for conn in connections.all():
+        conn.queries_log.clear()
+
+
 signals.request_started.connect(reset_queries)
 
-# Register an event that rolls back the connection
-# when a Django request has an exception.
-def _rollback_on_exception(**kwargs):
-    from django.db import transaction
-    try:
-        transaction.rollback_unless_managed()
-    except DatabaseError:
-        pass
-signals.got_request_exception.connect(_rollback_on_exception)
+
+# Register an event to reset transaction state and close connections past
+# their lifetime.
+def close_old_connections(**kwargs):
+    for conn in connections.all():
+        conn.close_if_unusable_or_obsolete()
+
+
+signals.request_started.connect(close_old_connections)
+signals.request_finished.connect(close_old_connections)

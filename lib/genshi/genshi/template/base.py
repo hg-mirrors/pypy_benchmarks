@@ -16,6 +16,10 @@
 from collections import deque
 import os
 import sys
+if sys.version_info[0] > 2:
+    unicode = str
+    basestring = str
+    long = int
 
 from genshi.compat import StringIO, BytesIO
 from genshi.core import Attrs, Stream, StreamEventKind, START, TEXT, _ensure
@@ -24,6 +28,22 @@ from genshi.input import ParseError
 __all__ = ['Context', 'DirectiveFactory', 'Template', 'TemplateError',
            'TemplateRuntimeError', 'TemplateSyntaxError', 'BadDirectiveError']
 __docformat__ = 'restructuredtext en'
+
+# Copied from six.py
+def add_metaclass(metaclass):
+    """Class decorator for creating a class with a metaclass."""
+    def wrapper(cls):
+        orig_vars = cls.__dict__.copy()
+        slots = orig_vars.get('__slots__')
+        if slots is not None:
+            if isinstance(slots, str):
+                slots = [slots]
+            for slots_var in slots:
+                orig_vars.pop(slots_var)
+        orig_vars.pop('__dict__', None)
+        orig_vars.pop('__weakref__', None)
+        return metaclass(cls.__name__, cls.__bases__, orig_vars)
+    return wrapper
 
 
 class TemplateError(Exception):
@@ -314,19 +334,19 @@ class DirectiveFactoryMeta(type):
     """Meta class for directive factories."""
 
     def __new__(cls, name, bases, d):
+            
         if 'directives' in d:
             d['_dir_by_name'] = dict(d['directives'])
             d['_dir_order'] = [directive[1] for directive in d['directives']]
 
         return type.__new__(cls, name, bases, d)
 
-
+@add_metaclass(DirectiveFactoryMeta)
 class DirectiveFactory(object):
     """Base for classes that provide a set of template directives.
     
     :since: version 0.6
     """
-    __metaclass__ = DirectiveFactoryMeta
 
     directives = []
     """A list of ``(name, cls)`` tuples that define the set of directives
@@ -417,7 +437,7 @@ class Template(DirectiveFactory):
                 source = BytesIO(source)
         try:
             self._stream = self._parse(source, encoding)
-        except ParseError, e:
+        except ParseError as e:
             raise TemplateSyntaxError(e.msg, self.filepath, e.lineno, e.offset)
 
     def __getstate__(self):

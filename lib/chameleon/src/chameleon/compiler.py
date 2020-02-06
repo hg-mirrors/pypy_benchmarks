@@ -4,6 +4,9 @@ import itertools
 import logging
 import threading
 import functools
+import collections
+import pickle
+import textwrap
 
 from .astutil import load
 from .astutil import store
@@ -16,13 +19,15 @@ from .astutil import NameLookupRewriteVisitor
 from .astutil import Comment
 from .astutil import Symbol
 from .astutil import Builtin
+from .astutil import Static
+from .astutil import TokenRef
 
 from .codegen import TemplateCodeGenerator
 from .codegen import template
 
-from .tales import StringExpr
 from .tal import ErrorInfo
-from .i18n import fast_translate
+from .tal import NAME
+from .i18n import simple_translate
 
 from .nodes import Text
 from .nodes import Value
@@ -31,8 +36,11 @@ from .nodes import Assignment
 from .nodes import Module
 from .nodes import Context
 
+from .tokenize import Token
 from .config import DEBUG_MODE
 from .exc import TranslationError
+from .exc import ExpressionError
+from .parser import groupdict
 
 from .utils import DebuggingOutputStream
 from .utils import char2entity
@@ -43,8 +51,9 @@ from .utils import string_type
 from .utils import unicode_string
 from .utils import version
 from .utils import ast
+from .utils import safe_native
 from .utils import builtins
-
+from .utils import decode_htmlentities
 
 if version >= (3, 0, 0):
     long = int
@@ -54,9 +63,6 @@ log = logging.getLogger('chameleon.compiler')
 COMPILER_INTERNALS_OR_DISALLOWED = set([
     "econtext",
     "rcontext",
-    "translate",
-    "decode",
-    "convert",
     "str",
     "int",
     "float",
@@ -69,7 +75,8 @@ COMPILER_INTERNALS_OR_DISALLOWED = set([
     ])
 
 
-RE_MANGLE = re.compile('[\-: ]')
+RE_MANGLE = re.compile(r'[^\w_]')
+RE_NAME = re.compile('^%s$' % NAME)
 
 if DEBUG_MODE:
     LIST = template("cls()", cls=DebuggingOutputStream, mode="eval")
@@ -82,7 +89,9 @@ def identifier(prefix, suffix=None):
 
 
 def mangle(string):
-    return RE_MANGLE.sub('_', str(string)).replace('\n', '')
+    return RE_MANGLE.sub(
+        '_', unicode_string(string)
+    ).replace('\n', '').replace('-', '_')
 
 
 def load_econtext(name):
@@ -99,33 +108,59 @@ def store_rcontext(name):
     return subscript(name, load("rcontext"), ast.Store())
 
 
-@template
-def emit_node(node):  # pragma: no cover
-    __append(node)
+def set_token(stmts, token):
+    pos = getattr(token, "pos", 0)
+    body = template("__token = pos", pos=TokenRef(pos, len(token)))
+    return body + stmts
 
 
-@template
-def emit_node_if_non_trivial(node):  # pragma: no cover
+def eval_token(token):
+    try:
+        line, column = token.location
+        filename = token.filename
+    except AttributeError:
+        line, column = 0, 0
+        filename = "<string>"
+
+    string = safe_native(token)
+
+    return template(
+        "(string, line, col)",
+        string=ast.Str(s=string),
+        line=ast.Num(n=line),
+        col=ast.Num(n=column),
+        mode="eval"
+    )
+
+
+emit_node = template(is_func=True, func_args=('node',), source=r"""
+    __append(node)""")
+
+
+emit_node_if_non_trivial = template(is_func=True, func_args=('node',),
+                                    source=r"""
     if node is not None:
         __append(node)
+""")
 
 
-@template
-def emit_bool(target, s, default_marker=None,
-                 default=None):  # pragma: no cover
+emit_bool = template(is_func=True,
+                     func_args=('target', 's', 'default_marker', 'default'),
+                     func_defaults=(None, None), source=r"""
     if target is default_marker:
         target = default
     elif target:
         target = s
     else:
-        target = None
+        target = None""")
 
 
-@template
-def emit_convert(
-    target, encoded=byte_string, str=unicode_string,
-    long=long, type=type,
-    default_marker=None, default=None):  # pragma: no cover
+emit_convert = template(is_func=True,
+                        func_args=('target', 'encoded', 'str', 'long', 'type',
+                                   'default_marker', 'default'),
+                        func_defaults=(byte_string, unicode_string, long, type,
+                                       None),
+                        source=r"""
     if target is None:
         pass
     elif target is default_marker:
@@ -144,60 +179,263 @@ def emit_convert(
                 __converted = convert(target)
                 target = str(target) if target is __converted else __converted
             else:
+                target = target()""")
+
+
+emit_func_convert = template(is_func=True,
+                             func_args=('func', 'encoded', 'str','long','type'),
+                             func_defaults=(byte_string, unicode_string, long,
+                                            type),
+                             source=r"""
+    def func(target):
+        if target is None:
+            return
+
+        __tt = type(target)
+
+        if __tt is int or __tt is float or __tt is long:
+            target = str(target)
+
+        elif __tt is encoded:
+            target = decode(target)
+
+        elif __tt is not str:
+            try:
+                target = target.__html__
+            except AttributeError:
+                __converted = convert(target)
+                target = str(target) if target is __converted else __converted
+            else:
                 target = target()
 
-
-@template
-def emit_translate(target, msgid, default=None):  # pragma: no cover
-    target = translate(msgid, default=default, domain=__i18n_domain)
+        return target""")
 
 
-@template
-def emit_convert_and_escape(
-    target, quote=None, quote_entity=None, str=unicode_string, long=long,
-    type=type, encoded=byte_string,
-    default_marker=None, default=None):  # pragma: no cover
-    if target is None:
-        pass
-    elif target is default_marker:
-        target = default
-    else:
+emit_translate = template(is_func=True,
+                          func_args=('target', 'msgid', 'target_language',
+                          'default'),
+                          func_defaults=(None,),
+                          source=r"""
+    target = translate(msgid, default=default, domain=__i18n_domain,
+                       context=__i18n_context,
+                       target_language=target_language)""")
+
+
+emit_func_convert_and_escape = template(
+    is_func=True,
+    func_args=('func', 'str', 'long', 'type', 'encoded'),
+    func_defaults=(unicode_string, long, type, byte_string,),
+    source=r"""
+    def func(target, quote, quote_entity, default, default_marker):
+        if target is None:
+            return
+
+        if target is default_marker:
+            return default
+
         __tt = type(target)
 
         if __tt is int or __tt is float or __tt is long:
             target = str(target)
         else:
-            try:
-                if __tt is encoded:
-                    target = decode(target)
-                elif __tt is not str:
-                    try:
-                        target = target.__html__
-                    except:
-                        __converted = convert(target)
-                        target = str(target) if target is __converted \
-                                 else __converted
-                    else:
-                        raise RuntimeError
-            except RuntimeError:
-                target = target()
+            if __tt is encoded:
+                target = decode(target)
+            elif __tt is not str:
+                try:
+                    target = target.__html__
+                except:
+                    __converted = convert(target)
+                    target = str(target) if target is __converted \
+                             else __converted
+                else:
+                    return target()
+
+            if target is not None:
+                try:
+                    escape = __re_needs_escape(target) is not None
+                except TypeError:
+                    pass
+                else:
+                    if escape:
+                        # Character escape
+                        if '&' in target:
+                            target = target.replace('&', '&amp;')
+                        if '<' in target:
+                            target = target.replace('<', '&lt;')
+                        if '>' in target:
+                            target = target.replace('>', '&gt;')
+                        if quote is not None and quote in target:
+                            target = target.replace(quote, quote_entity)
+
+        return target""")
+
+
+class Interpolator(object):
+    braces_required_regex = re.compile(
+        r'(\$)?\$({(?P<expression>.*)})',
+        re.DOTALL)
+
+    braces_optional_regex = re.compile(
+        r'(\$)?\$({(?P<expression>.*)}|(?P<variable>[A-Za-z][A-Za-z0-9_]*))',
+        re.DOTALL)
+
+    def __init__(self, expression, braces_required, translate=False,
+                 decode_htmlentities=False):
+        self.expression = expression
+        self.regex = self.braces_required_regex if braces_required else \
+                     self.braces_optional_regex
+        self.translate = translate
+        self.decode_htmlentities = decode_htmlentities
+
+    def __call__(self, name, engine):
+        """The strategy is to find possible expression strings and
+        call the ``validate`` function of the parser to validate.
+
+        For every possible starting point, the longest possible
+        expression is tried first, then the second longest and so
+        forth.
+
+        Example 1:
+
+          ${'expressions use the ${<expression>} format'}
+
+        The entire expression is attempted first and it is also the
+        only one that validates.
+
+        Example 2:
+
+          ${'Hello'} ${'world!'}
+
+        Validation of the longest possible expression (the entire
+        string) will fail, while the second round of attempts,
+        ``${'Hello'}`` and ``${'world!'}`` respectively, validate.
+
+        """
+
+        body = []
+        nodes = []
+        text = self.expression
+
+        expr_map = {}
+        translate = self.translate
+
+        while text:
+            matched = text
+            m = self.regex.search(matched)
+            if m is None:
+                text = text.replace('$$', '$')
+                nodes.append(ast.Str(s=text))
+                break
+
+            part = text[:m.start()]
+            text = text[m.start():]
+
+            skip = text.startswith('$$')
+            if skip:
+                part = part + '$'
+
+            if part:
+                part = part.replace('$$', '$')
+                node = ast.Str(s=part)
+                nodes.append(node)
+
+            if skip:
+                text = text[2:]
+                continue
+
+            if not body:
+                target = name
             else:
-                if target is not None:
+                target = store("%s_%d" % (name.id, text.pos))
+
+            while True:
+                d = groupdict(m, matched)
+                string = d["expression"] or d.get("variable") or ""
+
+                if self.decode_htmlentities:
+                    string = decode_htmlentities(string)
+
+                if string:
                     try:
-                        escape = __re_needs_escape(target) is not None
-                    except TypeError:
-                        pass
+                        compiler = engine.parse(string)
+                        body += compiler.assign_text(target)
+                    except ExpressionError:
+                        matched = matched[m.start():m.end() - 1]
+                        m = self.regex.search(matched)
+                        if m is None:
+                            raise
+
+                        continue
+                else:
+                    s = m.group()
+                    assign = ast.Assign(targets=[target], value=ast.Str(s=s))
+                    body += [assign]
+
+                break
+
+            # If one or more expressions are not simple names, we
+            # disable translation.
+            if RE_NAME.match(string) is None:
+                translate = False
+
+            # if this is the first expression, use the provided
+            # assignment name; otherwise, generate one (here based
+            # on the string position)
+            node = load(target.id)
+            nodes.append(node)
+
+            expr_map[node] = safe_native(string)
+
+            text = text[len(m.group()):]
+
+        if len(nodes) == 1:
+            target = nodes[0]
+
+            if translate and isinstance(target, ast.Str):
+                target = template(
+                    "translate(msgid, domain=__i18n_domain, context=__i18n_context, target_language=target_language)",
+                    msgid=target, mode="eval",
+                    target_language=load("target_language"),
+                    )
+        else:
+            if translate:
+                formatting_string = ""
+                keys = []
+                values = []
+
+                for node in nodes:
+                    if isinstance(node, ast.Str):
+                        formatting_string += node.s
                     else:
-                        if escape:
-                            # Character escape
-                            if '&' in target:
-                                target = target.replace('&', '&amp;')
-                            if '<' in target:
-                                target = target.replace('<', '&lt;')
-                            if '>' in target:
-                                target = target.replace('>', '&gt;')
-                            if quote is not None and quote in target:
-                                target = target.replace(quote, quote_entity)
+                        string = expr_map[node]
+                        formatting_string += "${%s}" % string
+                        keys.append(ast.Str(s=string))
+                        values.append(node)
+
+                target = template(
+                    "translate(msgid, mapping=mapping, domain=__i18n_domain, context=__i18n_context, target_language=target_language)",
+                    msgid=ast.Str(s=formatting_string),
+                    target_language=load("target_language"),
+                    mapping=ast.Dict(keys=keys, values=values),
+                    mode="eval"
+                    )
+            else:
+                nodes = [
+                    node if isinstance(node, ast.Str) else
+                    template(
+                        "NODE if NODE is not None else ''",
+                        NODE=node, mode="eval"
+                    )
+                    for node in nodes
+                ]
+
+                target = ast.BinOp(
+                    left=ast.Str(s="%s" * len(nodes)),
+                    op=ast.Mod(),
+                    right=ast.Tuple(elts=nodes, ctx=ast.Load()))
+
+        body += [ast.Assign(targets=[name], value=target)]
+        return body
 
 
 class ExpressionEngine(object):
@@ -239,10 +477,6 @@ class ExpressionEngine(object):
 
     >>> eval('not: exists: help')
     False
-
-    >>> eval('string:test ${1}${2}')
-    'test 12'
-
     """
 
     supported_char_escape_set = set(('&', '<', '>'))
@@ -262,46 +496,30 @@ class ExpressionEngine(object):
         compiler = self.parse(string)
         return compiler(string, target)
 
-    def parse(self, string):
+    def parse(self, string, handle_errors=True, char_escape=None):
         expression = self._parser(string)
-        compiler = self.get_compiler(expression, string)
+        compiler = self.get_compiler(expression, string, handle_errors, char_escape)
         return ExpressionCompiler(compiler, self)
 
-    def get_compiler(self, expression, string):
+    def get_compiler(self, expression, string, handle_errors, char_escape):
+        if char_escape is None:
+            char_escape = self._char_escape
         def compiler(target, engine, result_type=None, *args):
             stmts = expression(target, engine)
 
             if result_type is not None:
                 method = getattr(self, '_convert_%s' % result_type)
-                steps = method(target, *args)
+                steps = method(target, char_escape, *args)
                 stmts.extend(steps)
 
-            try:
-                line, column = string.location
-                filename = string.filename
-            except AttributeError:
-                line, column = 0, 0
-                filename = "<string>"
+            if handle_errors:
+                return set_token(stmts, string.strip())
 
-            return [ast.TryExcept(
-                body=stmts,
-                handlers=[ast.ExceptHandler(
-                    body=template(
-                        "rcontext.setdefault('__error__', [])."
-                        "append((string, line, col, src, sys.exc_info()[1]))\n"
-                        "raise",
-                        string=ast.Str(s=string),
-                        line=ast.Num(n=line),
-                        col=ast.Num(n=column),
-                        src=ast.Str(s=filename),
-                        sys=Symbol(sys),
-                        ),
-                    )],
-                )]
+            return stmts
 
         return compiler
 
-    def _convert_bool(self, target, s):
+    def _convert_bool(self, target, char_escape, s):
         """Converts value given by ``target`` to a string ``s`` if the
         target is a true value, otherwise ``None``.
         """
@@ -312,40 +530,46 @@ class ExpressionEngine(object):
             default_marker=self._default_marker
             )
 
-    def _convert_text(self, target):
-        """Converts value given by ``target`` to text."""
-
-        if self._char_escape:
-            # This is a cop-out - we really only support a very select
-            # set of escape characters
-            other = set(self._char_escape) - self.supported_char_escape_set
-
-            if other:
-                for supported in '"', '\'', '':
-                    if supported in self._char_escape:
-                        quote = supported
-                        break
-                else:
-                    raise RuntimeError(
-                        "Unsupported escape set: %s." % repr(self._char_escape)
-                        )
-            else:
-                quote = '\0'
-
-            entity = char2entity(quote or '\0')
-
-            return emit_convert_and_escape(
-                target,
-                quote=ast.Str(s=quote),
-                quote_entity=ast.Str(s=entity),
-                default=self._default,
-                default_marker=self._default_marker,
-                )
+    def _convert_structure(self, target, char_escape):
+        """Converts value given by ``target`` to structure output."""
 
         return emit_convert(
             target,
             default=self._default,
             default_marker=self._default_marker,
+            )
+
+    def _convert_text(self, target, char_escape):
+        """Converts value given by ``target`` to text."""
+
+        if not char_escape:
+            return self._convert_structure(target, char_escape)
+
+        # This is a cop-out - we really only support a very select
+        # set of escape characters
+        other = set(char_escape) - self.supported_char_escape_set
+
+        if other:
+            for supported in '"', '\'', '':
+                if supported in char_escape:
+                    quote = supported
+                    break
+            else:
+                raise RuntimeError(
+                    "Unsupported escape set: %s." % repr(char_escape)
+                    )
+        else:
+            quote = '\0'
+
+        entity = char2entity(quote or '\0')
+
+        return template(
+            "TARGET = __quote(TARGET, QUOTE, Q_ENTITY, DEFAULT, MARKER)",
+            TARGET=target,
+            QUOTE=ast.Str(s=quote),
+            Q_ENTITY=ast.Str(s=entity),
+            DEFAULT=self._default,
+            MARKER=self._default_marker,
             )
 
 
@@ -420,8 +644,9 @@ class ExpressionEvaluator(object):
             module = Module("evaluate", Context(assignment))
 
             compiler = Compiler(
-                self._engine, module, ('econtext', 'rcontext') + self._names
-                )
+                self._engine, module, "<string>", string,
+                ('econtext', 'rcontext') + self._names
+            )
 
             env = {}
             exec(compiler.code, env)
@@ -433,7 +658,11 @@ class ExpressionEvaluator(object):
 
 class NameTransform(object):
     """
-    >>> nt = NameTransform(set(('foo', 'bar', )), {'boo': 'boz'})
+    >>> nt = NameTransform(
+    ...     set(('foo', 'bar', )), {'boo': 'boz'},
+    ...     ('econtext', ),
+    ... )
+
     >>> def test(node):
     ...     rewritten = nt(node)
     ...     module = ast.Module([ast.fix_missing_locations(rewritten)])
@@ -468,9 +697,10 @@ class NameTransform(object):
 
     """
 
-    def __init__(self, builtins, aliases):
+    def __init__(self, builtins, aliases, internals):
         self.builtins = builtins
         self.aliases = aliases
+        self.internals = internals
 
     def __call__(self, node):
         name = node.id
@@ -479,7 +709,7 @@ class NameTransform(object):
         # internal and can be assumed to be locally defined. This
         # policy really should be part of the template program, not
         # defined here in the compiler.
-        if name.startswith('__') or name in COMPILER_INTERNALS_OR_DISALLOWED:
+        if name.startswith('__') or name in self.internals:
             return node
 
         if isinstance(node.ctx, ast.Store):
@@ -514,22 +744,36 @@ class ExpressionTransform(object):
     Used internally be the compiler.
     """
 
-    def __init__(self, engine_factory, cache, transform):
+    loads_symbol = Symbol(pickle.loads)
+
+    def __init__(self, engine_factory, cache, visitor, strict=True):
         self.engine_factory = engine_factory
         self.cache = cache
-        self.transform = transform
+        self.strict = strict
+        self.visitor = visitor
 
     def __call__(self, expression, target):
         if isinstance(target, string_type):
             target = store(target)
 
-        stmts = self.translate(expression, target)
+        try:
+            stmts = self.translate(expression, target)
+        except ExpressionError:
+            if self.strict:
+                raise
 
-        # Apply dynamic name rewrite transform to each statement
-        visitor = NameLookupRewriteVisitor(self.transform)
+            exc = sys.exc_info()[1]
+            p = pickle.dumps(exc, -1)
 
+            stmts = template(
+                "__exc = loads(p)", loads=self.loads_symbol, p=ast.Str(s=p)
+            )
+
+            stmts += set_token([ast.Raise(exc=load("__exc"))], exc.token)
+
+        # Apply visitor to each statement
         for stmt in stmts:
-            visitor(stmt)
+            self.visitor(stmt)
 
         return stmts
 
@@ -565,16 +809,16 @@ class ExpressionTransform(object):
         compiler = engine.parse(node.value)
         return compiler.assign_value(target)
 
+    def visit_Copy(self, node, target):
+        return self.translate(node.expression, target)
+
     def visit_Default(self, node, target):
         value = annotated(node.marker)
         return [ast.Assign(targets=[target], value=value)]
 
     def visit_Substitution(self, node, target):
-        engine = self.engine_factory(
-            char_escape=node.char_escape,
-            default=node.default,
-            )
-        compiler = engine.parse(node.value)
+        engine = self.engine_factory(default=node.default)
+        compiler = engine.parse(node.value, char_escape=node.char_escape)
         return compiler.assign_text(target)
 
     def visit_Negate(self, node, target):
@@ -612,9 +856,16 @@ class ExpressionTransform(object):
         else:
             raise RuntimeError("Bad value: %r." % node.value)
 
-        expression = StringExpr(expr.value, node.braces_required)
-        compiler = engine.get_compiler(expression, expr.value)
-        return compiler(target, engine)
+        interpolator = Interpolator(
+            expr.value, node.braces_required,
+            translate=node.translation,
+            decode_htmlentities=True
+        )
+
+        compiler = engine.get_compiler(
+            interpolator, expr.value, True, ()
+        )
+        return compiler(target, engine, "text")
 
     def visit_Translate(self, node, target):
         if node.msgid is not None:
@@ -622,7 +873,10 @@ class ExpressionTransform(object):
         else:
             msgid = target
         return self.translate(node.node, target) + \
-               emit_translate(target, msgid, default=target)
+               emit_translate(
+                   target, msgid, "target_language",
+                   default=target
+               )
 
     def visit_Static(self, node, target):
         value = annotated(node)
@@ -647,31 +901,42 @@ class Compiler(object):
                  TypeError
 
     defaults = {
-        'translate': Symbol(fast_translate),
+        'translate': Symbol(simple_translate),
         'decode': Builtin("str"),
         'convert': Builtin("str"),
+        'on_error_handler': Builtin("str")
         }
 
     lock = threading.Lock()
 
     global_builtins = set(builtins.__dict__)
 
-    def __init__(self, engine_factory, node, builtins={}):
+    def __init__(self, engine_factory, node, filename, source,
+                 builtins={}, strict=True):
         self._scopes = [set()]
         self._expression_cache = {}
         self._translations = []
         self._builtins = builtins
         self._aliases = [{}]
+        self._macros = []
+        self._current_slot = []
+
+        internals = COMPILER_INTERNALS_OR_DISALLOWED | \
+                    set(self.defaults)
 
         transform = NameTransform(
             self.global_builtins | set(builtins),
             ListDictProxy(self._aliases),
+            internals,
             )
+
+        self._visitor = visitor = NameLookupRewriteVisitor(transform)
 
         self._engine = ExpressionTransform(
             engine_factory,
             self._expression_cache,
-            transform,
+            visitor,
+            strict=strict,
             )
 
         if isinstance(node_annotations, dict):
@@ -684,14 +949,27 @@ class Compiler(object):
             module = ast.Module([])
             module.body += self.visit(node)
             ast.fix_missing_locations(module)
-            generator = TemplateCodeGenerator(module)
+            prelude = "__filename = %r\n__default = object()" % filename
+            generator = TemplateCodeGenerator(module, source)
+            tokens = [
+                Token(source[pos:pos + length], pos, source)
+                for pos, length in generator.tokens
+            ]
+            token_map_def = "__tokens = {" + ", ".join("%d: %r" % (
+                token.pos,
+                (token, ) + token.location
+            ) for token in tokens) + "}"
         finally:
             if backup is not None:
                 node_annotations.clear()
                 node_annotations.update(backup)
                 self.lock.release()
 
-        self.code = generator.code
+        self.code = "\n".join((
+            prelude,
+            token_map_def,
+            generator.code
+        ))
 
     def visit(self, node):
         if node is None:
@@ -707,8 +985,6 @@ class Compiler(object):
                 yield stmt
 
     def visit_Element(self, node):
-        self._aliases.append(self._aliases[-1].copy())
-
         for stmt in self.visit(node.start):
             yield stmt
 
@@ -719,13 +995,14 @@ class Compiler(object):
             for stmt in self.visit(node.end):
                 yield stmt
 
-        self._aliases.pop()
-
     def visit_Module(self, node):
         body = []
 
         body += template("import re")
         body += template("import functools")
+        body += template("from itertools import chain as __chain")
+        if version < (3, 0, 0):
+            body += template("from sys import exc_clear as __exc_clear")
         body += template("__marker = object()")
         body += template(
             r"g_re_amp = re.compile(r'&(?!([A-Za-z]+|#[0-9]+);)')"
@@ -735,7 +1012,7 @@ class Compiler(object):
 
         body += template(
             r"__re_whitespace = "
-            r"functools.partial(re.compile('\s+').sub, ' ')",
+            r"functools.partial(re.compile('\\s+').sub, ' ')",
         )
 
         # Visit module content
@@ -782,13 +1059,17 @@ class Compiler(object):
         # Initialization
         body += template("__append = __stream.append")
         body += template("__re_amp = g_re_amp")
+        body += template("__token = None")
         body += template("__re_needs_escape = g_re_needs_escape")
+
+        body += emit_func_convert("__convert")
+        body += emit_func_convert_and_escape("__quote")
 
         # Resolve defaults
         for name in self.defaults:
             body += template(
                 "NAME = econtext[KEY]",
-                NAME=name, KEY=ast.Str(s=name)
+                NAME=name, KEY=ast.Str(s="__" + name)
             )
 
         # Internal set of defined slots
@@ -804,8 +1085,25 @@ class Compiler(object):
                 "except: NAME = None",
                 KEY=ast.Str(s=name), NAME=store(name))
 
-        # Append visited nodes
-        body += nodes
+        exc = template(
+            "exc_info()[1]", exc_info=Symbol(sys.exc_info), mode="eval"
+        )
+
+        exc_handler = template(
+            "if pos is not None: rcontext.setdefault('__error__', [])."
+            "append(token + (__filename, exc, ))",
+            exc=exc,
+            token=template("__tokens[pos]", pos="__token", mode="eval"),
+            pos="__token"
+        ) + template("raise")
+
+        # Wrap visited nodes in try-except error handler.
+        body += [
+            ast.TryExcept(
+                body=nodes,
+                handlers=[ast.ExceptHandler(body=exc_handler)]
+            )
+        ]
 
         function_name = "render" if node.name is None else \
                         "render_%s" % mangle(node.name)
@@ -817,8 +1115,9 @@ class Compiler(object):
                     param("econtext"),
                     param("rcontext"),
                     param("__i18n_domain"),
+                    param("__i18n_context"),
                     ],
-                defaults=[load("None")],
+                defaults=[load("None"), load("None")],
             ),
             body=body
             )
@@ -829,11 +1128,18 @@ class Compiler(object):
         return emit_node(ast.Str(s=node.value))
 
     def visit_Domain(self, node):
-        backup = "__previous_i18n_domain_%d" % id(node)
+        backup = "__previous_i18n_domain_%s" % mangle(id(node))
         return template("BACKUP = __i18n_domain", BACKUP=backup) + \
                template("__i18n_domain = NAME", NAME=ast.Str(s=node.name)) + \
                self.visit(node.node) + \
                template("__i18n_domain = BACKUP", BACKUP=backup)
+
+    def visit_TxContext(self, node):
+        backup = "__previous_i18n_context_%s" % mangle(id(node))
+        return template("BACKUP = __i18n_context", BACKUP=backup) + \
+               template("__i18n_context = NAME", NAME=ast.Str(s=node.name)) + \
+               self.visit(node.node) + \
+               template("__i18n_context = BACKUP", BACKUP=backup)
 
     def visit_OnError(self, node):
         body = []
@@ -846,8 +1152,10 @@ class Compiler(object):
         self._leave_assignment((node.name, ))
 
         error_assignment = template(
-            "econtext[key] = cls(__exc, rcontext['__error__'][-1][1:3])",
+            "econtext[key] = cls(__exc, __tokens[__token][1:3])\n"
+            "if handler is not None: handler(__exc)",
             cls=ErrorInfo,
+            handler=load("on_error_handler"),
             key=ast.Str(s=node.name),
             )
 
@@ -870,12 +1178,17 @@ class Compiler(object):
         body = self._engine(node.expression, store(name))
 
         if node.translate:
-            body += emit_translate(name, name)
+            body += emit_translate(
+                name, name, load_econtext("target_language")
+            )
 
         if node.char_escape:
-            body += emit_convert_and_escape(name)
+            body += template(
+                "NAME=__quote(NAME, None, '\255', None, None)",
+                NAME=name,
+                )
         else:
-            body += emit_convert(name)
+            body += template("NAME = __convert(NAME)", NAME=name)
 
         body += template("if NAME is not None: __append(NAME)", NAME=name)
 
@@ -928,6 +1241,7 @@ class Compiler(object):
     def visit_Define(self, node):
         scope = set(self._scopes[-1])
         self._scopes.append(scope)
+        self._aliases.append(self._aliases[-1].copy())
 
         for assignment in node.assignments:
             if assignment.local:
@@ -946,6 +1260,7 @@ class Compiler(object):
                     yield stmt
 
         self._scopes.pop()
+        self._aliases.pop()
 
     def visit_Omit(self, node):
         return self.visit_Condition(node)
@@ -992,6 +1307,7 @@ class Compiler(object):
         # Visit body to generate the message body
         code = self.visit(node.node)
         swap(ast.Suite(body=code), load(append), "__append")
+        swap(ast.Suite(body=code), load(stream), "__stream")
         body += code
 
         # Reduce white space and assign as message id
@@ -1030,10 +1346,11 @@ class Compiler(object):
 
         # emit the translation expression
         body += template(
-            "__append(translate("
-            "msgid, mapping=mapping, default=default, domain=__i18n_domain))",
-            msgid=msgid, default=default, mapping=mapping
-            )
+            "if msgid: __append(translate("
+            "msgid, mapping=mapping, default=default, domain=__i18n_domain, context=__i18n_context, target_language=target_language))",
+            msgid=msgid, default=default, mapping=mapping,
+            target_language=load_econtext("target_language")
+        )
 
         # pop away translation block reference
         self._translations.pop()
@@ -1055,9 +1372,8 @@ class Compiler(object):
             for stmt in emit_node(ast.Str(s=node.prefix + node.name)):
                 yield stmt
 
-            for attribute in node.attributes:
-                for stmt in self.visit(attribute):
-                    yield stmt
+            for stmt in self.visit(node.attributes):
+                yield stmt
 
             for stmt in emit_node(ast.Str(s=node.suffix)):
                 yield stmt
@@ -1072,20 +1388,77 @@ class Compiler(object):
             yield stmt
 
     def visit_Attribute(self, node):
-        f = node.space + node.name + node.eq + node.quote + "%s" + node.quote
+        attr_format = (node.space + node.name + node.eq +
+                       node.quote + "%s" + node.quote)
+
+        filter_args = list(map(self._engine.cache.get, node.filters))
+
+        filter_condition = template(
+            "NAME not in CHAIN",
+            NAME=ast.Str(s=node.name),
+            CHAIN=ast.Call(
+                func=load("__chain"),
+                args=filter_args,
+                keywords=[],
+                starargs=None,
+                kwargs=None,
+            ),
+            mode="eval"
+        )
 
         # Static attributes are just outputted directly
         if isinstance(node.expression, ast.Str):
-            s = f % node.expression.s
-            return template("__append(S)", S=ast.Str(s=s))
+            s = attr_format % node.expression.s
+            if node.filters:
+                return template(
+                    "if C: __append(S)", C=filter_condition, S=ast.Str(s=s)
+                )
+            else:
+                return template("__append(S)", S=ast.Str(s=s))
 
         target = identifier("attr", node.name)
         body = self._engine(node.expression, store(target))
-        return body + template(
-            "if TARGET is not None: __append(FORMAT % TARGET)",
-            FORMAT=ast.Str(s=f),
-            TARGET=target,
+
+        condition = template("TARGET is not None", TARGET=target, mode="eval")
+
+        if node.filters:
+            condition = ast.BoolOp(
+                values=[condition, filter_condition],
+                op=ast.And(),
             )
+
+        return body + template(
+            "if CONDITION: __append(FORMAT % TARGET)",
+            FORMAT=ast.Str(s=attr_format),
+            TARGET=target,
+            CONDITION=condition,
+        )
+
+    def visit_DictAttributes(self, node):
+        target = identifier("attr", id(node))
+        body = self._engine(node.expression, store(target))
+
+        exclude = Static(template(
+            "set(LIST)", LIST=ast.List(
+                elts=[ast.Str(s=name) for name in node.exclude],
+                ctx=ast.Load(),
+            ), mode="eval"
+        ))
+
+        body += template(
+            "for name, value in TARGET.items():\n  "
+            "if name not in EXCLUDE and value is not None: __append("
+            "' ' + name + '=' + QUOTE + "
+            "QUOTE_FUNC(value, QUOTE, QUOTE_ENTITY, None, None) + QUOTE"
+            ")",
+            TARGET=target,
+            EXCLUDE=exclude,
+            QUOTE_FUNC="__quote",
+            QUOTE=ast.Str(s=node.quote),
+            QUOTE_ENTITY=ast.Str(s=char2entity(node.quote or '\0')),
+            )
+
+        return body
 
     def visit_Cache(self, node):
         body = []
@@ -1105,24 +1478,41 @@ class Compiler(object):
 
         return body
 
+    def visit_Cancel(self, node):
+        body = []
+
+        for expression in node.expressions:
+            name = identifier("cache", id(expression))
+            target = store(name)
+
+            if not self._expression_cache.get(expression):
+               continue
+
+            body.append(ast.Assign([target], load("None")))
+
+        body += self.visit(node.node)
+
+        return body
+
     def visit_UseInternalMacro(self, node):
         if node.name is None:
             render = "render"
         else:
             render = "render_%s" % mangle(node.name)
-
-        return template(
+        token_reset = template("__token = None")
+        return token_reset + template(
             "f(__stream, econtext.copy(), rcontext, __i18n_domain)",
             f=render) + \
             template("econtext.update(rcontext)")
 
     def visit_DefineSlot(self, node):
         name = "__slot_%s" % mangle(node.name)
-        self._slots.add(name)
         body = self.visit(node.node)
 
+        self._slots.add(name)
+
         orelse = template(
-            "SLOT(__stream, econtext.copy(), rcontext, __i18n_domain)",
+            "SLOT(__stream, econtext.copy(), rcontext)",
             SLOT=name)
         test = ast.Compare(
             left=load(name),
@@ -1143,7 +1533,7 @@ class Compiler(object):
 
         if node.name in self._translations[-1]:
             raise TranslationError(
-                "Duplicate translation name: %s." % node.name)
+                "Duplicate translation name: %s.", node.name)
 
         self._translations[-1].add(node.name)
         body = []
@@ -1167,15 +1557,29 @@ class Compiler(object):
 
         return body
 
+    def visit_CodeBlock(self, node):
+        stmts = template(textwrap.dedent(node.source.strip('\n')))
+
+        for stmt in stmts:
+            self._visitor(stmt)
+
+        return set_token(stmts, node.source)
+
     def visit_UseExternalMacro(self, node):
+        self._macros.append(node.extend)
+
         callbacks = []
         for slot in node.slots:
             key = "__slot_%s" % mangle(slot.name)
             fun = "__fill_%s" % mangle(slot.name)
 
+            self._current_slot.append(slot.name)
+
             body = template("getitem = econtext.__getitem__") + \
                    template("get = econtext.get") + \
                    self.visit(slot.node)
+
+            assert self._current_slot.pop() == slot.name
 
             callbacks.append(
                 ast.FunctionDef(
@@ -1186,38 +1590,46 @@ class Compiler(object):
                             param("econtext"),
                             param("rcontext"),
                             param("__i18n_domain"),
+                            param("__i18n_context"),
                             ],
-                        defaults=[load("__i18n_domain")],
+                        defaults=[load("__i18n_domain"), load("__i18n_context")],
                         ),
                     body=body or [ast.Pass()],
                 ))
 
             key = ast.Str(s=key)
 
-            if node.extend:
-                update_body = None
-            else:
-                update_body = template("_slots.append(NAME)", NAME=fun)
+            assignment = template(
+                "_slots = econtext[KEY] = DEQUE((NAME,))",
+                KEY=key, NAME=fun, DEQUE=Symbol(collections.deque),
+                )
 
-            callbacks.append(
-                ast.TryExcept(
+            if node.extend:
+                append = template("_slots.appendleft(NAME)", NAME=fun)
+
+                assignment = [ast.TryExcept(
                     body=template("_slots = getitem(KEY)", KEY=key),
-                    handlers=[ast.ExceptHandler(
-                        body=template(
-                            "_slots = econtext[KEY] = [NAME]",
-                            KEY=key, NAME=fun,
-                        ))],
-                    orelse=update_body
-                    ))
+                    handlers=[ast.ExceptHandler(body=assignment)],
+                    orelse=append,
+                    )]
+
+            callbacks.extend(assignment)
+
+        assert self._macros.pop() == node.extend
 
         assignment = self._engine(node.expression, store("__macro"))
 
         return (
-            callbacks + \
-            assignment + \
+            callbacks +
+            assignment +
+            set_token(
+                template("__m = __macro.include"),
+                node.expression.value
+            ) +
             template(
-                "__macro.include(__stream, econtext.copy(), " \
-                "rcontext, __i18n_domain)") + \
+                "__m(__stream, econtext.copy(), "
+                "rcontext, __i18n_domain)"
+            ) +
             template("econtext.update(rcontext)")
             )
 
@@ -1312,9 +1724,9 @@ class Compiler(object):
 
     def _get_translation_identifiers(self, name):
         assert self._translations
-        prefix = id(self._translations[-1])
-        stream = identifier("stream_%d" % prefix, name)
-        append = identifier("append_%d" % prefix, name)
+        prefix = str(id(self._translations[-1])).replace('-', '_')
+        stream = identifier("stream_%s" % prefix, name)
+        append = identifier("append_%s" % prefix, name)
         return stream, append
 
     def _enter_assignment(self, names):

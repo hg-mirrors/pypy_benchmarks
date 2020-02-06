@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 """Utility code for benchmark scripts."""
+from __future__ import division, print_function
 
 __author__ = "collinwinter@google.com (Collin Winter)"
 
@@ -27,10 +28,10 @@ def run_benchmark(options, num_runs, bench_func, *args):
         data = bench_func(num_runs, *args)
         if options.take_geo_mean:
             product = reduce(operator.mul, data, 1)
-            print math.pow(product, 1.0 / len(data))
+            print(math.pow(product, 1.0 / len(data)))
         else:
             for x in data:
-                print x
+                print(x)
 
 
 def add_standard_options_to(parser):

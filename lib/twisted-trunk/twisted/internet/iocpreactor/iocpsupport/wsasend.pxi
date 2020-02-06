@@ -7,21 +7,21 @@ def send(long s, object buff, object obj, unsigned long flags = 0):
     cdef myOVERLAPPED *ov
     cdef WSABUF ws_buf
     cdef unsigned long bytes
+    cdef Py_ssize_t size
 
-    PyObject_AsReadBuffer(buff, <void **>&ws_buf.buf, <int *>&ws_buf.len)
+    PyObject_AsReadBuffer(buff, <void **>&ws_buf.buf, &size)
+    ws_buf.len = <DWORD>size
 
-    ov = makeOV()
-    if obj is not None:
-        ov.obj = <PyObject *>obj
+    ov = makeOV(obj, buff)
 
     rc = WSASend(s, &ws_buf, 1, &bytes, flags, <OVERLAPPED *>ov, NULL)
 
     if rc == SOCKET_ERROR:
         rc = WSAGetLastError()
         if rc != ERROR_IO_PENDING:
+            unmakeOV(ov)
             return rc, bytes
 
-    Py_XINCREF(obj)
     return rc, bytes
 
 

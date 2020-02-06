@@ -1,6 +1,12 @@
-import sys, os, cStringIO
 import time
 import util, optparse
+import sys, os
+
+if sys.version_info[0] > 2:
+    print('cannot run kratatau on Python3')
+    sys.exit(42)
+
+import cStringIO
 
 this_dir = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(this_dir, 'krakatau/Krakatau'))

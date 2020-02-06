@@ -49,6 +49,10 @@ there clears it up.
 
 
 from array import array
+import sys
+import codecs
+if sys.version_info[0] > 2:
+    xrange = range
 
 # Globals mandated by PEP 272:
 # http://www.python.org/dev/peps/pep-0272/
@@ -64,7 +68,7 @@ def new(key, mode, IV=None):
         return ECBMode(AES(key))
     elif mode == MODE_CBC:
         if IV is None:
-            raise ValueError, "CBC mode needs an IV value!"
+            raise ValueError("CBC mode needs an IV value!")
 
         return CBCMode(AES(key), IV)
     else:
@@ -91,7 +95,7 @@ class AES(object):
         elif self.key_size == 32:
             self.rounds = 14
         else:
-            raise ValueError, "Key length must be 16, 24 or 32 bytes"
+            raise ValueError("Key length must be 16, 24 or 32 bytes")
 
         self.expand_key()
 
@@ -169,7 +173,7 @@ class AES(object):
         for i in xrange(16):
             block[i] ^= exkey[offset + i]
 
-        #print 'AddRoundKey:', block
+        #print('AddRoundKey:', block)
 
     def sub_bytes(self, block, sbox):
         """SubBytes step, apply S-box to all bytes
@@ -181,7 +185,7 @@ class AES(object):
         for i in xrange(16):
             block[i] = sbox[block[i]]
 
-        #print 'SubBytes   :', block
+        #print('SubBytes   :', block)
 
     def shift_rows(self, b):
         """ShiftRows step. Shifts 2nd row to left by 1, 3rd row by 2, 4th row by 3
@@ -199,7 +203,7 @@ class AES(object):
         b[2], b[6], b[10], b[14] = b[10], b[14], b[ 2], b[ 6]
         b[3], b[7], b[11], b[15] = b[15], b[ 3], b[ 7], b[11]
 
-        #print 'ShiftRows  :', b
+        #print('ShiftRows  :', b)
 
     def shift_rows_inv(self, b):
         """Similar to shift_rows above, but performed in inverse for decryption."""
@@ -208,7 +212,7 @@ class AES(object):
         b[10], b[14], b[ 2], b[ 6] = b[2], b[6], b[10], b[14]
         b[15], b[ 3], b[ 7], b[11] = b[3], b[7], b[11], b[15]
 
-        #print 'ShiftRows  :', b
+        #print('ShiftRows  :', b)
 
     def mix_columns(self, block):
         """MixColumns step. Mixes the values in each column"""
@@ -231,7 +235,7 @@ class AES(object):
             block[col+2] = mul_by_2[v2] ^ v1 ^ v0 ^ mul_by_3[v3]
             block[col+3] = mul_by_2[v3] ^ v2 ^ v1 ^ mul_by_3[v0]
 
-        #print 'MixColumns :', block
+        #print('MixColumns :', block)
 
     def mix_columns_inv(self, block):
         """Similar to mix_columns above, but performed in inverse for decryption."""
@@ -256,7 +260,7 @@ class AES(object):
             block[col+2] = mul_14[v2] ^ mul_9[v1] ^ mul_13[v0] ^ mul_11[v3]
             block[col+3] = mul_14[v3] ^ mul_9[v2] ^ mul_13[v1] ^ mul_11[v0]
 
-        #print 'MixColumns :', block
+        #print('MixColumns :', block)
 
     def encrypt_block(self, block):
         """Encrypts a single block. This is the main AES function"""
@@ -313,7 +317,7 @@ class ECBMode(object):
         """Perform ECB mode with the given function"""
 
         if len(data) % self.block_size != 0:
-            raise ValueError, "Plaintext length must be multiple of 16"
+            raise ValueError("Plaintext length must be multiple of 16")
 
         block_size = self.block_size
         data = array('B', data)
@@ -357,7 +361,7 @@ class CBCMode(object):
 
         block_size = self.block_size
         if len(data) % block_size != 0:
-            raise ValueError, "Plaintext length must be multiple of 16"
+            raise ValueError("Plaintext length must be multiple of 16")
 
         data = array('B', data)
         IV = self.IV
@@ -381,7 +385,7 @@ class CBCMode(object):
 
         block_size = self.block_size
         if len(data) % block_size != 0:
-            raise ValueError, "Ciphertext length must be multiple of 16"
+            raise ValueError("Ciphertext length must be multiple of 16")
 
         data = array('B', data)
         IV = self.IV
@@ -436,45 +440,45 @@ gf_mul_by_14 = array('B', [galois_multiply(x, 14) for x in range(256)])
 #
 # More information: http://en.wikipedia.org/wiki/Rijndael_S-box
 
-aes_sbox = array('B',
-    '637c777bf26b6fc53001672bfed7ab76'
-    'ca82c97dfa5947f0add4a2af9ca472c0'
-    'b7fd9326363ff7cc34a5e5f171d83115'
-    '04c723c31896059a071280e2eb27b275'
-    '09832c1a1b6e5aa0523bd6b329e32f84'
-    '53d100ed20fcb15b6acbbe394a4c58cf'
-    'd0efaafb434d338545f9027f503c9fa8'
-    '51a3408f929d38f5bcb6da2110fff3d2'
-    'cd0c13ec5f974417c4a77e3d645d1973'
-    '60814fdc222a908846eeb814de5e0bdb'
-    'e0323a0a4906245cc2d3ac629195e479'
-    'e7c8376d8dd54ea96c56f4ea657aae08'
-    'ba78252e1ca6b4c6e8dd741f4bbd8b8a'
-    '703eb5664803f60e613557b986c11d9e'
-    'e1f8981169d98e949b1e87e9ce5528df'
-    '8ca1890dbfe6426841992d0fb054bb16'.decode('hex')
+aes_sbox = array('B', codecs.decode(
+    b'637c777bf26b6fc53001672bfed7ab76'
+    b'ca82c97dfa5947f0add4a2af9ca472c0'
+    b'b7fd9326363ff7cc34a5e5f171d83115'
+    b'04c723c31896059a071280e2eb27b275'
+    b'09832c1a1b6e5aa0523bd6b329e32f84'
+    b'53d100ed20fcb15b6acbbe394a4c58cf'
+    b'd0efaafb434d338545f9027f503c9fa8'
+    b'51a3408f929d38f5bcb6da2110fff3d2'
+    b'cd0c13ec5f974417c4a77e3d645d1973'
+    b'60814fdc222a908846eeb814de5e0bdb'
+    b'e0323a0a4906245cc2d3ac629195e479'
+    b'e7c8376d8dd54ea96c56f4ea657aae08'
+    b'ba78252e1ca6b4c6e8dd741f4bbd8b8a'
+    b'703eb5664803f60e613557b986c11d9e'
+    b'e1f8981169d98e949b1e87e9ce5528df'
+    b'8ca1890dbfe6426841992d0fb054bb16', 'hex')
 )
 
 # This is the inverse of the above. In other words:
 # aes_inv_sbox[aes_sbox[val]] == val
 
-aes_inv_sbox = array('B',
-    '52096ad53036a538bf40a39e81f3d7fb'
-    '7ce339829b2fff87348e4344c4dee9cb'
-    '547b9432a6c2233dee4c950b42fac34e'
-    '082ea16628d924b2765ba2496d8bd125'
-    '72f8f66486689816d4a45ccc5d65b692'
-    '6c704850fdedb9da5e154657a78d9d84'
-    '90d8ab008cbcd30af7e45805b8b34506'
-    'd02c1e8fca3f0f02c1afbd0301138a6b'
-    '3a9111414f67dcea97f2cfcef0b4e673'
-    '96ac7422e7ad3585e2f937e81c75df6e'
-    '47f11a711d29c5896fb7620eaa18be1b'
-    'fc563e4bc6d279209adbc0fe78cd5af4'
-    '1fdda8338807c731b11210592780ec5f'
-    '60517fa919b54a0d2de57a9f93c99cef'
-    'a0e03b4dae2af5b0c8ebbb3c83539961'
-    '172b047eba77d626e169146355210c7d'.decode('hex')
+aes_inv_sbox = array('B', codecs.decode(
+    b'52096ad53036a538bf40a39e81f3d7fb'
+    b'7ce339829b2fff87348e4344c4dee9cb'
+    b'547b9432a6c2233dee4c950b42fac34e'
+    b'082ea16628d924b2765ba2496d8bd125'
+    b'72f8f66486689816d4a45ccc5d65b692'
+    b'6c704850fdedb9da5e154657a78d9d84'
+    b'90d8ab008cbcd30af7e45805b8b34506'
+    b'd02c1e8fca3f0f02c1afbd0301138a6b'
+    b'3a9111414f67dcea97f2cfcef0b4e673'
+    b'96ac7422e7ad3585e2f937e81c75df6e'
+    b'47f11a711d29c5896fb7620eaa18be1b'
+    b'fc563e4bc6d279209adbc0fe78cd5af4'
+    b'1fdda8338807c731b11210592780ec5f'
+    b'60517fa919b54a0d2de57a9f93c99cef'
+    b'a0e03b4dae2af5b0c8ebbb3c83539961'
+    b'172b047eba77d626e169146355210c7d', 'hex')
 )
 
 # The Rcon table is used in AES's key schedule (key expansion)
@@ -482,21 +486,21 @@ aes_inv_sbox = array('B',
 #
 # More information: http://en.wikipedia.org/wiki/Rijndael_key_schedule
 
-aes_Rcon = array('B',
-    '8d01020408102040801b366cd8ab4d9a'
-    '2f5ebc63c697356ad4b37dfaefc59139'
-    '72e4d3bd61c29f254a943366cc831d3a'
-    '74e8cb8d01020408102040801b366cd8'
-    'ab4d9a2f5ebc63c697356ad4b37dfaef'
-    'c5913972e4d3bd61c29f254a943366cc'
-    '831d3a74e8cb8d01020408102040801b'
-    '366cd8ab4d9a2f5ebc63c697356ad4b3'
-    '7dfaefc5913972e4d3bd61c29f254a94'
-    '3366cc831d3a74e8cb8d010204081020'
-    '40801b366cd8ab4d9a2f5ebc63c69735'
-    '6ad4b37dfaefc5913972e4d3bd61c29f'
-    '254a943366cc831d3a74e8cb8d010204'
-    '08102040801b366cd8ab4d9a2f5ebc63'
-    'c697356ad4b37dfaefc5913972e4d3bd'
-    '61c29f254a943366cc831d3a74e8cb'.decode('hex')
+aes_Rcon = array('B', codecs.decode(
+    b'8d01020408102040801b366cd8ab4d9a'
+    b'2f5ebc63c697356ad4b37dfaefc59139'
+    b'72e4d3bd61c29f254a943366cc831d3a'
+    b'74e8cb8d01020408102040801b366cd8'
+    b'ab4d9a2f5ebc63c697356ad4b37dfaef'
+    b'c5913972e4d3bd61c29f254a943366cc'
+    b'831d3a74e8cb8d01020408102040801b'
+    b'366cd8ab4d9a2f5ebc63c697356ad4b3'
+    b'7dfaefc5913972e4d3bd61c29f254a94'
+    b'3366cc831d3a74e8cb8d010204081020'
+    b'40801b366cd8ab4d9a2f5ebc63c69735'
+    b'6ad4b37dfaefc5913972e4d3bd61c29f'
+    b'254a943366cc831d3a74e8cb8d010204'
+    b'08102040801b366cd8ab4d9a2f5ebc63'
+    b'c697356ad4b37dfaefc5913972e4d3bd'
+    b'61c29f254a943366cc831d3a74e8cb', 'hex')
 )

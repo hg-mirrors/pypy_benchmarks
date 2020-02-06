@@ -3,7 +3,11 @@
 
 #
 
-"""HTML pretty-printing for Python source code."""
+"""
+HTML pretty-printing for Python source code.
+"""
+
+from __future__ import print_function
 
 __version__ = '$Revision: 1.8 $'[11:-2]
 
@@ -33,17 +37,23 @@ class Options(usage.Options):
     optParameters = [
         ('stylesheet', 's', None, "URL of stylesheet to link to."),
         ]
-    zsh_extras = ["1:source python file:_files -g '*.py'"]
+
+    compData = usage.Completions(
+        extraActions=[usage.CompleteFiles('*.py', descr='source python file')]
+        )
+
 
     def parseArgs(self, filename):
         self['filename'] = filename
+
+
 
 def run():
     options = Options()
     try:
         options.parseOptions()
-    except usage.UsageError, e:
-        print str(e)
+    except usage.UsageError as e:
+        print(str(e))
         sys.exit(1)
     filename = options['filename']
     if options.get('stylesheet') is not None:
@@ -51,16 +61,14 @@ def run():
     else:
         stylesheet = ''
 
-    output = open(filename + '.html', 'w')
-    try:
-        output.write(header % {
+    with open(filename + '.html', 'wb') as output:
+        outHeader = (header % {
             'title': filename,
             'generator': 'htmlizer/%s' % (copyright.longversion,),
             'alternate': alternateLink % {'source': filename},
             'stylesheet': stylesheet
             })
-        htmlizer.filter(open(filename), output,
-                        htmlizer.SmallerHTMLWriter)
-        output.write(footer)
-    finally:
-        output.close()
+        output.write(outHeader.encode("utf-8"))
+        with open(filename, 'rb') as f:
+            htmlizer.filter(f, output, htmlizer.SmallerHTMLWriter)
+        output.write(footer.encode("utf-8"))

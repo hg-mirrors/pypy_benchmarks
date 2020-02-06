@@ -1,17 +1,23 @@
+from __future__ import unicode_literals
+
 import os
+import pkgutil
 import sys
-from optparse import OptionParser
-import imp
+from collections import OrderedDict, defaultdict
+from importlib import import_module
 
 import django
-from django.core.management.base import BaseCommand, CommandError, handle_default_options
+from django.apps import apps
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from django.core.management.base import (
+    BaseCommand, CommandError, CommandParser, handle_default_options,
+)
+from django.core.management.color import color_style
+from django.utils import autoreload, lru_cache, six
+from django.utils._os import npath, upath
+from django.utils.encoding import force_text
 
-# For backwards compatibility: get_version() used to be in this module.
-get_version = django.get_version
-
-# A cache of loaded commands, so that call_command
-# doesn't have to reload every time it's called.
-_commands = None
 
 def find_commands(management_dir):
     """
@@ -21,41 +27,9 @@ def find_commands(management_dir):
     Returns an empty list if no commands are defined.
     """
     command_dir = os.path.join(management_dir, 'commands')
-    try:
-        return [f[:-3] for f in os.listdir(command_dir)
-                if not f.startswith('_') and f.endswith('.py')]
-    except OSError:
-        return []
+    return [name for _, name, is_pkg in pkgutil.iter_modules([npath(command_dir)])
+            if not is_pkg and not name.startswith('_')]
 
-def find_management_module(app_name):
-    """
-    Determines the path to the management module for the given app_name,
-    without actually importing the application or the management module.
-
-    Raises ImportError if the management module cannot be found for any reason.
-    """
-    parts = app_name.split('.')
-    parts.append('management')
-    parts.reverse()
-    part = parts.pop()
-    path = None
-
-    # When using manage.py, the project module is added to the path,
-    # loaded, then removed from the path. This means that
-    # testproject.testapp.models can be loaded in future, even if
-    # testproject isn't in the path. When looking for the management
-    # module, we need look for the case where the project name is part
-    # of the app_name but the project directory itself isn't on the path.
-    try:
-        f, path, descr = imp.find_module(part,path)
-    except ImportError,e:
-        if os.path.basename(os.getcwd()) != part:
-            raise e
-
-    while parts:
-        part = parts.pop()
-        f, path, descr = imp.find_module(part, path and [path] or None)
-    return path
 
 def load_command_class(app_name, name):
     """
@@ -63,9 +37,11 @@ def load_command_class(app_name, name):
     class instance. All errors raised by the import process
     (ImportError, AttributeError) are allowed to propagate.
     """
-    return getattr(__import__('%s.management.commands.%s' % (app_name, name),
-                   {}, {}, ['Command']), 'Command')()
+    module = import_module('%s.management.commands.%s' % (app_name, name))
+    return module.Command()
 
+
+@lru_cache.lru_cache(maxsize=None)
 def get_commands():
     """
     Returns a dictionary mapping command names to their callback applications.
@@ -75,9 +51,7 @@ def get_commands():
     in that package are registered.
 
     Core commands are always included. If a settings module has been
-    specified, user-defined commands will also be included, the
-    startproject command will be disabled, and the startapp command
-    will be modified to use the directory in which the settings module appears.
+    specified, user-defined commands will also be included.
 
     The dictionary is in the format {command_name: app_name}. Key-value
     pairs from this dictionary can then be used in calls to
@@ -90,251 +64,301 @@ def get_commands():
     The dictionary is cached on the first call and reused on subsequent
     calls.
     """
-    global _commands
-    if _commands is None:
-        _commands = dict([(name, 'django.core') for name in find_commands(__path__[0])])
+    commands = {name: 'django.core' for name in find_commands(upath(__path__[0]))}
 
-        # Find the installed apps
-        try:
-            from django.conf import settings
-            apps = settings.INSTALLED_APPS
-        except (AttributeError, EnvironmentError, ImportError):
-            apps = []
+    if not settings.configured:
+        return commands
 
-        # Find the project directory
-        try:
-            from django.conf import settings
-            project_directory = setup_environ(
-                __import__(
-                    settings.SETTINGS_MODULE, {}, {},
-                    (settings.SETTINGS_MODULE.split(".")[-1],)
-                ), settings.SETTINGS_MODULE
-            )
-        except (AttributeError, EnvironmentError, ImportError):
-            project_directory = None
+    for app_config in reversed(list(apps.get_app_configs())):
+        path = os.path.join(app_config.path, 'management')
+        commands.update({name: app_config.name for name in find_commands(path)})
 
-        # Find and load the management module for each installed app.
-        for app_name in apps:
-            try:
-                path = find_management_module(app_name)
-                _commands.update(dict([(name, app_name)
-                                       for name in find_commands(path)]))
-            except ImportError:
-                pass # No management module - ignore this app
+    return commands
 
-        if project_directory:
-            # Remove the "startproject" command from self.commands, because
-            # that's a django-admin.py command, not a manage.py command.
-            del _commands['startproject']
 
-            # Override the startapp command so that it always uses the
-            # project_directory, not the current working directory
-            # (which is default).
-            from django.core.management.commands.startapp import ProjectCommand
-            _commands['startapp'] = ProjectCommand(project_directory)
-
-    return _commands
-
-def call_command(name, *args, **options):
+def call_command(command_name, *args, **options):
     """
     Calls the given command, with the given options and args/kwargs.
 
     This is the primary API you should use for calling specific commands.
 
+    `command_name` may be a string or a command object. Using a string is
+    preferred unless the command object is required for further processing or
+    testing.
+
     Some examples:
-        call_command('syncdb')
+        call_command('migrate')
         call_command('shell', plain=True)
-        call_command('sqlall', 'myapp')
+        call_command('sqlmigrate', 'myapp')
+
+        from django.core.management.commands import flush
+        cmd = flush.Command()
+        call_command(cmd, verbosity=0, interactive=False)
+        # Do something with cmd ...
     """
-    try:
-        app_name = get_commands()[name]
+    if isinstance(command_name, BaseCommand):
+        # Command object passed in.
+        command = command_name
+        command_name = command.__class__.__module__.split('.')[-1]
+    else:
+        # Load the command object by name.
+        try:
+            app_name = get_commands()[command_name]
+        except KeyError:
+            raise CommandError("Unknown command: %r" % command_name)
+
         if isinstance(app_name, BaseCommand):
             # If the command is already loaded, use it directly.
-            klass = app_name
+            command = app_name
         else:
-            klass = load_command_class(app_name, name)
-    except KeyError:
-        raise CommandError, "Unknown command: %r" % name
-    return klass.execute(*args, **options)
+            command = load_command_class(app_name, command_name)
 
-class LaxOptionParser(OptionParser):
-    """
-    An option parser that doesn't raise any errors on unknown options.
+    # Simulate argument parsing to get the option defaults (see #10080 for details).
+    parser = command.create_parser('', command_name)
+    # Use the `dest` option name from the parser option
+    opt_mapping = {
+        sorted(s_opt.option_strings)[0].lstrip('-').replace('-', '_'): s_opt.dest
+        for s_opt in parser._actions if s_opt.option_strings
+    }
+    arg_options = {opt_mapping.get(key, key): value for key, value in options.items()}
+    defaults = parser.parse_args(args=[force_text(a) for a in args])
+    defaults = dict(defaults._get_kwargs(), **arg_options)
+    # Move positional args out of options to mimic legacy optparse
+    args = defaults.pop('args', ())
+    if 'skip_checks' not in options:
+        defaults['skip_checks'] = True
 
-    This is needed because the --settings and --pythonpath options affect
-    the commands (and thus the options) that are available to the user.
-    """
-    def error(self, msg):
-        pass
+    return command.execute(*args, **defaults)
 
-    def print_help(self):
-        """Output nothing.
-
-        The lax options are included in the normal option parser, so under
-        normal usage, we don't need to print the lax options.
-        """
-        pass
-
-    def print_lax_help(self):
-        """Output the basic options available to every command.
-
-        This just redirects to the default print_help() behaviour.
-        """
-        OptionParser.print_help(self)
-
-    def _process_args(self, largs, rargs, values):
-        """
-        Overrides OptionParser._process_args to exclusively handle default
-        options and ignore args and other options.
-
-        This overrides the behavior of the super class, which stop parsing
-        at the first unrecognized option.
-        """
-        while rargs:
-            arg = rargs[0]
-            try:
-                if arg[0:2] == "--" and len(arg) > 2:
-                    # process a single long option (possibly with value(s))
-                    # the superclass code pops the arg off rargs
-                    self._process_long_opt(rargs, values)
-                elif arg[:1] == "-" and len(arg) > 1:
-                    # process a cluster of short options (possibly with
-                    # value(s) for the last one only)
-                    # the superclass code pops the arg off rargs
-                    self._process_short_opts(rargs, values)
-                else:
-                    # it's either a non-default option or an arg
-                    # either way, add it to the args list so we can keep
-                    # dealing with options
-                    del rargs[0]
-                    raise Exception
-            except:
-                largs.append(arg)
 
 class ManagementUtility(object):
     """
-    Encapsulates the logic of the django-admin.py and manage.py utilities.
-
-    A ManagementUtility has a number of commands, which can be manipulated
-    by editing the self.commands dictionary.
+    Encapsulates the logic of the django-admin and manage.py utilities.
     """
     def __init__(self, argv=None):
         self.argv = argv or sys.argv[:]
         self.prog_name = os.path.basename(self.argv[0])
+        self.settings_exception = None
 
-    def main_help_text(self):
+    def main_help_text(self, commands_only=False):
         """
         Returns the script's main help text, as a string.
         """
-        usage = ['',"Type '%s help <subcommand>' for help on a specific subcommand." % self.prog_name,'']
-        usage.append('Available subcommands:')
-        commands = get_commands().keys()
-        commands.sort()
-        for cmd in commands:
-            usage.append('  %s' % cmd)
+        if commands_only:
+            usage = sorted(get_commands().keys())
+        else:
+            usage = [
+                "",
+                "Type '%s help <subcommand>' for help on a specific subcommand." % self.prog_name,
+                "",
+                "Available subcommands:",
+            ]
+            commands_dict = defaultdict(lambda: [])
+            for name, app in six.iteritems(get_commands()):
+                if app == 'django.core':
+                    app = 'django'
+                else:
+                    app = app.rpartition('.')[-1]
+                commands_dict[app].append(name)
+            style = color_style()
+            for app in sorted(commands_dict.keys()):
+                usage.append("")
+                usage.append(style.NOTICE("[%s]" % app))
+                for name in sorted(commands_dict[app]):
+                    usage.append("    %s" % name)
+            # Output an extra note if settings are not properly configured
+            if self.settings_exception is not None:
+                usage.append(style.NOTICE(
+                    "Note that only Django core commands are listed "
+                    "as settings are not properly configured (error: %s)."
+                    % self.settings_exception))
+
         return '\n'.join(usage)
 
     def fetch_command(self, subcommand):
         """
         Tries to fetch the given subcommand, printing a message with the
         appropriate command called from the command line (usually
-        "django-admin.py" or "manage.py") if it can't be found.
+        "django-admin" or "manage.py") if it can't be found.
         """
+        # Get commands outside of try block to prevent swallowing exceptions
+        commands = get_commands()
         try:
-            app_name = get_commands()[subcommand]
-            if isinstance(app_name, BaseCommand):
-                # If the command is already loaded, use it directly.
-                klass = app_name
-            else:
-                klass = load_command_class(app_name, subcommand)
+            app_name = commands[subcommand]
         except KeyError:
-            sys.stderr.write("Unknown command: %r\nType '%s help' for usage.\n" % \
-                (subcommand, self.prog_name))
+            if os.environ.get('DJANGO_SETTINGS_MODULE'):
+                # If `subcommand` is missing due to misconfigured settings, the
+                # following line will retrigger an ImproperlyConfigured exception
+                # (get_commands() swallows the original one) so the user is
+                # informed about it.
+                settings.INSTALLED_APPS
+            else:
+                sys.stderr.write("No Django settings specified.\n")
+            sys.stderr.write(
+                "Unknown command: %r\nType '%s help' for usage.\n"
+                % (subcommand, self.prog_name)
+            )
             sys.exit(1)
+        if isinstance(app_name, BaseCommand):
+            # If the command is already loaded, use it directly.
+            klass = app_name
+        else:
+            klass = load_command_class(app_name, subcommand)
         return klass
+
+    def autocomplete(self):
+        """
+        Output completion suggestions for BASH.
+
+        The output of this function is passed to BASH's `COMREPLY` variable and
+        treated as completion suggestions. `COMREPLY` expects a space
+        separated string as the result.
+
+        The `COMP_WORDS` and `COMP_CWORD` BASH environment variables are used
+        to get information about the cli input. Please refer to the BASH
+        man-page for more information about this variables.
+
+        Subcommand options are saved as pairs. A pair consists of
+        the long option string (e.g. '--exclude') and a boolean
+        value indicating if the option requires arguments. When printing to
+        stdout, an equal sign is appended to options which require arguments.
+
+        Note: If debugging this function, it is recommended to write the debug
+        output in a separate file. Otherwise the debug output will be treated
+        and formatted as potential completion suggestions.
+        """
+        # Don't complete if user hasn't sourced bash_completion file.
+        if 'DJANGO_AUTO_COMPLETE' not in os.environ:
+            return
+
+        cwords = os.environ['COMP_WORDS'].split()[1:]
+        cword = int(os.environ['COMP_CWORD'])
+
+        try:
+            curr = cwords[cword - 1]
+        except IndexError:
+            curr = ''
+
+        subcommands = list(get_commands()) + ['help']
+        options = [('--help', False)]
+
+        # subcommand
+        if cword == 1:
+            print(' '.join(sorted(filter(lambda x: x.startswith(curr), subcommands))))
+        # subcommand options
+        # special case: the 'help' subcommand has no options
+        elif cwords[0] in subcommands and cwords[0] != 'help':
+            subcommand_cls = self.fetch_command(cwords[0])
+            # special case: add the names of installed apps to options
+            if cwords[0] in ('dumpdata', 'sqlmigrate', 'sqlsequencereset', 'test'):
+                try:
+                    app_configs = apps.get_app_configs()
+                    # Get the last part of the dotted path as the app name.
+                    options.extend((app_config.label, 0) for app_config in app_configs)
+                except ImportError:
+                    # Fail silently if DJANGO_SETTINGS_MODULE isn't set. The
+                    # user will find out once they execute the command.
+                    pass
+            parser = subcommand_cls.create_parser('', cwords[0])
+            options.extend(
+                (sorted(s_opt.option_strings)[0], s_opt.nargs != 0)
+                for s_opt in parser._actions if s_opt.option_strings
+            )
+            # filter out previously specified options from available options
+            prev_opts = [x.split('=')[0] for x in cwords[1:cword - 1]]
+            options = [opt for opt in options if opt[0] not in prev_opts]
+
+            # filter options by current input
+            options = sorted((k, v) for k, v in options if k.startswith(curr))
+            for option in options:
+                opt_label = option[0]
+                # append '=' to options which require args
+                if option[1]:
+                    opt_label += '='
+                print(opt_label)
+        # Exit code of the bash completion function is never passed back to
+        # the user, so it's safe to always exit with 0.
+        # For more details see #25420.
+        sys.exit(0)
 
     def execute(self):
         """
         Given the command-line arguments, this figures out which subcommand is
         being run, creates a parser appropriate to that command, and runs it.
         """
-        # Preprocess options to extract --settings and --pythonpath.
-        # These options could affect the commands that are available, so they
-        # must be processed early.
-        parser = LaxOptionParser(usage="%prog subcommand [options] [args]",
-                                 version=get_version(),
-                                 option_list=BaseCommand.option_list)
-        try:
-            options, args = parser.parse_args(self.argv)
-            handle_default_options(options)
-        except:
-            pass # Ignore any option errors at this point.
-
         try:
             subcommand = self.argv[1]
         except IndexError:
-            sys.stderr.write("Type '%s help' for usage.\n" % self.prog_name)
-            sys.exit(1)
+            subcommand = 'help'  # Display help if no arguments were given.
+
+        # Preprocess options to extract --settings and --pythonpath.
+        # These options could affect the commands that are available, so they
+        # must be processed early.
+        parser = CommandParser(None, usage="%(prog)s subcommand [options] [args]", add_help=False)
+        parser.add_argument('--settings')
+        parser.add_argument('--pythonpath')
+        parser.add_argument('args', nargs='*')  # catch-all
+        try:
+            options, args = parser.parse_known_args(self.argv[2:])
+            handle_default_options(options)
+        except CommandError:
+            pass  # Ignore any option errors at this point.
+
+        try:
+            settings.INSTALLED_APPS
+        except ImproperlyConfigured as exc:
+            self.settings_exception = exc
+
+        if settings.configured:
+            # Start the auto-reloading dev server even if the code is broken.
+            # The hardcoded condition is a code smell but we can't rely on a
+            # flag on the command class because we haven't located it yet.
+            if subcommand == 'runserver' and '--noreload' not in self.argv:
+                try:
+                    autoreload.check_errors(django.setup)()
+                except Exception:
+                    # The exception will be raised later in the child process
+                    # started by the autoreloader. Pretend it didn't happen by
+                    # loading an empty list of applications.
+                    apps.all_models = defaultdict(OrderedDict)
+                    apps.app_configs = OrderedDict()
+                    apps.apps_ready = apps.models_ready = apps.ready = True
+
+                    # Remove options not compatible with the built-in runserver
+                    # (e.g. options for the contrib.staticfiles' runserver).
+                    # Changes here require manually testing as described in
+                    # #27522.
+                    _parser = self.fetch_command('runserver').create_parser('django', 'runserver')
+                    _options, _args = _parser.parse_known_args(self.argv[2:])
+                    for _arg in _args:
+                        self.argv.remove(_arg)
+
+            # In all other cases, django.setup() is required to succeed.
+            else:
+                django.setup()
+
+        self.autocomplete()
 
         if subcommand == 'help':
-            if len(args) > 2:
-                self.fetch_command(args[2]).print_help(self.prog_name, args[2])
+            if '--commands' in args:
+                sys.stdout.write(self.main_help_text(commands_only=True) + '\n')
+            elif len(options.args) < 1:
+                sys.stdout.write(self.main_help_text() + '\n')
             else:
-                parser.print_lax_help()
-                sys.stderr.write(self.main_help_text() + '\n')
-                sys.exit(1)
-        # Special-cases: We want 'django-admin.py --version' and
-        # 'django-admin.py --help' to work, for backwards compatibility.
-        elif self.argv[1:] == ['--version']:
-            # LaxOptionParser already takes care of printing the version.
-            pass
-        elif self.argv[1:] == ['--help']:
-            parser.print_lax_help()
-            sys.stderr.write(self.main_help_text() + '\n')
+                self.fetch_command(options.args[0]).print_help(self.prog_name, options.args[0])
+        # Special-cases: We want 'django-admin --version' and
+        # 'django-admin --help' to work, for backwards compatibility.
+        elif subcommand == 'version' or self.argv[1:] == ['--version']:
+            sys.stdout.write(django.get_version() + '\n')
+        elif self.argv[1:] in (['--help'], ['-h']):
+            sys.stdout.write(self.main_help_text() + '\n')
         else:
             self.fetch_command(subcommand).run_from_argv(self.argv)
 
-def setup_environ(settings_mod, original_settings_path=None):
-    """
-    Configures the runtime environment. This can also be used by external
-    scripts wanting to set up a similar environment to manage.py.
-    Returns the project directory (assuming the passed settings module is
-    directly in the project directory).
-
-    The "original_settings_path" parameter is optional, but recommended, since
-    trying to work out the original path from the module can be problematic.
-    """
-    # Add this project to sys.path so that it's importable in the conventional
-    # way. For example, if this file (manage.py) lives in a directory
-    # "myproject", this code would add "/path/to/myproject" to sys.path.
-    project_directory, settings_filename = os.path.split(settings_mod.__file__)
-    if project_directory == os.curdir or not project_directory:
-        project_directory = os.getcwd()
-    project_name = os.path.basename(project_directory)
-    settings_name = os.path.splitext(settings_filename)[0]
-    sys.path.append(os.path.join(project_directory, os.pardir))
-    project_module = __import__(project_name, {}, {}, [''])
-    sys.path.pop()
-
-    # Set DJANGO_SETTINGS_MODULE appropriately.
-    if original_settings_path:
-        os.environ['DJANGO_SETTINGS_MODULE'] = original_settings_path
-    else:
-        os.environ['DJANGO_SETTINGS_MODULE'] = '%s.%s' % (project_name, settings_name)
-    return project_directory
 
 def execute_from_command_line(argv=None):
     """
     A simple method that runs a ManagementUtility.
     """
-    utility = ManagementUtility(argv)
-    utility.execute()
-
-def execute_manager(settings_mod, argv=None):
-    """
-    Like execute_from_command_line(), but for use by manage.py, a
-    project-specific django-admin.py utility.
-    """
-    setup_environ(settings_mod)
     utility = ManagementUtility(argv)
     utility.execute()

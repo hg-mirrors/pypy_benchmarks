@@ -14,6 +14,7 @@ The total prices variable is incremented (sumT=sumT+t).
 The total price, t, is converted to a string, s.
 
 """
+from __future__ import division, print_function
 
 from struct import unpack
 from time import clock as time
@@ -28,7 +29,7 @@ filename = rel_path("telco-bench.b")
 
 def run():
     getcontext().rounding = ROUND_DOWN
-    rates = map(Decimal, ('0.0013', '0.00894'))
+    rates = list(map(Decimal, ('0.0013', '0.00894')))
     twodig = Decimal('0.01')
     Banker = Context(rounding=ROUND_HALF_EVEN)
     basictax = Decimal("0.0675")
@@ -65,10 +66,11 @@ def run():
             t += d
 
         sumT += t
-        print >> outfil, t
+        print(t, file=outfil)
 
         if test:
-            print '%6d   %1s  |%6s %6s %6s  |%6s' % (n, 'LD'[calltype], p, b, (not calltype and " " or d), t)
+            print('%6d   %1s  |%6s %6s %6s  |%6s' % (n, 'LD'[calltype], p, b,
+                         (not calltype and " " or d), t))
 
     infil.close()
     outfil.close()

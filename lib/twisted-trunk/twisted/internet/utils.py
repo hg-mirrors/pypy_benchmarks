@@ -6,22 +6,26 @@
 Utility methods.
 """
 
+from __future__ import division, absolute_import
+
 import sys, warnings
+from functools import wraps
 
 from twisted.internet import protocol, defer
-from twisted.python import failure, util as tputil
+from twisted.python import failure
+from twisted.python.compat import reraise
 
-try:
-    import cStringIO as StringIO
-except ImportError:
-    import StringIO
+from io import BytesIO
 
-def _callProtocolWithDeferred(protocol, executable, args, env, path, reactor=None):
+
+
+def _callProtocolWithDeferred(protocol, executable, args, env, path,
+                              reactor=None, protoArgs=()):
     if reactor is None:
         from twisted.internet import reactor
 
     d = defer.Deferred()
-    p = protocol(d)
+    p = protocol(d, *protoArgs)
     reactor.spawnProcess(p, executable, (executable,)+tuple(args), env, path)
     return d
 
@@ -37,6 +41,7 @@ class _UnexpectedErrorOutput(IOError):
         produced the data on stderr has ended (exited and all file descriptors
         closed).
     """
+
     def __init__(self, text, processEnded):
         IOError.__init__(self, "got stderr: %r" % (text,))
         self.processEnded = processEnded
@@ -52,7 +57,7 @@ class _BackRelay(protocol.ProcessProtocol):
         and, if C{errortoo} is true, all of stderr as well (mixed together in
         one string).  If C{errortoo} is false and any bytes are received over
         stderr, this will fire with an L{_UnexpectedErrorOutput} instance and
-        the attribute will be set to C{None}.
+        the attribute will be set to L{None}.
 
     @ivar onProcessEnded: If C{errortoo} is false and bytes are received over
         stderr, this attribute will refer to a L{Deferred} which will be called
@@ -64,7 +69,7 @@ class _BackRelay(protocol.ProcessProtocol):
 
     def __init__(self, deferred, errortoo=0):
         self.deferred = deferred
-        self.s = StringIO.StringIO()
+        self.s = BytesIO()
         if errortoo:
             self.errReceived = self.errReceivedIsGood
         else:
@@ -95,16 +100,16 @@ class _BackRelay(protocol.ProcessProtocol):
 def getProcessOutput(executable, args=(), env={}, path=None, reactor=None,
                      errortoo=0):
     """
-    Spawn a process and return its output as a deferred returning a string.
+    Spawn a process and return its output as a deferred returning a L{bytes}.
 
     @param executable: The file name to run and get the output of - the
                        full path should be used.
 
     @param args: the command line arguments to pass to the process; a
-                 sequence of strings. The first string should *NOT* be the
+                 sequence of strings. The first string should B{NOT} be the
                  executable's name.
 
-    @param env: the environment variables to pass to the processs; a
+    @param env: the environment variables to pass to the process; a
                 dictionary of strings.
 
     @param path: the path to run the subprocess in - defaults to the
@@ -133,20 +138,30 @@ class _ValueGetter(protocol.ProcessProtocol):
         self.deferred.callback(reason.value.exitCode)
 
 
+
 def getProcessValue(executable, args=(), env={}, path=None, reactor=None):
     """Spawn a process and return its exit code as a Deferred."""
     return _callProtocolWithDeferred(_ValueGetter, executable, args, env, path,
-                                    reactor)
+                                     reactor)
+
 
 
 class _EverythingGetter(protocol.ProcessProtocol):
 
-    def __init__(self, deferred):
+    def __init__(self, deferred, stdinBytes=None):
         self.deferred = deferred
-        self.outBuf = StringIO.StringIO()
-        self.errBuf = StringIO.StringIO()
+        self.outBuf = BytesIO()
+        self.errBuf = BytesIO()
         self.outReceived = self.outBuf.write
         self.errReceived = self.errBuf.write
+        self.stdinBytes = stdinBytes
+
+    def connectionMade(self):
+        if self.stdinBytes is not None:
+            self.transport.writeToChild(0, self.stdinBytes)
+            # The only compelling reason not to _always_ close stdin here is
+            # backwards compatibility.
+            self.transport.closeStdin()
 
     def processEnded(self, reason):
         out = self.outBuf.getvalue()
@@ -158,15 +173,26 @@ class _EverythingGetter(protocol.ProcessProtocol):
         else:
             self.deferred.callback((out, err, code))
 
+
+
 def getProcessOutputAndValue(executable, args=(), env={}, path=None,
-                             reactor=None):
+                             reactor=None, stdinBytes=None):
     """Spawn a process and returns a Deferred that will be called back with
     its output (from stdout and stderr) and it's exit code as (out, err, code)
     If a signal is raised, the Deferred will errback with the stdout and
     stderr up to that point, along with the signal, as (out, err, signalNum)
     """
-    return _callProtocolWithDeferred(_EverythingGetter, executable, args, env, path,
-                                    reactor)
+    return _callProtocolWithDeferred(
+        _EverythingGetter,
+        executable,
+        args,
+        env,
+        path,
+        reactor,
+        protoArgs=(stdinBytes,),
+    )
+
+
 
 def _resetWarningFilters(passthrough, addedFilters):
     for f in addedFilters:
@@ -192,7 +218,7 @@ def runWithWarningsSuppressed(suppressedWarnings, f, *a, **kw):
     except:
         exc_info = sys.exc_info()
         _resetWarningFilters(None, addedFilters)
-        raise exc_info[0], exc_info[1], exc_info[2]
+        reraise(exc_info[1], exc_info[2])
     else:
         if isinstance(result, defer.Deferred):
             result.addBoth(_resetWarningFilters, addedFilters)
@@ -207,13 +233,13 @@ def suppressWarnings(f, *suppressedWarnings):
     invoking C{f} and unsuppresses them afterwards.  If f returns a Deferred,
     warnings will remain suppressed until the Deferred fires.
     """
+    @wraps(f)
     def warningSuppressingWrapper(*a, **kw):
         return runWithWarningsSuppressed(suppressedWarnings, f, *a, **kw)
-    return tputil.mergeFunctionMetadata(f, warningSuppressingWrapper)
+    return warningSuppressingWrapper
 
 
 __all__ = [
     "runWithWarningsSuppressed", "suppressWarnings",
-
     "getProcessOutput", "getProcessValue", "getProcessOutputAndValue",
     ]

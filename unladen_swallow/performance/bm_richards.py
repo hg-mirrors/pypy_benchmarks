@@ -12,6 +12,9 @@ __contact__ = "collinwinter@google.com (Collin Winter)"
 # Python imports
 import optparse
 import time
+import sys
+if sys.version_info[0] > 2:
+    xrange = range
 
 # Local imports
 import richards

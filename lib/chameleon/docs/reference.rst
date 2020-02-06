@@ -61,6 +61,10 @@ well.
 
 .. note:: Default prefixes are a special feature of Chameleon.
 
+If the ``enable_data_attributes`` option is set then you can use
+``data-prefix-command="argument"`` in addition to the namespace prefix
+attributes.
+
 .. _tal:
 
 Basics (TAL)
@@ -116,7 +120,7 @@ used on the same element.
 .. note:: The ``tal:case`` and ``tal:switch`` statements are available
           in Chameleon only.
 
-TAL does not use use the order in which statements are written in the
+TAL does not use the order in which statements are written in the
 tag to determine the order in which they are executed.  When an
 element has multiple statements, they are executed in the order
 printed in the table above.
@@ -137,7 +141,7 @@ or ``tal:replace``. Finally, before ``tal:attributes``, we have
 ``tal:attributes``
 ^^^^^^^^^^^^^^^^^^
 
-Updates or inserts element attributes.
+Removes, updates or inserts element attributes.
 
 ::
 
@@ -149,7 +153,7 @@ Syntax
 ``tal:attributes`` syntax::
 
     argument             ::= attribute_statement [';' attribute_statement]*
-    attribute_statement  ::= attribute_name expression
+    attribute_statement  ::= (attribute_name expression | expression)
     attribute_name       ::= [namespace-prefix ':'] Name
     namespace-prefix     ::= Name
 
@@ -158,8 +162,8 @@ Description
 ~~~~~~~~~~~
 
 The ``tal:attributes`` statement replaces the value of an attribute
-(or creates an attribute) with a dynamic value.  The
-value of each expression is converted to a string, if necessary.
+(or drops, or creates an attribute) with a dynamic value.  The value
+of each expression is converted to a string, if necessary.
 
 .. note:: You can qualify an attribute name with a namespace prefix,
    for example ``html:table``, if you are generating an XML document
@@ -167,6 +171,10 @@ value of each expression is converted to a string, if necessary.
 
 If an attribute expression evaluates to ``None``, the attribute is
 deleted from the statement element (or simply not inserted).
+
+If an attribute statement is just an expression, it must evaluate to a
+Python dict (or implement the methods ``update()`` and ``items()``
+from the dictionary specification).
 
 If the expression evaluates to the symbol ``default`` (a symbol which
 is always available when evaluating attributes), its value is defined
@@ -181,7 +189,9 @@ statement, the replacement is made on each repetition of the element,
 and the replacement expression is evaluated fresh for each repetition.
 
 .. note:: If you want to include a semicolon (";") in an expression, it
-          must be escaped by doubling it (";;") [1]_.
+          must be escaped by doubling it (";;"). Similarly, you can escape
+          expression interpolation using the "$" symbol by doubling it
+          ("$$").
 
 Examples
 ~~~~~~~~
@@ -202,7 +212,7 @@ Replacing two attributes::
 
 A checkbox input::
 
-    <input type="input" tal:attributes="checked True" />
+    <input type="checkbox" tal:attributes="checked True" />
 
 ``tal:condition``
 ^^^^^^^^^^^^^^^^^
@@ -233,8 +243,9 @@ Description
 
 .. note:: Like Python itself, ZPT considers None, zero, empty strings,
    empty sequences, empty dictionaries, and instances which return a
-   nonzero value from ``__len__`` or ``__nonzero__`` false; all other
-   values are true, including ``default``.
+   nonzero value from ``__len__`` or which return false from
+   ``__nonzero__``; all other values are true, including ``default``.
+
 
 Examples
 ~~~~~~~~
@@ -309,10 +320,11 @@ Syntax
 
 ``tal:define`` syntax::
 
-    argument ::= define_scope [';' define_scope]*
-    define_scope ::= (['local'] | 'global')
-    define_var define_var ::= variable_name
-    expression variable_name ::= Name
+    variable_name  ::= Name | '(' Name [',' Name]* ')'
+    define_var     ::= variable_name expression
+    define_scope   ::= (['local'] | 'global') define_var
+    argument       ::= define_scope [';' define_scope]*
+
 
 Description
 ~~~~~~~~~~~
@@ -327,6 +339,12 @@ Note that valid variable names are any Python identifier string
 including underscore, although two or more leading underscores are
 disallowed (used internally by the compiler). Further, names are
 case-sensitive.
+
+Variable names support basic iterable unpacking when surrounded by
+parenthesis. This also applies to the variable established by
+``tal:repeat``.
+
+.. note:: This is a Chameleon-specific :ref:`language extension <new-features>`.
 
 Python builtins are always "in scope", but most of them may be
 redefined (such as ``help``). Exceptions are:: ``float``, ``int``,
@@ -350,12 +368,15 @@ element. When you define a global variables, you can use it in any
 element processed after the defining element. If you redefine a global
 variable, you replace its definition for the rest of the template.
 
+.. tip:: Global variables may be changed by the execution of a
+         macro if that macro also declares the variable to be global.
+
 To set the definition scope of a variable, use the keywords ``local``
 or ``global`` in front of the assignment. The default setting is
 ``local``; thus, in practice, only the ``global`` keyword is used.
 
 .. note:: If you want to include a semicolon (";") in an expression, it
-          must be escaped by doubling it (";;") [1]_.
+          must be escaped by doubling it (";;").
 
 Examples
 ~~~~~~~~
@@ -367,6 +388,14 @@ Defining a variable::
 Defining two variables, where the second depends on the first::
 
         tal:define="mytitle context.title; tlen len(mytitle)"
+
+Defining a local and global variable::
+
+        tal:define="global mytitle context.title; tlen len(mytitle)"
+
+Unpacking a sequence::
+
+        tal:define="(key,value) ('a', 42)"
 
 
 ``tal:switch`` and ``tal:case``
@@ -391,15 +420,15 @@ Syntax
 Description
 ~~~~~~~~~~~
 
-The *switch* and *case* construct is a short-hand syntax for
-evaluating a set of expressions against a parent value.
+The *switch* and *case* construct is a short-hand syntax for matching
+a set of expressions against a single parent.
 
-The ``tal:switch`` statement is used to set a new parent value and the
-``tal:case`` statement works like a condition and only allows content
-if the expression matches the value.
+The ``tal:switch`` statement is used to set a new parent expression
+and the contained ``tal:case`` statements are then matched in sequence
+such that only the first match succeeds.
 
-If the case expression is is the symbol ``default``, it always matches
-the switch.
+Note that the symbol ``default`` affirms the case precisely when no
+previous case has been successful. It should therefore be placed last.
 
 .. note:: These statements are only available in Chameleon 2.x and not
           part of the ZPT specification.
@@ -416,9 +445,10 @@ Examples
     <li tal:case="'folder'">
       Folder
     </li>
+    <li tal:case="default">
+      Other
+    </li>
   </ul>
-
-Note that any and all cases that match the switch will be allowed.
 
 
 ``tal:omit-tag``
@@ -446,8 +476,9 @@ the statement element is replaced with its contents.
 
 .. note:: Like Python itself, ZPT considers None, zero, empty strings,
    empty sequences, empty dictionaries, and instances which return a
-   nonzero value from ``__len__`` or ``__nonzero__`` false; all other
-   values are true, including ``default``.
+   nonzero value from ``__len__`` or which return false from
+   ``__nonzero__``; all other values are true, including ``default``.
+
 
 Examples
 ~~~~~~~~
@@ -518,10 +549,9 @@ The following information is available from the repeat variable:
 ``number``          Repetition number, starting from one.
 ``even``            True for even-indexed repetitions (0, 2, 4, ...).
 ``odd``             True for odd-indexed repetitions (1, 3, 5, ...).
+``parity``          For odd-indexed repetitions, this is 'odd', else 'even'.
 ``start``           True for the starting repetition (index 0).
 ``end``             True for the ending, or final, repetition.
-``first``           True for the first item in a group - see note below
-``last``            True for the last item in a group - see note below
 ``length``          Length of the sequence, which will be the total number of repetitions.
 ``letter``          Repetition number as a lower-case letter: "a" - "z", "aa" - "az", "ba" - "bz", ..., "za" - "zz", "aaa" - "aaz", and so forth.
 ``Letter``          Upper-case version of *letter*.
@@ -535,14 +565,18 @@ or ``repeat.item.start``.
 
 .. note:: For legacy compatibility, the attributes ``odd``, ``even``, ``number``, ``letter``, ``Letter``, ``roman``, and ``Roman`` are callable (returning ``self``).
 
-Note that ``first`` and ``last`` are intended for use with sorted
-sequences.  They try to divide the sequence into group of items with
-the same value.
+.. note:: Earlier versions of this document, and the `Zope Page
+          Templates Reference
+          <https://zope.readthedocs.io/en/latest/zopebook/AppendixC.html#repeat-variables>`_,
+          referred to ``first`` and ``last`` attributes for use with
+          sorted sequences. These are not implemented in Chameleon or
+          the Zope reference implementation zope.tales. Instead, you
+          can use :func:`itertools.groupby`, as in the example below.
 
 Examples
 ~~~~~~~~
 
-Iterating over a sequence of strings::    
+Iterating over a sequence of strings::
 
         <p tal:repeat="txt ('one', 'two', 'three')">
            <span tal:replace="txt" />
@@ -564,26 +598,35 @@ Nested repeats::
         <table border="1">
           <tr tal:repeat="row range(10)">
             <td tal:repeat="column range(10)">
-              <span tal:define="x repeat.row.number; 
-                                y repeat.column.number; 
+              <span tal:define="x repeat.row.number;
+                                y repeat.column.number;
                                 z x * y"
                     tal:replace="string:$x * $y = $z">1 * 1 = 1</span>
             </td>
           </tr>
         </table>
 
-Insert objects. Separates groups of objects by type by drawing a rule
-between them::
+Grouping objects by type, drawing a rule between elements of different
+types::
 
-        <div tal:repeat="object objects">
-          <h2 tal:condition="repeat.object.first.meta_type"
-            tal:content="object.type">Meta Type</h2>
-          <p tal:content="object.id">Object ID</p>
-          <hr tal:condition="object.last.meta_type" />
+        <div tal:repeat="(type,objects) list(map(lambda g: (g[0], list(g[1])), itertools.groupby(objects, key=lambda o: o.meta_type)))"
+             tal:define="itertools import:itertools">
+          <h2 tal:content="type">Meta Type</h2>
+          <p tal:repeat="object objects"
+             tal:content="object.id">Object ID</p>
+          <hr />
         </div>
 
-.. note:: the objects in the above example should already be sorted by
-   type.
+.. caution:: It is important to fully realize the iterator produced by
+             :func:`itertools.groupby`, as well as the iterator
+             produced for each group, in the expression passed to
+             ``tal:repeat``. This is because the implementation of
+             certain repeat variables, such as ``length`` and ``end``
+             requires Chameleon to look ahead in the iterator,
+             consuming it faster than is visible. The iterator returned
+             by :func:`itertools.groupby` is shared among all of its
+             subgroups, so without the full reification of all the
+             iterators, incorrect results will be produced.
 
 ``tal:replace``
 ^^^^^^^^^^^^^^^
@@ -677,7 +720,8 @@ These are the available TALES expression types:
              expression type, which is closely tied to the Zope
              framework. This expression is not implemented in
              Chameleon (but it's available in a Zope framework
-             compatibility package).
+             compatibility package, `z3c.pt
+             <http://pypi.python.org/pypi/z3c.pt>`_).
 
 There's a mechanism to allow fallback to alternative expressions, if
 one should fail (raise an exception). The pipe character ('|') is used
@@ -730,7 +774,8 @@ string can contain variable substitutions of the form ``$name`` or
 ``${expression}``, where ``name`` is a variable name, and ``expression`` is a TALES-expression. The escaped string value of the expression is inserted into the string.
 
 .. note:: To prevent a ``$`` from being interpreted this
-   way, it must be escaped as ``$$``.
+   way, it must be escaped as ``$$``. Using a backslash-escape
+   is not supported.
 
 Examples
 ~~~~~~~~
@@ -841,6 +886,18 @@ as::
 Just like the TAL namespace URI, this URI is not attached to a web
 page; it's just a unique identifier.  This identifier must be used in
 all templates which use METAL.
+
+Note that elements that appear in a template with the METAL namespace
+are omitted from the output where they appear. This is useful when
+defining a macro::
+
+        <metal:block define-macro="hello">
+          ...
+        </metal:block>
+
+In the example above the element is named `block` but any name can be
+used to the same effect as long as it is qualified with the METAL
+namespace.
 
 Statements
 ----------
@@ -981,7 +1038,9 @@ Description
 ~~~~~~~~~~~
 
 The ``metal:use-macro`` statement replaces the statement element with
-a macro. The statement expression describes a macro definition.
+a macro. The statement expression describes a macro definition. The
+``macroname`` variable will be bound to the defined name of the macro
+being used.
 
 .. note:: In Chameleon the expression may point to a template instance; in this case it will be rendered in its entirety.
 
@@ -1186,11 +1245,15 @@ The allowable ``i18n`` statements are:
 
 - ``i18n:translate``
 - ``i18n:domain``
+- ``i18n:context``
 - ``i18n:source``
 - ``i18n:target``
 - ``i18n:name``
 - ``i18n:attributes``
 - ``i18n:data``
+- ``i18n:comment``
+- ``i18n:ignore``
+- ``i18n:ignore-attributes``
 
 ``i18n:translate``
 ^^^^^^^^^^^^^^^^^^
@@ -1207,6 +1270,18 @@ The ``i18n:domain`` attribute is used to specify the domain to be used
 to get the translation.  If not specified, the translation services
 will use a default domain.  The value of the attribute is used
 directly; it is not a TALES expression.
+
+
+``i18n:context``
+^^^^^^^^^^^^^^^^
+
+The ``i18n:context`` attribute is used to specify the context to be
+used to get the translation.  If not specified, the translation
+services will use a default context.  The context is generally use to
+distinguish identical texts in different context (because in a
+translation this may not be the case.) The value of the attribute is
+used literally; it is not an expression.
+
 
 ``i18n:source``
 ^^^^^^^^^^^^^^^
@@ -1302,6 +1377,44 @@ objects, one of the most obvious cases being ``datetime`` objects. The
 object.  If ``data`` is used, ``i18n:translate`` must be used to give
 an explicit message ID, rather than relying on a message ID computed
 from the content.
+
+``i18n:comment``
+^^^^^^^^^^^^^^^^
+
+The ``i18n:comment`` attribute can be used to add extra comments for
+translators. It is not used by Chameleon for processing, but will be
+picked up by tools like `lingua <http://pypi.python.org/pypi/lingua>`_.
+
+An example:
+
+   <h3 i18n:comment="Header for the news section"
+       i18n:translate="">News</h3>
+
+``i18n:ignore``
+^^^^^^^^^^^^^^^
+
+The ``i18n:ignore`` attribute can be used to inform translation extraction tools
+like `i18ndude <http://pypi.python.org/pypi/i18ndude>`_ to not give a
+warning/error on the given tag if there is no ``i18n:translate`` attribute.
+
+An example:
+
+   <h1 i18n:ignore="">News</h3>
+
+``i18n:ignore-attributes``
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``i18n:ignore-attributes``, just like ``i18n:ignore`` is expected to be
+used by translation extraction tools like `i18ndude <http://pypi.python.org/pypi/i18ndude>`_.
+If ``i18n:ignore`` makes text within a tag to be ignored, ``i18n:ignore-attributes``
+marks the given attributes as ignored.
+
+An example:
+
+   <a href="http://python.org"
+      title="Python!"
+      i18n:ignore-attributes="title">Python website</a>
+
 
 Relation with TAL processing
 ----------------------------
@@ -1422,7 +1535,7 @@ You can also configure default options in a ``setup.cfg`` file. For example::
    [compile_catalog]
    domain = mydomain
    directory = i18n
-   
+
    [extract_messages]
    copyright_holder = Acme Inc.
    output_file = i18n/mydomain.pot
@@ -1465,6 +1578,40 @@ character: ``\${...}``.
 Note that if an object implements the ``__html__`` method, the result
 of this method will be inserted as-is (without XML escaping).
 
+Code blocks
+###########
+
+The ``<?python ... ?>`` notation allows you to embed Python code in
+templates:
+
+.. code-block:: html
+
+  <div>
+    <?python numbers = map(str, range(1, 10)) ?>
+    Please input a number from the range ${", ".join(numbers)}.
+  </div>
+
+The scope of name assignments is up to the nearest macro definition,
+or the template, if macros are not used.
+
+Note that code blocks can span multiple line and start on the next
+line of where the processing instruction begins:
+
+.. code-block:: html
+
+  <?python
+    foo = [1, 2, 3]
+  ?>
+
+You can use this to debug templates:
+
+.. code-block:: html
+
+  <div>
+    <?python import pdb; pdb.set_trace() ?>
+  </div>
+
+
 Markup comments
 ###############
 
@@ -1488,9 +1635,9 @@ Verbatim
 Language extensions
 ###################
 
-The page template language as implemented in the Chameleon library
-comes with a number of new features. Some take inspiration from
-`Genshi <http://genshi.edgewall.org/>`_.
+Chameleon extends the *page template* language with a new expression
+types and language features. Some take inspiration from `Genshi
+<http://genshi.edgewall.org/>`_.
 
     *New expression types*
 
@@ -1505,7 +1652,7 @@ comes with a number of new features. Some take inspiration from
            ...
          </div>
 
-       This :ref:`load <load-expression>` expression loads templates
+       The :ref:`load <load-expression>` expression loads templates
        relative to the current template::
 
          <div tal:define="compile load: main.pt">
@@ -1514,7 +1661,7 @@ comes with a number of new features. Some take inspiration from
 
     *Tuple unpacking*
 
-       The ``tal:define`` and ``tal:repeat`` statements supports tuple
+       The ``tal:define`` and ``tal:repeat`` statements support tuple
        unpacking::
 
           tal:define="(a, b, c) [1, 2, 3]"
@@ -1558,6 +1705,18 @@ comes with a number of new features. Some take inspiration from
              ${title or item_id}
           </span>
 
+    *Code blocks*
+
+        Using ``<?python ... ?>`` notation, you can embed Python
+        statements in your templates:
+
+        .. code-block:: html
+
+          <div>
+            <?python numbers = map(str, range(1, 10)) ?>
+            Please input a number from the range ${", ".join(numbers)}.
+          </div>
+
     *Literal content*
 
        While the ``tal:content`` and ``tal:repeat`` attributes both
@@ -1571,7 +1730,7 @@ comes with a number of new features. Some take inspiration from
        using the expression operator: ``"${...}"`` since the
        ``structure`` keyword is not allowed here.
 
-    *Switches*
+    *Switch statement*
 
        Two new attributes have been added: ``tal:switch`` and
        ``tal:case``. A case attribute works like a condition and only
@@ -1612,38 +1771,3 @@ implementation (ZPT):
 The `z3c.pt <http://pypi.python.org/pypi/z3c.pt>`_ package works as a
 compatibility layer. The template classes in this package provide a
 implementation which is fully compatible with ZPT.
-
-Notes
-#####
-
-.. [1] This has been changed in 2.x. Previously, it was up to the
-       expression engine to parse the expression values including any
-       semicolons and since for instance Python-expressions can never
-       end in a semicolon, it was possible to clearly distinguish
-       between the different uses of the symbol, e.g.
-
-       ::
-
-         tal:define="text 'Hello world; goodbye world'"
-
-       The semicolon appearing in the definition above is part of the
-       Python-expression simply because it makes the expression
-       valid. Meanwhile:
-
-       ::
-
-         tal:define="text1 'Hello world'; text2 'goodbye world'"
-
-       The semicolon here must denote a second variable definition
-       because there is no valid Python-expression that includes it.
-
-       While this behavior works well in practice, it is incompatible
-       with the reference specification, and also blurs the interface
-       between the compiler and the expression engine. In 2.x we
-       therefore have to escape the semicolon by doubling it (as
-       defined by the specification):
-
-       ::
-
-         tal:define="text 'Hello world;; goodbye world'"
-

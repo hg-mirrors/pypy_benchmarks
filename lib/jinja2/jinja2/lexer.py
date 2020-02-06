@@ -11,15 +11,16 @@
     operators we don't allow in templates. On the other hand it separates
     template code and python code in expressions.
 
-    :copyright: (c) 2010 by the Jinja Team.
+    :copyright: (c) 2017 by the Jinja Team.
     :license: BSD, see LICENSE for more details.
 """
 import re
-from operator import itemgetter
 from collections import deque
-from jinja2.exceptions import TemplateSyntaxError
-from jinja2.utils import LRUCache, next
+from operator import itemgetter
 
+from jinja2._compat import implements_iterator, intern, iteritems, text_type
+from jinja2.exceptions import TemplateSyntaxError
+from jinja2.utils import LRUCache
 
 # cache for the lexers. Exists in order to be able to have multiple
 # environments with the same lexer
@@ -31,16 +32,25 @@ string_re = re.compile(r"('([^'\\]*(?:\\.[^'\\]*)*)'"
                        r'|"([^"\\]*(?:\\.[^"\\]*)*)")', re.S)
 integer_re = re.compile(r'\d+')
 
-# we use the unicode identifier rule if this python version is able
-# to handle unicode identifiers, otherwise the standard ASCII one.
 try:
+    # check if this Python supports Unicode identifiers
     compile('föö', '<unknown>', 'eval')
 except SyntaxError:
-    name_re = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b')
+    # no Unicode support, use ASCII identifiers
+    name_re = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+    check_ident = False
 else:
-    from jinja2 import _stringdefs
-    name_re = re.compile(r'[%s][%s]*' % (_stringdefs.xid_start,
-                                         _stringdefs.xid_continue))
+    # Unicode support, build a pattern to match valid characters, and set flag
+    # to use str.isidentifier to validate during lexing
+    from jinja2 import _identifier
+    name_re = re.compile(r'[\w{0}]+'.format(_identifier.pattern))
+    check_ident = True
+    # remove the pattern from memory after building the regex
+    import sys
+    del sys.modules['jinja2._identifier']
+    import jinja2
+    del jinja2._identifier
+    del _identifier
 
 float_re = re.compile(r'(?<!\.)\d+\.\d+')
 newline_re = re.compile(r'(\r\n|\r|\n)')
@@ -126,15 +136,15 @@ operators = {
     ';':            TOKEN_SEMICOLON
 }
 
-reverse_operators = dict([(v, k) for k, v in operators.iteritems()])
+reverse_operators = dict([(v, k) for k, v in iteritems(operators)])
 assert len(operators) == len(reverse_operators), 'operators dropped'
 operator_re = re.compile('(%s)' % '|'.join(re.escape(x) for x in
                          sorted(operators, key=lambda x: -len(x))))
 
 ignored_tokens = frozenset([TOKEN_COMMENT_BEGIN, TOKEN_COMMENT,
                             TOKEN_COMMENT_END, TOKEN_WHITESPACE,
-                            TOKEN_WHITESPACE, TOKEN_LINECOMMENT_BEGIN,
-                            TOKEN_LINECOMMENT_END, TOKEN_LINECOMMENT])
+                            TOKEN_LINECOMMENT_BEGIN, TOKEN_LINECOMMENT_END,
+                            TOKEN_LINECOMMENT])
 ignore_if_empty = frozenset([TOKEN_WHITESPACE, TOKEN_DATA,
                              TOKEN_COMMENT, TOKEN_LINECOMMENT])
 
@@ -197,7 +207,7 @@ def compile_rules(environment):
 
     if environment.line_statement_prefix is not None:
         rules.append((len(environment.line_statement_prefix), 'linestatement',
-                      r'^\s*' + e(environment.line_statement_prefix)))
+                      r'^[ \t\v]*' + e(environment.line_statement_prefix)))
     if environment.line_comment_prefix is not None:
         rules.append((len(environment.line_comment_prefix), 'linecomment',
                       r'(?:^|(?<=\S))[^\S\r\n]*' +
@@ -262,6 +272,7 @@ class Token(tuple):
         )
 
 
+@implements_iterator
 class TokenStreamIterator(object):
     """The iterator for tokenstreams.  Iterate over the stream
     until the eof token is reached.
@@ -273,7 +284,7 @@ class TokenStreamIterator(object):
     def __iter__(self):
         return self
 
-    def next(self):
+    def __next__(self):
         token = self.stream.current
         if token.type is TOKEN_EOF:
             self.stream.close()
@@ -282,14 +293,15 @@ class TokenStreamIterator(object):
         return token
 
 
+@implements_iterator
 class TokenStream(object):
-    """A token stream is an iterable that yields :class:`Token`\s.  The
+    """A token stream is an iterable that yields :class:`Token`\\s.  The
     parser however does not iterate over it but calls :meth:`next` to go
     one token ahead.  The current active token is stored as :attr:`current`.
     """
 
     def __init__(self, generator, name, filename):
-        self._next = iter(generator).next
+        self._iter = iter(generator)
         self._pushed = deque()
         self.name = name
         self.filename = filename
@@ -300,8 +312,9 @@ class TokenStream(object):
     def __iter__(self):
         return TokenStreamIterator(self)
 
-    def __nonzero__(self):
+    def __bool__(self):
         return bool(self._pushed) or self.current.type is not TOKEN_EOF
+    __nonzero__ = __bool__  # py2
 
     eos = property(lambda x: not x, doc="Are we at the end of the stream?")
 
@@ -319,7 +332,7 @@ class TokenStream(object):
 
     def skip(self, n=1):
         """Got n tokens ahead."""
-        for x in xrange(n):
+        for x in range(n):
             next(self)
 
     def next_if(self, expr):
@@ -333,14 +346,17 @@ class TokenStream(object):
         """Like :meth:`next_if` but only returns `True` or `False`."""
         return self.next_if(expr) is not None
 
-    def next(self):
-        """Go one token ahead and return the old one"""
+    def __next__(self):
+        """Go one token ahead and return the old one.
+
+        Use the built-in :func:`next` instead of calling this directly.
+        """
         rv = self.current
         if self._pushed:
             self.current = self._pushed.popleft()
         elif self.current.type is not TOKEN_EOF:
             try:
-                self.current = self._next()
+                self.current = next(self._iter)
             except StopIteration:
                 self.close()
         return rv
@@ -348,7 +364,7 @@ class TokenStream(object):
     def close(self):
         """Close the stream."""
         self.current = Token(self.current.lineno, TOKEN_EOF, '')
-        self._next = None
+        self._iter = None
         self.closed = True
 
     def expect(self, expr):
@@ -383,7 +399,9 @@ def get_lexer(environment):
            environment.line_statement_prefix,
            environment.line_comment_prefix,
            environment.trim_blocks,
-           environment.newline_sequence)
+           environment.lstrip_blocks,
+           environment.newline_sequence,
+           environment.keep_trailing_newline)
     lexer = _lexer_cache.get(key)
     if lexer is None:
         lexer = Lexer(environment)
@@ -425,7 +443,44 @@ class Lexer(object):
         # block suffix if trimming is enabled
         block_suffix_re = environment.trim_blocks and '\\n?' or ''
 
+        # strip leading spaces if lstrip_blocks is enabled
+        prefix_re = {}
+        if environment.lstrip_blocks:
+            # use '{%+' to manually disable lstrip_blocks behavior
+            no_lstrip_re = e('+')
+            # detect overlap between block and variable or comment strings
+            block_diff = c(r'^%s(.*)' % e(environment.block_start_string))
+            # make sure we don't mistake a block for a variable or a comment
+            m = block_diff.match(environment.comment_start_string)
+            no_lstrip_re += m and r'|%s' % e(m.group(1)) or ''
+            m = block_diff.match(environment.variable_start_string)
+            no_lstrip_re += m and r'|%s' % e(m.group(1)) or ''
+
+            # detect overlap between comment and variable strings
+            comment_diff = c(r'^%s(.*)' % e(environment.comment_start_string))
+            m = comment_diff.match(environment.variable_start_string)
+            no_variable_re = m and r'(?!%s)' % e(m.group(1)) or ''
+
+            lstrip_re = r'^[ \t]*'
+            block_prefix_re = r'%s%s(?!%s)|%s\+?' % (
+                    lstrip_re,
+                    e(environment.block_start_string),
+                    no_lstrip_re,
+                    e(environment.block_start_string),
+                    )
+            comment_prefix_re = r'%s%s%s|%s\+?' % (
+                    lstrip_re,
+                    e(environment.comment_start_string),
+                    no_variable_re,
+                    e(environment.comment_start_string),
+                    )
+            prefix_re['block'] = block_prefix_re
+            prefix_re['comment'] = comment_prefix_re
+        else:
+            block_prefix_re = '%s' % e(environment.block_start_string)
+
         self.newline_sequence = environment.newline_sequence
+        self.keep_trailing_newline = environment.keep_trailing_newline
 
         # global lexing rules
         self.rules = {
@@ -434,11 +489,11 @@ class Lexer(object):
                 (c('(.*?)(?:%s)' % '|'.join(
                     [r'(?P<raw_begin>(?:\s*%s\-|%s)\s*raw\s*(?:\-%s\s*|%s))' % (
                         e(environment.block_start_string),
-                        e(environment.block_start_string),
+                        block_prefix_re,
                         e(environment.block_end_string),
                         e(environment.block_end_string)
                     )] + [
-                        r'(?P<%s_begin>\s*%s\-|%s)' % (n, r, r)
+                        r'(?P<%s_begin>\s*%s\-|%s)' % (n, r, prefix_re.get(n,r))
                         for n, r in root_tag_rules
                     ])), (TOKEN_DATA, '#bygroup'), '#bygroup'),
                 # data
@@ -455,7 +510,7 @@ class Lexer(object):
             ],
             # blocks
             TOKEN_BLOCK_BEGIN: [
-                (c('(?:\-%s\s*|%s)%s' % (
+                (c(r'(?:\-%s\s*|%s)%s' % (
                     e(environment.block_end_string),
                     e(environment.block_end_string),
                     block_suffix_re
@@ -463,16 +518,16 @@ class Lexer(object):
             ] + tag_rules,
             # variables
             TOKEN_VARIABLE_BEGIN: [
-                (c('\-%s\s*|%s' % (
+                (c(r'\-%s\s*|%s' % (
                     e(environment.variable_end_string),
                     e(environment.variable_end_string)
                 )), TOKEN_VARIABLE_END, '#pop')
             ] + tag_rules,
             # raw block
             TOKEN_RAW_BEGIN: [
-                (c('(.*?)((?:\s*%s\-|%s)\s*endraw\s*(?:\-%s\s*|%s%s))' % (
+                (c(r'(.*?)((?:\s*%s\-|%s)\s*endraw\s*(?:\-%s\s*|%s%s))' % (
                     e(environment.block_start_string),
-                    e(environment.block_start_string),
+                    block_prefix_re,
                     e(environment.block_end_string),
                     e(environment.block_end_string),
                     block_suffix_re
@@ -520,23 +575,19 @@ class Lexer(object):
                 token = value
             elif token == 'name':
                 value = str(value)
+                if check_ident and not value.isidentifier():
+                    raise TemplateSyntaxError(
+                        'Invalid character in identifier',
+                        lineno, name, filename)
             elif token == 'string':
                 # try to unescape string
                 try:
                     value = self._normalize_newlines(value[1:-1]) \
                         .encode('ascii', 'backslashreplace') \
                         .decode('unicode-escape')
-                except Exception, e:
+                except Exception as e:
                     msg = str(e).split(':')[-1].strip()
                     raise TemplateSyntaxError(msg, lineno, name, filename)
-                # if we can express it as bytestring (ascii only)
-                # we do that for support of semi broken APIs
-                # as datetime.datetime.strftime.  On python 3 this
-                # call becomes a noop thanks to 2to3
-                try:
-                    value = str(value)
-                except UnicodeError:
-                    pass
             elif token == 'integer':
                 value = int(value)
             elif token == 'float':
@@ -549,7 +600,14 @@ class Lexer(object):
         """This method tokenizes the text and returns the tokens in a
         generator.  Use this method if you just want to tokenize a template.
         """
-        source = '\n'.join(unicode(source).splitlines())
+        source = text_type(source)
+        lines = source.splitlines()
+        if self.keep_trailing_newline and source:
+            for newline in ('\r\n', '\r', '\n'):
+                if source.endswith(newline):
+                    lines.append('')
+                    break
+        source = '\n'.join(lines)
         pos = 0
         lineno = 1
         stack = ['root']
@@ -590,7 +648,7 @@ class Lexer(object):
                         # yield for the current token the first named
                         # group that matched
                         elif token == '#bygroup':
-                            for key, value in m.groupdict().iteritems():
+                            for key, value in iteritems(m.groupdict()):
                                 if value is not None:
                                     yield lineno, key, value
                                     lineno += value.count('\n')
@@ -647,7 +705,7 @@ class Lexer(object):
                         stack.pop()
                     # resolve the new state by group checking
                     elif new_state == '#bygroup':
-                        for key, value in m.groupdict().iteritems():
+                        for key, value in iteritems(m.groupdict()):
                             if value is not None:
                                 stack.append(key)
                                 break

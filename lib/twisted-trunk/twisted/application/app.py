@@ -2,22 +2,30 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-import sys, os, pdb, getpass, traceback, signal, warnings
+from __future__ import absolute_import, division, print_function
 
-from twisted.python import runtime, log, usage, failure, util, logfile
-from twisted.python.versions import Version
-from twisted.python.reflect import qual
-from twisted.python.deprecate import deprecated
-from twisted.python.log import ILogObserver
-from twisted.persisted import sob
+import sys
+import os
+import pdb
+import getpass
+import traceback
+import signal
+import warnings
+
+from operator import attrgetter
+
+from twisted import copyright, plugin, logger
 from twisted.application import service, reactors
 from twisted.internet import defer
-from twisted import copyright
+from twisted.persisted import sob
+from twisted.python import runtime, log, usage, failure, util, logfile
+from twisted.python._oldstyle import _oldStyle
+from twisted.python.reflect import (qual, namedAny, namedModule)
+from twisted.internet.interfaces import _ISupportsExitSignalCapturing
 
 # Expose the new implementation of installReactor at the old location.
 from twisted.application.reactors import installReactor
 from twisted.application.reactors import NoSuchReactor
-
 
 
 class _BasicProfiler(object):
@@ -63,7 +71,7 @@ class ProfileRunner(_BasicProfiler):
         """
         try:
             import profile
-        except ImportError, e:
+        except ImportError as e:
             self._reportImportError("profile", e)
 
         p = profile.Profile()
@@ -80,57 +88,6 @@ class ProfileRunner(_BasicProfiler):
 
 
 
-class HotshotRunner(_BasicProfiler):
-    """
-    Runner for the hotshot profile module.
-    """
-
-    def run(self, reactor):
-        """
-        Run reactor under the hotshot profiler.
-        """
-        try:
-            import hotshot.stats
-        except (ImportError, SystemExit), e:
-            # Certain versions of Debian (and Debian derivatives) raise
-            # SystemExit when importing hotshot if the "non-free" profiler
-            # module is not installed.  Someone eventually recognized this
-            # as a bug and changed the Debian packaged Python to raise
-            # ImportError instead.  Handle both exception types here in
-            # order to support the versions of Debian which have this
-            # behavior.  The bug report which prompted the introduction of
-            # this highly undesirable behavior should be available online at
-            # <http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=334067>.
-            # There seems to be no corresponding bug report which resulted
-            # in the behavior being removed. -exarkun
-            self._reportImportError("hotshot", e)
-
-        # this writes stats straight out
-        p = hotshot.Profile(self.profileOutput)
-        p.runcall(reactor.run)
-        if self.saveStats:
-            # stats are automatically written to file, nothing to do
-            return
-        else:
-            s = hotshot.stats.load(self.profileOutput)
-            s.strip_dirs()
-            s.sort_stats(-1)
-            if getattr(s, 'stream', None) is not None:
-                # Python 2.5 and above supports a stream attribute
-                s.stream = open(self.profileOutput, 'w')
-                s.print_stats()
-                s.stream.close()
-            else:
-                # But we have to use a trick for Python < 2.5
-                tmp, sys.stdout = sys.stdout, open(self.profileOutput, 'w')
-                try:
-                    s.print_stats()
-                finally:
-                    sys.stdout, tmp = tmp, sys.stdout
-                    tmp.close()
-
-
-
 class CProfileRunner(_BasicProfiler):
     """
     Runner for the cProfile module.
@@ -141,8 +98,9 @@ class CProfileRunner(_BasicProfiler):
         Run reactor under the cProfile profiler.
         """
         try:
-            import cProfile, pstats
-        except ImportError, e:
+            import cProfile
+            import pstats
+        except ImportError as e:
             self._reportImportError("cProfile", e)
 
         p = cProfile.Profile()
@@ -150,12 +108,11 @@ class CProfileRunner(_BasicProfiler):
         if self.saveStats:
             p.dump_stats(self.profileOutput)
         else:
-            stream = open(self.profileOutput, 'w')
-            s = pstats.Stats(p, stream=stream)
-            s.strip_dirs()
-            s.sort_stats(-1)
-            s.print_stats()
-            stream.close()
+            with open(self.profileOutput, 'w') as stream:
+                s = pstats.Stats(p, stream=stream)
+                s.strip_dirs()
+                s.sort_stats(-1)
+                s.print_stats()
 
 
 
@@ -167,55 +124,93 @@ class AppProfiler(object):
     @ivar profiler: the name of the selected profiler.
     @type profiler: C{str}
     """
-    profilers = {"profile": ProfileRunner, "hotshot": HotshotRunner,
-                 "cprofile": CProfileRunner}
+    profilers = {"profile": ProfileRunner, "cprofile": CProfileRunner}
 
     def __init__(self, options):
         saveStats = options.get("savestats", False)
         profileOutput = options.get("profile", None)
-        self.profiler = options.get("profiler", "hotshot").lower()
+        self.profiler = options.get("profiler", "cprofile").lower()
         if self.profiler in self.profilers:
             profiler = self.profilers[self.profiler](profileOutput, saveStats)
             self.run = profiler.run
         else:
-            raise SystemExit("Unsupported profiler name: %s" % (self.profiler,))
+            raise SystemExit("Unsupported profiler name: %s" %
+                             (self.profiler,))
 
 
 
 class AppLogger(object):
     """
-    Class managing logging faciliy of the application.
+    An L{AppLogger} attaches the configured log observer specified on the
+    commandline to a L{ServerOptions} object, a custom L{logger.ILogObserver},
+    or a legacy custom {log.ILogObserver}.
 
     @ivar _logfilename: The name of the file to which to log, if other than the
         default.
     @type _logfilename: C{str}
 
+    @ivar _observerFactory: Callable object that will create a log observer, or
+        None.
+
     @ivar _observer: log observer added at C{start} and removed at C{stop}.
-    @type _observer: C{callable}
+    @type _observer: a callable that implements L{logger.ILogObserver} or
+        L{log.ILogObserver}.
     """
     _observer = None
 
     def __init__(self, options):
+        """
+        Initialize an L{AppLogger} with a L{ServerOptions}.
+        """
         self._logfilename = options.get("logfile", "")
+        self._observerFactory = options.get("logger") or None
 
 
     def start(self, application):
         """
-        Initialize the logging system.
+        Initialize the global logging system for the given application.
 
-        If an L{ILogObserver} component has been set on C{application}, then
-        it will be used as the log observer.  Otherwise a log observer will be
-        created based on the command-line options.
+        If a custom logger was specified on the command line it will be used.
+        If not, and an L{logger.ILogObserver} or legacy L{log.ILogObserver}
+        component has been set on C{application}, then it will be used as the
+        log observer. Otherwise a log observer will be created based on the
+        command line options for built-in loggers (e.g. C{--logfile}).
 
         @param application: The application on which to check for an
-            L{ILogObserver}.
+            L{logger.ILogObserver} or legacy L{log.ILogObserver}.
+        @type application: L{twisted.python.components.Componentized}
         """
-        observer = application.getComponent(ILogObserver, None)
+        if self._observerFactory is not None:
+            observer = self._observerFactory()
+        else:
+            observer = application.getComponent(logger.ILogObserver, None)
+            if observer is None:
+                # If there's no new ILogObserver, try the legacy one
+                observer = application.getComponent(log.ILogObserver, None)
 
         if observer is None:
             observer = self._getLogObserver()
         self._observer = observer
-        log.startLoggingWithObserver(self._observer)
+
+        if logger.ILogObserver.providedBy(self._observer):
+            observers = [self._observer]
+        elif log.ILogObserver.providedBy(self._observer):
+            observers = [logger.LegacyLogObserverWrapper(self._observer)]
+        else:
+            warnings.warn(
+                ("Passing a logger factory which makes log observers which do "
+                 "not implement twisted.logger.ILogObserver or "
+                 "twisted.python.log.ILogObserver to "
+                 "twisted.application.app.AppLogger was deprecated in "
+                 "Twisted 16.2. Please use a factory that produces "
+                 "twisted.logger.ILogObserver (or the legacy "
+                 "twisted.python.log.ILogObserver) implementing objects "
+                 "instead."),
+                DeprecationWarning,
+                stacklevel=2)
+            observers = [logger.LegacyLogObserverWrapper(self._observer)]
+
+        logger.globalLogBeginner.beginLoggingTo(observers)
         self._initialLog()
 
 
@@ -224,10 +219,12 @@ class AppLogger(object):
         Print twistd start log message.
         """
         from twisted.internet import reactor
-        log.msg("twistd %s (%s %s) starting up." % (copyright.version,
-                                                   sys.executable,
-                                                   runtime.shortPythonVersion()))
-        log.msg('reactor class: %s.' % (qual(reactor.__class__),))
+        logger._loggerFor(self).info(
+            "twistd {version} ({exe} {pyVersion}) starting up.",
+            version=copyright.version, exe=sys.executable,
+            pyVersion=runtime.shortPythonVersion())
+        logger._loggerFor(self).info('reactor class: {reactor}.',
+                                     reactor=qual(reactor.__class__))
 
 
     def _getLogObserver(self):
@@ -239,16 +236,16 @@ class AppLogger(object):
             logFile = sys.stdout
         else:
             logFile = logfile.LogFile.fromFullPath(self._logfilename)
-        return log.FileLogObserver(logFile).emit
+        return logger.textFileLogObserver(logFile)
 
 
     def stop(self):
         """
-        Print twistd stop log message.
+        Remove all log observers previously set up by L{AppLogger.start}.
         """
-        log.msg("Server Shut Down.")
+        logger._loggerFor(self).info("Server Shut Down.")
         if self._observer is not None:
-            log.removeObserver(self._observer)
+            logger.globalLogPublisher.removeObserver(self._observer)
             self._observer = None
 
 
@@ -263,7 +260,8 @@ def fixPdb():
 
 
     def help_stop(self):
-        print """stop - Continue execution, then cleanly shutdown the twisted reactor."""
+        print("stop - Continue execution, then cleanly shutdown the twisted "
+              "reactor.")
 
 
     def set_quit(self):
@@ -275,7 +273,8 @@ def fixPdb():
 
 
 
-def runReactorWithLogging(config, oldstdout, oldstderr, profiler=None, reactor=None):
+def runReactorWithLogging(config, oldstdout, oldstderr, profiler=None,
+                          reactor=None):
     """
     Start the reactor, using profiling if specified by the configuration, and
     log any error happening in the process.
@@ -292,7 +291,7 @@ def runReactorWithLogging(config, oldstdout, oldstderr, profiler=None, reactor=N
     @param profiler: object used to run the reactor with profiling.
     @type profiler: L{AppProfiler}
 
-    @param reactor: The reactor to use.  If C{None}, the global reactor will
+    @param reactor: The reactor to use.  If L{None}, the global reactor will
         be used.
     """
     if reactor is None:
@@ -312,12 +311,18 @@ def runReactorWithLogging(config, oldstdout, oldstderr, profiler=None, reactor=N
         else:
             reactor.run()
     except:
+        close = False
         if config['nodaemon']:
             file = oldstdout
         else:
-            file = open("TWISTD-CRASH.log",'a')
-        traceback.print_exc(file=file)
-        file.flush()
+            file = open("TWISTD-CRASH.log", "a")
+            close = True
+        try:
+            traceback.print_exc(file=file)
+            file.flush()
+        finally:
+            if close:
+                file.close()
 
 
 
@@ -331,7 +336,7 @@ def getPassphrase(needed):
 
 def getSavePassphrase(needed):
     if needed:
-        passphrase = util.getPassword("Encryption passphrase: ")
+        return util.getPassword("Encryption passphrase: ")
     else:
         return None
 
@@ -388,8 +393,15 @@ class ApplicationRunner(object):
 
         @see: L{runReactorWithLogging}
         """
+        if reactor is None:
+            from twisted.internet import reactor
         runReactorWithLogging(
             self.config, oldstdout, oldstderr, self.profiler, reactor)
+
+        if _ISupportsExitSignalCapturing.providedBy(reactor):
+            self._exitSignal = reactor._exitSignal
+        else:
+            self._exitSignal = None
 
 
     def preApplication(self):
@@ -445,13 +457,13 @@ class ApplicationRunner(object):
 
 def getApplication(config, passphrase):
     s = [(config[t], t)
-           for t in ['python', 'source', 'file'] if config[t]][0]
-    filename, style = s[0], {'file':'pickle'}.get(s[1],s[1])
+         for t in ['python', 'source', 'file'] if config[t]][0]
+    filename, style = s[0], {'file': 'pickle'}.get(s[1], s[1])
     try:
         log.msg("Loading %s..." % filename)
         application = service.loadApplication(filename, style, passphrase)
         log.msg("Loaded.")
-    except Exception, e:
+    except Exception as e:
         s = "Failed to load application: %s" % e
         if isinstance(e, KeyError) and e.args[0] == "application":
             s += """
@@ -470,10 +482,13 @@ Please read the 'Using Application' HOWTO for details.
 
 
 
-def _reactorZshAction():
-    return "(%s)" % " ".join([r.shortName for r in reactors.getReactorTypes()])
+def _reactorAction():
+    return usage.CompleteList([r.shortName for r in
+                               reactors.getReactorTypes()])
 
 
+
+@_oldStyle
 class ReactorSelectionMixin:
     """
     Provides options for selecting a reactor to install.
@@ -481,17 +496,33 @@ class ReactorSelectionMixin:
     If a reactor is installed, the short name which was used to locate it is
     saved as the value for the C{"reactor"} key.
     """
-    zsh_actions = {"reactor" : _reactorZshAction}
+    compData = usage.Completions(
+        optActions={"reactor": _reactorAction})
+
     messageOutput = sys.stdout
+    _getReactorTypes = staticmethod(reactors.getReactorTypes)
 
 
     def opt_help_reactors(self):
         """
         Display a list of possibly available reactor names.
         """
-        for r in reactors.getReactorTypes():
-            self.messageOutput.write('    %-4s\t%s\n' %
-                                     (r.shortName, r.description))
+        rcts = sorted(self._getReactorTypes(), key=attrgetter('shortName'))
+        notWorkingReactors = ""
+        for r in rcts:
+            try:
+                namedModule(r.moduleName)
+                self.messageOutput.write('    %-4s\t%s\n' %
+                                         (r.shortName, r.description))
+            except ImportError as e:
+                notWorkingReactors += ('    !%-4s\t%s (%s)\n' %
+                                       (r.shortName, r.description, e.args[0]))
+
+        if notWorkingReactors:
+            self.messageOutput.write('\n')
+            self.messageOutput.write('    reactors not available '
+                                     'on this platform:\n\n')
+            self.messageOutput.write(notWorkingReactors)
         raise SystemExit(0)
 
 
@@ -511,7 +542,7 @@ class ReactorSelectionMixin:
                    "See the list of available reactors with "
                    "--help-reactors" % (shortName,))
             raise usage.UsageError(msg)
-        except Exception, e:
+        except Exception as e:
             msg = ("The specified reactor cannot be used, failed with error: "
                    "%s.\nSee the list of available reactors with "
                    "--help-reactors" % (e,))
@@ -519,7 +550,6 @@ class ReactorSelectionMixin:
         else:
             self["reactor"] = shortName
     opt_r = opt_reactor
-
 
 
 
@@ -531,39 +561,49 @@ class ServerOptions(usage.Options, ReactorSelectionMixin):
     optFlags = [['savestats', None,
                  "save the Stats object rather than the text output of "
                  "the profiler."],
-                ['no_save','o',   "do not save state on shutdown"],
+                ['no_save', 'o', "do not save state on shutdown"],
                 ['encrypted', 'e',
                  "The specified tap/aos file is encrypted."]]
 
-    optParameters = [['logfile','l', None,
+    optParameters = [['logfile', 'l', None,
                       "log to a specified file, - for stdout"],
+                     ['logger', None, None,
+                      "A fully-qualified name to a log observer factory to "
+                      "use for the initial log observer.  Takes precedence "
+                      "over --logfile and --syslog (when available)."],
                      ['profile', 'p', None,
-                      "Run in profile mode, dumping results to specified file"],
-                     ['profiler', None, "hotshot",
+                      "Run in profile mode, dumping results to specified "
+                      "file."],
+                     ['profiler', None, "cprofile",
                       "Name of the profiler to use (%s)." %
                       ", ".join(AppProfiler.profilers)],
-                     ['file','f','twistd.tap',
+                     ['file', 'f', 'twistd.tap',
                       "read the given .tap file"],
-                     ['python','y', None,
+                     ['python', 'y', None,
                       "read an application from within a Python file "
                       "(implies -o)"],
                      ['source', 's', None,
                       "Read an application from a .tas file (AOT format)."],
-                     ['rundir','d','.',
+                     ['rundir', 'd', '.',
                       'Change to a supplied directory before running']]
 
-    #zsh_altArgDescr = {"foo":"use this description for foo instead"}
-    #zsh_multiUse = ["foo", "bar"]
-    zsh_mutuallyExclusive = [("file", "python", "source")]
-    zsh_actions = {"file":'_files -g "*.tap"',
-                   "python":'_files -g "*.(tac|py)"',
-                   "source":'_files -g "*.tas"',
-                   "rundir":"_dirs"}
-    #zsh_actionDescr = {"logfile":"log file name", "random":"random seed"}
+    compData = usage.Completions(
+        mutuallyExclusive=[("file", "python", "source")],
+        optActions={"file": usage.CompleteFiles("*.tap"),
+                    "python": usage.CompleteFiles("*.(tac|py)"),
+                    "source": usage.CompleteFiles("*.tas"),
+                    "rundir": usage.CompleteDirs()}
+    )
+
+    _getPlugins = staticmethod(plugin.getPlugins)
 
     def __init__(self, *a, **kw):
         self['debug'] = False
-        usage.Options.__init__(self, *a, **kw)
+        if 'stdout' in kw:
+            self.stdout = kw['stdout']
+        else:
+            self.stdout = sys.stdout
+        usage.Options.__init__(self)
 
 
     def opt_debug(self):
@@ -580,7 +620,8 @@ class ServerOptions(usage.Options, ReactorSelectionMixin):
     def opt_spew(self):
         """
         Print an insanely verbose log of everything that happens.
-        Useful when debugging freezes or locks in complex code."""
+        Useful when debugging freezes or locks in complex code.
+        """
         sys.settrace(util.spewer)
         try:
             import threading
@@ -598,15 +639,26 @@ class ServerOptions(usage.Options, ReactorSelectionMixin):
     def postOptions(self):
         if self.subCommand or self['python']:
             self['no_save'] = True
+        if self['logger'] is not None:
+            try:
+                self['logger'] = namedAny(self['logger'])
+            except Exception as e:
+                raise usage.UsageError("Logger '%s' could not be imported: %s"
+                                       % (self['logger'], e))
 
 
     def subCommands(self):
-        from twisted import plugin
-        plugins = plugin.getPlugins(service.IServiceMaker)
+        plugins = self._getPlugins(service.IServiceMaker)
         self.loadedPlugins = {}
-        for plug in plugins:
+        for plug in sorted(plugins, key=attrgetter('tapname')):
             self.loadedPlugins[plug.tapname] = plug
-            yield (plug.tapname, None, lambda: plug.options(), plug.description)
+            yield (plug.tapname,
+                   None,
+                   # Avoid resolving the options attribute right away, in case
+                   # it's a property with a non-trivial getter (eg, one which
+                   # imports modules).
+                   lambda plug=plug: plug.options(),
+                   plug.description)
     subCommands = property(subCommands)
 
 
@@ -615,17 +667,11 @@ def run(runApp, ServerOptions):
     config = ServerOptions()
     try:
         config.parseOptions()
-    except usage.error, ue:
-        print config
-        print "%s: %s" % (sys.argv[0], ue)
+    except usage.error as ue:
+        print(config)
+        print("%s: %s" % (sys.argv[0], ue))
     else:
         runApp(config)
-
-
-
-def initialLog():
-    AppLogger({})._initialLog()
-initialLog = deprecated(Version("Twisted", 8, 2, 0))(initialLog)
 
 
 
@@ -643,8 +689,20 @@ def startApplication(application, save):
     from twisted.internet import reactor
     service.IService(application).startService()
     if save:
-         p = sob.IPersistable(application)
-         reactor.addSystemEventTrigger('after', 'shutdown', p.save, 'shutdown')
+        p = sob.IPersistable(application)
+        reactor.addSystemEventTrigger('after', 'shutdown', p.save, 'shutdown')
     reactor.addSystemEventTrigger('before', 'shutdown',
                                   service.IService(application).stopService)
 
+
+
+def _exitWithSignal(sig):
+    """
+    Force the application to terminate with the specified signal by replacing
+    the signal handler with the default and sending the signal to ourselves.
+
+    @param sig:  Signal to use to terminate the process with C{os.kill}.
+    @type sig:  C{int}
+    """
+    signal.signal(sig, signal.SIG_DFL)
+    os.kill(os.getpid(), sig)

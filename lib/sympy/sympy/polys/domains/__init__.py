@@ -1,87 +1,45 @@
 """Implementation of mathematical domains. """
 
-from domain import Domain
-from ring import Ring
-from field import Field
+__all__ = ['Domain', 'FiniteField', 'IntegerRing', 'RationalField',
+        'RealField', 'ComplexField', 'PythonFiniteField', 'GMPYFiniteField',
+        'PythonIntegerRing', 'GMPYIntegerRing', 'PythonRational',
+        'GMPYRationalField', 'AlgebraicField', 'PolynomialRing',
+        'FractionField', 'ExpressionDomain', 'PythonRational']
 
-from simpledomain import SimpleDomain
-from compositedomain import CompositeDomain
-from characteristiczero import CharacteristicZero
-
-from finitefield import FiniteField
-from integerring import IntegerRing
-from rationalfield import RationalField
-from realdomain import RealDomain
-
-from pythonfinitefield import PythonFiniteField
-from sympyfinitefield import SymPyFiniteField
-from gmpyfinitefield import GMPYFiniteField
-
-from pythonintegerring import PythonIntegerRing
-from sympyintegerring import SymPyIntegerRing
-from gmpyintegerring import GMPYIntegerRing
-
-from pythonrationalfield import PythonRationalField
-from sympyrationalfield import SymPyRationalField
-from gmpyrationalfield import GMPYRationalField
-
-from sympyrealdomain import SymPyRealDomain
-from pythonrealdomain import PythonRealDomain
-from mpmathrealdomain import MPmathRealDomain
-
-from pythoncomplexdomain import PythonComplexDomain
-from mpmathcomplexdomain import MPmathComplexDomain
-
-from algebraicfield import AlgebraicField
-
-from polynomialring import PolynomialRing
-from fractionfield import FractionField
-
-from expressiondomain import ExpressionDomain
+from .domain import Domain
+from .finitefield import FiniteField
+from .integerring import IntegerRing
+from .rationalfield import RationalField
+from .realfield import RealField
+from .complexfield import ComplexField
+from .pythonfinitefield import PythonFiniteField
+from .gmpyfinitefield import GMPYFiniteField
+from .pythonintegerring import PythonIntegerRing
+from .gmpyintegerring import GMPYIntegerRing
+from .pythonrationalfield import PythonRationalField
+from .gmpyrationalfield import GMPYRationalField
+from .algebraicfield import AlgebraicField
+from .polynomialring import PolynomialRing
+from .fractionfield import FractionField
+from .expressiondomain import ExpressionDomain
+from .pythonrational import PythonRational
 
 FF_python = PythonFiniteField
-FF_sympy = SymPyFiniteField
 FF_gmpy = GMPYFiniteField
 
 ZZ_python = PythonIntegerRing
-ZZ_sympy = SymPyIntegerRing
 ZZ_gmpy = GMPYIntegerRing
 
 QQ_python = PythonRationalField
-QQ_sympy = SymPyRationalField
 QQ_gmpy = GMPYRationalField
 
-RR_sympy = SymPyRealDomain
-RR_python = PythonRealDomain
-RR_mpmath = MPmathRealDomain
+RR = RealField()
+CC = ComplexField()
 
-CC_python = PythonComplexDomain
-CC_mpmath = MPmathComplexDomain
-
-from pythonrationaltype import PythonRationalType
-
-from groundtypes import HAS_GMPY
-
-def _getenv(key, default=None):
-    from os import getenv
-    return getenv(key, default)
-
-GROUND_TYPES = _getenv('SYMPY_GROUND_TYPES', 'auto').lower()
-
-if GROUND_TYPES == 'auto':
-    if HAS_GMPY:
-        GROUND_TYPES = 'gmpy'
-    else:
-        GROUND_TYPES = 'python'
-
-if GROUND_TYPES == 'gmpy' and not HAS_GMPY:
-    from warnings import warn
-    warn("gmpy library is not installed, switching to 'python' ground types")
-    GROUND_TYPES = 'python'
+from sympy.core.compatibility import GROUND_TYPES
 
 _GROUND_TYPES_MAP = {
     'gmpy': (FF_gmpy, ZZ_gmpy(), QQ_gmpy()),
-    'sympy': (FF_sympy, ZZ_sympy(), QQ_sympy()),
     'python': (FF_python, ZZ_python(), QQ_python()),
 }
 
@@ -92,8 +50,11 @@ except KeyError:
 
 GF = FF
 
-RR = RR_mpmath()
-CC = CC_mpmath()
-
 EX = ExpressionDomain()
 
+__all__.extend([
+    "FF_python", "FF_gmpy",
+    "ZZ_python", "ZZ_gmpy",
+    "QQ_python", "QQ_gmpy",
+    "GF", "FF", "ZZ", "QQ", "RR", "CC", "EX",
+])

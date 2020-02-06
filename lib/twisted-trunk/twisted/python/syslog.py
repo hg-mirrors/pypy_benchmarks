@@ -11,13 +11,15 @@ You probably want to call L{startLogging}.
 syslog = __import__('syslog')
 
 from twisted.python import log
+from twisted.python._oldstyle import _oldStyle
 
-# These defaults come from the Python 2.3 syslog docs.
+# These defaults come from the Python syslog docs.
 DEFAULT_OPTIONS = 0
 DEFAULT_FACILITY = syslog.LOG_USER
 
 
 
+@_oldStyle
 class SyslogObserver:
     """
     A log observer for logging to syslog.

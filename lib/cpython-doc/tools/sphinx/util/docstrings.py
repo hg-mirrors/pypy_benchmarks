@@ -5,33 +5,42 @@
 
     Utilities for docstring processing.
 
-    :copyright: Copyright 2007-2011 by the Sphinx team, see AUTHORS.
+    :copyright: Copyright 2007-2019 by the Sphinx team, see AUTHORS.
     :license: BSD, see LICENSE for details.
 """
 
 import sys
 
+if False:
+    # For type annotation
+    from typing import List  # NOQA
 
-def prepare_docstring(s):
-    """
-    Convert a docstring into lines of parseable reST.  Return it as a list of
-    lines usable for inserting into a docutils ViewList (used as argument
-    of nested_parse().)  An empty line is added to act as a separator between
-    this docstring and following content.
+
+def prepare_docstring(s, ignore=1):
+    # type: (unicode, int) -> List[unicode]
+    """Convert a docstring into lines of parseable reST.  Remove common leading
+    indentation, where the indentation of a given number of lines (usually just
+    one) is ignored.
+
+    Return the docstring as a list of lines usable for inserting into a docutils
+    ViewList (used as argument of nested_parse().)  An empty line is added to
+    act as a separator between this docstring and following content.
     """
     lines = s.expandtabs().splitlines()
-    # Find minimum indentation of any non-blank lines after first line.
-    margin = sys.maxint
-    for line in lines[1:]:
+    # Find minimum indentation of any non-blank lines after ignored lines.
+    margin = sys.maxsize
+    for line in lines[ignore:]:
         content = len(line.lstrip())
         if content:
             indent = len(line) - content
             margin = min(margin, indent)
-    # Remove indentation.
-    if lines:
-        lines[0] = lines[0].lstrip()
-    if margin < sys.maxint:
-        for i in range(1, len(lines)): lines[i] = lines[i][margin:]
+    # Remove indentation from ignored lines.
+    for i in range(ignore):
+        if i < len(lines):
+            lines[i] = lines[i].lstrip()
+    if margin < sys.maxsize:
+        for i in range(ignore, len(lines)):
+            lines[i] = lines[i][margin:]
     # Remove any leading blank lines.
     while lines and not lines[0]:
         lines.pop(0)
@@ -42,9 +51,9 @@ def prepare_docstring(s):
 
 
 def prepare_commentdoc(s):
-    """
-    Extract documentation comment lines (starting with #:) and return them as a
-    list of lines.  Returns an empty list if there is no documentation.
+    # type: (unicode) -> List[unicode]
+    """Extract documentation comment lines (starting with #:) and return them
+    as a list of lines.  Returns an empty list if there is no documentation.
     """
     result = []
     lines = [line.strip() for line in s.expandtabs().splitlines()]

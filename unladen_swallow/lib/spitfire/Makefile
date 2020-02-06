@@ -1,76 +1,129 @@
-ifndef PYTHONPATH
-	export PYTHONPATH = ../yapps2
+# Copyright 2007 The Spitfire Authors. All Rights Reserved.
+#
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+# Default
+.PHONY: all
+# Build
+.PHONY: build parser extensions
+# Test
+.PHONY: test tests unit_tests no_whitespace_tests whitespace_tests function_registry_tests optimizer_tests
+# Clean up
+.PHONY: clean clean_build clean_tests
+# Format code
+.PHONY: fix lint
+
+
+PYTHON ?= python
+PIP ?= pip
+YAPF ?= yapf
+
+VIRTUALENV = $(shell $(PYTHON) -c "import sys; print(hasattr(sys, 'real_prefix') or hasattr(sys, 'base_prefix'))")
+ifeq ($(VIRTUALENV),True)
+  PIP_INSTALL_FLAGS=
+else
+  PIP_INSTALL_FLAGS=--user
 endif
 
-ifndef YAPPS
-	export YAPPS = ../yapps2/yapps2.py
-endif
+COMPILER = PYTHONPATH=. $(PYTHON) scripts/spitfire-compile
+CRUNNER = PYTHONPATH=. $(PYTHON) scripts/crunner.py
+UNITTEST = $(PYTHON) -m unittest
+YAPPS = $(PYTHON) third_party/yapps2/yapps2.py
 
-CRUNNER = python2.4 scripts/crunner.py
-COMPILER = python2.4 scripts/spitfire-compile
 
-spitfire/compiler/parser.py: spitfire/compiler/parser.g
-	$(YAPPS) spitfire/compiler/parser.g
+all: build
+
+
+build: parser extensions
 
 parser: spitfire/compiler/parser.py
 
-all: parser
+spitfire/compiler/parser.py: spitfire/compiler/parser.g third_party/yapps2/yapps2.py third_party/yapps2/yappsrt.py
+	$(YAPPS) spitfire/compiler/parser.g
 
-.PHONY : test_function_registry
-test_function_registry: parser
-	$(CRUNNER) -O3 --compile --test-input tests/input/search_list_data.pye -qt tests/test-function-registry.txtx tests/i18n-7.txtx --function-registry-file tests/test-function-registry.cnf
+extensions: spitfire/runtime/_baked.so spitfire/runtime/_template.so spitfire/runtime/_udn.so
 
-.PHONY : no_whitespace_tests
-no_whitespace_tests: clean_tests parser
-	$(COMPILER) tests/*.txt tests/*.tmpl
-	$(CRUNNER) --test-input tests/input/search_list_data.pye -qt tests/*.txt tests/*.tmpl
+spitfire/runtime/_baked.so spitfire/runtime/_template.so spitfire/runtime/_udn.so: spitfire/runtime/_baked.c spitfire/runtime/_template.c spitfire/runtime/_udn.c
+	$(PIP) install $(PIP_INSTALL_FLAGS) --editable .
+
+
+fix:
+	@echo; echo 'Auto-formatting code...'
+	-@$(YAPF) --in-place --recursive --verify spitfire scripts
+
+lint:
+	@echo; echo 'Checking code format...'
+	@$(YAPF) --diff --recursive spitfire scripts || (st=$$?; echo 'Please run "make fix" to correct the formatting errors.'; exit $$st)
+
+
+test: tests
+
+tests: unit_tests no_whitespace_tests whitespace_tests function_registry_tests optimizer_tests clean_tests
+
+unit_tests: build
+	$(UNITTEST) discover -s spitfire -p '*_test.py'
+
+test_function_registry: build
+	$(call _clean_tests)
+	$(CRUNNER) -O3 --compile --function-registry-file tests/test-function-registry.cnf tests/*.txtx
+
+no_whitespace_tests: build
+	$(call _clean_tests)
+	$(COMPILER) tests/*.txt tests/*.tmpl --compiler-stack-traces
+	$(CRUNNER) tests/*.txt tests/*.tmpl
 	$(COMPILER) -O1 tests/*.txt tests/*.tmpl
-	$(CRUNNER) -O1 --test-input tests/input/search_list_data.pye -qt tests/*.txt tests/*.tmpl
+	$(CRUNNER) -O1 tests/*.txt tests/*.tmpl
 	$(COMPILER) -O2 tests/*.txt tests/*.tmpl
-	$(CRUNNER) -O2 --test-input tests/input/search_list_data.pye -qt tests/*.txt tests/*.tmpl
+	$(CRUNNER) -O2 tests/*.txt tests/*.tmpl
 	$(COMPILER) -O3 tests/*.txt tests/*.tmpl
-	$(CRUNNER) -O3 --test-input tests/input/search_list_data.pye -qt tests/*.txt tests/*.tmpl
+	$(CRUNNER) -O3 tests/*.txt tests/*.tmpl
 
-.PHONY : whitespace_tests
-whitespace_tests: clean_tests parser
+whitespace_tests: build
+	$(call _clean_tests)
 	$(COMPILER) --preserve-optional-whitespace tests/*.txt tests/*.tmpl
-	$(CRUNNER) --preserve-optional-whitespace --test-input tests/input/search_list_data.pye --test-output output-preserve-whitespace -qt tests/*.txt tests/*.tmpl
+	$(CRUNNER) --preserve-optional-whitespace --test-output tests/output-preserve-whitespace tests/*.txt tests/*.tmpl
 	$(COMPILER) -O1 --preserve-optional-whitespace tests/*.txt tests/*.tmpl
-	$(CRUNNER) -O1 --preserve-optional-whitespace --test-input tests/input/search_list_data.pye --test-output output-preserve-whitespace -qt tests/*.txt tests/*.tmpl
+	$(CRUNNER) -O1 --preserve-optional-whitespace --test-output tests/output-preserve-whitespace tests/*.txt tests/*.tmpl
 	$(COMPILER) -O2 --preserve-optional-whitespace tests/*.txt tests/*.tmpl
-	$(CRUNNER) -O2 --preserve-optional-whitespace --test-input tests/input/search_list_data.pye --test-output output-preserve-whitespace -qt tests/*.txt tests/*.tmpl
+	$(CRUNNER) -O2 --preserve-optional-whitespace --test-output tests/output-preserve-whitespace tests/*.txt tests/*.tmpl
 	$(COMPILER) -O3 --preserve-optional-whitespace tests/*.txt tests/*.tmpl
-	$(CRUNNER) -O3 --preserve-optional-whitespace --test-input tests/input/search_list_data.pye --test-output output-preserve-whitespace -qt tests/*.txt tests/*.tmpl
+	$(CRUNNER) -O3 --preserve-optional-whitespace --test-output tests/output-preserve-whitespace tests/*.txt tests/*.tmpl
 
-.PHONY : test_opt
-test_opt: clean_tests parser
-	$(COMPILER) -O4 tests/*.txt tests/*.tmpl tests/*.o4txt
-	$(CRUNNER) -O4 --test-input tests/input/search_list_data.pye -qt tests/*.txt tests/*.tmpl tests/*.o4txt
-	$(COMPILER) -O4 --preserve-optional-whitespace tests/*.txt tests/*.tmpl tests/*.o4txt
-	$(CRUNNER) -O4 --preserve-optional-whitespace --test-input tests/input/search_list_data.pye --test-output output-preserve-whitespace -qt tests/*.txt tests/*.tmpl tests/*.o4txt
+optimizer_tests: build
+	$(call _clean_tests)
+	$(COMPILER) -O3 tests/*.o4txt
+	$(CRUNNER) -O3 tests/*.o4txt
 
-
-.PHONY : xhtml_tests
-xhtml_tests: clean_tests parser
+xhtml_tests: build
+	$(call _clean_tests)
 	$(COMPILER) --xspt-mode tests/*.xhtml
-	$(CRUNNER) --xspt-mode --test-input tests/input/search_list_data.pye --test-output output-xhtml -qt tests/*.xhtml
-
-.PHONY : tests
-tests: no_whitespace_tests whitespace_tests test_function_registry test_opt
+	$(CRUNNER) --xspt-mode --test-output tests/output-xhtml tests/*.xhtml
 
 
-.PHONY : clean
-clean: clean_tests
-	@find . -name '*.pyc' -exec rm {} \;
+clean: clean_build clean_tests
+
+clean_build:
+	@find spitfire -name '*.pyc' -exec rm {} \;
+	@find third_party -name '*.pyc' -exec rm {} \;
+	@find spitfire -name '*.so' -exec rm {} \;
+	@find third_party -name '*.so' -exec rm {} \;
 	@rm -f spitfire/compiler/parser.py
 	@rm -rf build
+	@if [[ $$($(PIP) show spitfire | fgrep Location: | awk '{print $$2}') == $(PWD) ]]; then \
+		$(PIP) uninstall --yes spitfire; \
+	 fi
+	@rm -rf spitfire.egg-info
 
-.PHONY : clean_tests
 clean_tests:
+	$(call _clean_tests)
+
+# Note: The define + call for clean_tests is required to force the target to
+# be called before every test execution instead of once before all of them.
+# The other way to do this is with recursive make calls.
+define _clean_tests
 	@rm -f tests/*.py
 	@rm -f tests/*.pyc
 	@find tests -name '*.failed' -exec rm {} \;
 	@touch tests/__init__.py
-
-.PHONE : clean_all
-clean_all : clean clean_tests
+endef

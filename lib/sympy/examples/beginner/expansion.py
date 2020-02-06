@@ -5,19 +5,18 @@
 Demonstrates how to expand expressions.
 """
 
-import sympy
-from sympy import pprint
+from sympy import pprint, Symbol
 
 def main():
-    a = sympy.Symbol('a')
-    b = sympy.Symbol('b')
+    a = Symbol('a')
+    b = Symbol('b')
     e = (a + b)**5
 
-    print
+    print("\nExpression:")
     pprint(e)
-    print '\n'
+    print('\nExpansion of the above expression:')
     pprint(e.expand())
-    print
+    print()
 
 if __name__ == "__main__":
     main()

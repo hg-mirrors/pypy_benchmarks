@@ -17,6 +17,10 @@ streams.
 
 from itertools import chain
 import re
+import sys
+if sys.version_info[0] > 2:
+    basestring = str
+    unicode = str
 
 from genshi.core import escape, Attrs, Markup, Namespace, QName, StreamEventKind
 from genshi.core import START, END, TEXT, XML_DECL, DOCTYPE, START_NS, END_NS, \
@@ -664,7 +668,7 @@ class NamespaceFlattener(object):
             while 1:
                 val += 1
                 yield 'ns%d' % val
-        _gen_prefix = _gen_prefix().next
+        _gen_prefix = next(_gen_prefix())
 
         for kind, data, pos in stream:
             if kind is TEXT and isinstance(data, Markup):

@@ -1,5 +1,10 @@
 
 from chameleon import PageTemplate
+import sys
+if sys.version_info[0] < 3:
+    strstr = 'unicode'
+else:
+    strstr = 'str'
 
 BIGTABLE_ZPT = """\
 <table xmlns="http://www.w3.org/1999/xhtml"
@@ -7,11 +12,11 @@ xmlns:tal="http://xml.zope.org/namespaces/tal">
 <tr tal:repeat="row python: options['table']">
 <td tal:repeat="c python: row.values()">
 <span tal:define="d python: c + 1"
-tal:attributes="class python: 'column-' + unicode(d)"
+tal:attributes="class python: 'column-' + %s(d)"
 tal:content="python: d" />
 </td>
 </tr>
-</table>"""
+</table>""" % strstr
 
 def main(n):
     tmpl = PageTemplate(BIGTABLE_ZPT)

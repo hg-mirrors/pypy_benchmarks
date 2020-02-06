@@ -1,17 +1,41 @@
-import os
-import imp
-import sys
-import py_compile
-import logging
 import functools
+import logging
+import os
+import py_compile
+import shutil
+import sys
 import tempfile
+import warnings
+import pkg_resources
+
+try:
+    from importlib.machinery import SourceFileLoader
+    from threading import RLock
+    lock = RLock()
+    acquire_lock = lock.acquire
+    release_lock = lock.release
+    del lock
+except ImportError:
+    from imp import acquire_lock, release_lock, load_source
+
+    class SourceFileLoader:
+        def __init__(self, base, filename):
+            self.base = base
+            self.filename = filename
+
+        def load_module(self):
+            try:
+                acquire_lock()
+                assert self.base not in sys.modules
+                with open(self.filename, 'rb') as f:
+                    return load_source(self.base, self.filename, f)
+            finally:
+                release_lock()
 
 log = logging.getLogger('chameleon.loader')
 
-try:
-    str = unicode
-except NameError:
-    basestring = str
+from .utils import string_type
+from .utils import encode_string
 
 
 def cache(func):
@@ -21,6 +45,17 @@ def cache(func):
             self.registry[args] = template = func(self, *args, **kwargs)
         return template
     return load
+
+
+def abspath_from_asset_spec(spec):
+    pname, filename = spec.split(':', 1)
+    return pkg_resources.resource_filename(pname, filename)
+
+if os.name == "nt":
+    def abspath_from_asset_spec(spec, f=abspath_from_asset_spec):
+        if spec[1] == ":":
+            return spec
+        return f(spec)
 
 
 class TemplateLoader(object):
@@ -42,7 +77,7 @@ class TemplateLoader(object):
     def __init__(self, search_path=None, default_extension=None, **kwargs):
         if search_path is None:
             search_path = []
-        if isinstance(search_path, basestring):
+        if isinstance(search_path, string_type):
             search_path = [search_path]
         if default_extension is not None:
             self.default_extension = ".%s" % default_extension.lstrip('.')
@@ -51,22 +86,28 @@ class TemplateLoader(object):
         self.kwargs = kwargs
 
     @cache
-    def load(self, filename, cls=None):
+    def load(self, spec, cls=None):
         if cls is None:
             raise ValueError("Unbound template loader.")
 
-        if self.default_extension is not None and '.' not in filename:
-            filename += self.default_extension
+        spec = spec.strip()
 
-        if os.path.isabs(filename):
-            return cls(filename, **self.kwargs)
+        if self.default_extension is not None and '.' not in spec:
+            spec += self.default_extension
 
-        for path in self.search_path:
-            path = os.path.join(path, filename)
-            if os.path.exists(path):
-                return cls(path, **self.kwargs)
+        if ':' in spec:
+            spec = abspath_from_asset_spec(spec)
 
-        raise ValueError("Template not found: %s." % filename)
+        if not os.path.isabs(spec):
+            for path in self.search_path:
+                path = os.path.join(path, spec)
+                if os.path.exists(path):
+                    spec = path
+                    break
+            else:
+                raise ValueError("Template not found: %s." % spec)
+
+        return cls(spec, search_path=self.search_path, **self.kwargs)
 
     def bind(self, cls):
         return functools.partial(self.load, cls=cls)
@@ -84,8 +125,17 @@ class MemoryLoader(object):
 
 
 class ModuleLoader(object):
-    def __init__(self, path):
+    def __init__(self, path, remove=False):
         self.path = path
+        self.remove = remove
+
+    def __del__(self, shutil=shutil):
+        if not self.remove:
+            return
+        try:
+            shutil.rmtree(self.path)
+        except:
+            warnings.warn("Could not clean up temporary file path: %s" % (self.path,))
 
     def get(self, filename):
         path = os.path.join(self.path, filename)
@@ -97,7 +147,7 @@ class ModuleLoader(object):
             log.debug('cache miss: %s' % filename)
 
     def build(self, source, filename):
-        imp.acquire_lock()
+        acquire_lock()
         try:
             d = self.get(filename)
             if d is not None:
@@ -108,12 +158,14 @@ class ModuleLoader(object):
 
             log.debug("writing source to disk (%d bytes)." % len(source))
             fd, fn = tempfile.mkstemp(prefix=base, suffix='.tmp', dir=self.path)
-            temp = os.fdopen(fd, 'w')
+            temp = os.fdopen(fd, 'wb')
+            encoded = source.encode('utf-8')
+            header = encode_string("# -*- coding: utf-8 -*-" + "\n")
 
             try:
                 try:
-                    temp.write("%s\n" % '# -*- coding: utf-8 -*-')
-                    temp.write(source)
+                    temp.write(header)
+                    temp.write(encoded)
                 finally:
                     temp.close()
             except:
@@ -126,20 +178,15 @@ class ModuleLoader(object):
 
             return self._load(base, name)
         finally:
-            imp.release_lock()
+            release_lock()
 
     def _load(self, base, filename):
-        imp.acquire_lock()
+        acquire_lock()
         try:
             module = sys.modules.get(base)
             if module is None:
-                f = open(filename, 'rb')
-                try:
-                    assert base not in sys.modules
-                    module = imp.load_source(base, filename, f)
-                finally:
-                    f.close()
+                module = SourceFileLoader(base, filename).load_module()
         finally:
-            imp.release_lock()
+            release_lock()
 
         return module.__dict__

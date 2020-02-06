@@ -1,23 +1,29 @@
 from array import array
 import math
+import sys
+if sys.version_info[0] > 2:
+    xrange = range
+
 
 class Array2D(object):
     def __init__(self, w, h, data=None):
         self.width = w
         self.height = h
-        self.data = array('d', [0]) * (w*h)
+        self.data = array('d', [0]) * (w * h)
         if data is not None:
             self.setup(data)
 
     def _idx(self, x, y):
         if 0 <= x < self.width and 0 <= y < self.height:
-            return y*self.width + x
+            return y * self.width + x
         raise IndexError
 
-    def __getitem__(self, (x, y)):
+    def __getitem__(self, x_y):
+        (x, y) = x_y
         return self.data[self._idx(x, y)]
 
-    def __setitem__(self, (x, y), val):
+    def __setitem__(self, x_y, val):
+        (x, y) = x_y
         self.data[self._idx(x, y)] = val
 
     def __cmp__(self, other):
@@ -40,9 +46,9 @@ class Array2D(object):
 class Random(object):
     MDIG = 32
     ONE = 1
-    m1 = (ONE << (MDIG-2)) + ((ONE << (MDIG-2) )-ONE)
-    m2 = ONE << MDIG/2
-    dm1  = 1.0 / float(m1);
+    m1 = (ONE << (MDIG - 2)) + ((ONE << (MDIG - 2)) - ONE)
+    m2 = ONE << MDIG // 2
+    dm1 = 1.0 / float(m1)
 
     def __init__(self, seed):
         self.initialize(seed)
@@ -52,48 +58,48 @@ class Random(object):
         self.haveRange = False
 
     def initialize(self, seed):
-    
+
         self.seed = seed
         seed = abs(seed)
         jseed = min(seed, self.m1)
         if (jseed % 2 == 0):
             jseed -= 1
-        k0 = 9069 % self.m2;
-        k1 = 9069 / self.m2;
-        j0 = jseed % self.m2;
-        j1 = jseed / self.m2;
-        self.m = array('d', [0]) * 17 
+        k0 = 9069 % self.m2
+        k1 = 9069 / self.m2
+        j0 = jseed % self.m2
+        j1 = jseed / self.m2
+        self.m = array('d', [0]) * 17
         for iloop in xrange(17):
-            jseed = j0 * k0;
-            j1 = (jseed / self.m2 + j0 * k1 + j1 * k0) % (self.m2 / 2);
-            j0 = jseed % self.m2;
-            self.m[iloop] = j0 + self.m2 * j1;
-        self.i = 4;
-        self.j = 16;
+            jseed = j0 * k0
+            j1 = (jseed / self.m2 + j0 * k1 + j1 * k0) % (self.m2 / 2)
+            j0 = jseed % self.m2
+            self.m[iloop] = j0 + self.m2 * j1
+        self.i = 4
+        self.j = 16
 
     def nextDouble(self):
         I, J, m = self.i, self.j, self.m
-        k = m[I] - m[J];
+        k = m[I] - m[J]
         if (k < 0):
-            k += self.m1;
-        self.m[J] = k;
+            k += self.m1
+        self.m[J] = k
 
         if (I == 0):
-            I = 16;
+            I = 16
         else:
-            I -= 1;
-        self.i = I;
+            I -= 1
+        self.i = I
 
         if (J == 0):
-            J = 16;
+            J = 16
         else:
-            J -= 1;
-        self.j = J;
+            J -= 1
+        self.j = J
 
         if (self.haveRange):
-            return  self.left +  self.dm1 * float(k) * self.width;
+            return self.left + self.dm1 * float(k) * self.width
         else:
-            return self.dm1 * float(k);
+            return self.dm1 * float(k)
 
     def RandomMatrix(self, a):
         for x, y in a.indexes():
@@ -132,8 +138,10 @@ def SOR_execute(omega, G, num_iterations):
     for p in xrange(num_iterations):
         for y in xrange(1, G.height - 1):
             for x in xrange(1, G.width - 1):
-                G[x, y] = omega * 0.25 * (G[x, y-1] + G[x, y+1] + G[x-1, y] + G[x+1, y]) + \
-                          (1.0 - omega) * G[x, y]
+                G[x, y] = (omega * 0.25 * (G[x, y - 1] + G[x, y + 1] + G[x - 1, y]
+                                           + G[x + 1, y])
+                           + (1.0 - omega) * G[x, y])
+
 def SOR(args):
     n, cycles, Array = map(eval, args)
     a = Array(n, n)
@@ -145,30 +153,31 @@ def SparseCompRow_matmult(M, y, val, row, col, x, num_iterations):
     for reps in xrange(num_iterations):
         for r in xrange(M):
             sa = 0.0
-            for i in xrange(row[r], row[r+1]):
-                sa += x[ col[i] ] * val[i]
+            for i in xrange(row[r], row[r + 1]):
+                sa += x[col[i]] * val[i]
             y[r] = sa
 
 def SparseMatMult(args):
     N, nz, cycles = map(int, args)
     x = array('d', [0]) * N
     y = array('d', [0]) * N
-    result = 0.0
-    nr = nz / N
+
+    nr = nz // N
     anz = nr * N
     val = array('d', [0]) * anz
     col = array('i', [0]) * nz
     row = array('i', [0]) * (N + 1)
+
     row[0] = 0
     for r in xrange(N):
         rowr = row[r]
-        step = r / nr
-        row[r+1] = rowr + nr
-        if (step < 1):
+        step = r // nr
+        row[r + 1] = rowr + nr
+        if step < 1:
             step = 1
         for i in xrange(nr):
             col[rowr + i] = i * step
-    SparseCompRow_matmult(N, y, val, row, col, x, cycles);
+    SparseCompRow_matmult(N, y, val, row, col, x, cycles)
     return "SparseMatMult(%d, %d, %d)" % (N, nz, cycles)
 
 def MonteCarlo_integrate(Num_samples):
@@ -177,7 +186,7 @@ def MonteCarlo_integrate(Num_samples):
     for count in xrange(Num_samples):
         x = rnd.nextDouble()
         y = rnd.nextDouble()
-        if x*x + y*y <= 1.0:
+        if x * x + y * y <= 1.0:
             under_curve += 1
     return float(under_curve) / Num_samples * 4.0
 
@@ -198,22 +207,23 @@ def LU_factor(A, pivot):
                 jp = i
                 t = ab
         pivot[j] = jp
-        
+
         if A[jp][j] == 0:
             raise Exception("factorization failed because of zero pivot")
 
         if jp != j:
             A[j], A[jp] = A[jp], A[j]
 
-        if j < M-1:
-            recp =  1.0 / A[j][j]
+        if j < M - 1:
+            recp = 1.0 / A[j][j]
             for k in xrange(j + 1, M):
                 A[k][j] *= recp
 
-        if j < minMN-1:
+        if j < minMN - 1:
             for ii in xrange(j + 1, M):
                 for jj in xrange(j + 1, N):
                     A[ii][jj] -= A[ii][j] * A[j][jj]
+
 
 def LU(args):
     N, cycles = map(int, args)
@@ -236,15 +246,18 @@ def int_log2(n):
         raise Exception("FFT: Data length is not a power of 2: %s" % n)
     return log
 
+
 def FFT_num_flops(N):
     return (5.0 * N - 2) * int_log2(N) + 2 * (N + 1)
 
+
 def FFT_transform_internal(N, data, direction):
-    n = N / 2
+    n = N // 2
     bit = 0
     dual = 1
     if n == 1:
         return
+
     logn = int_log2(n)
     if N == 0:
         return
@@ -288,8 +301,9 @@ def FFT_transform_internal(N, data, direction):
         bit += 1
         dual *= 2
 
+
 def FFT_bitreverse(N, data):
-    n = N / 2
+    n = N // 2
     nm1 = n - 1
     j = 0
     for i in range(nm1):
@@ -308,11 +322,13 @@ def FFT_bitreverse(N, data):
             k >>= 1
         j += k
 
+
 def FFT_transform(N, data):
     FFT_transform_internal(N, data, -1)
 
+
 def FFT_inverse(N, data):
-    n = N/2
+    n = N / 2
     norm = 0.0
     FFT_transform_internal(N, data, +1)
     norm = 1 / float(n)

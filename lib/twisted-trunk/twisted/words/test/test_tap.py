@@ -7,14 +7,14 @@ from twisted.trial import unittest
 
 
 
-class WordsTap(unittest.TestCase):
+class WordsTapTests(unittest.TestCase):
     """
     Ensures that the twisted.words.tap API works.
     """
 
-    PASSWD_TEXT = "admin:admin\njoe:foo\n"
-    admin = credentials.UsernamePassword('admin', 'admin')
-    joeWrong = credentials.UsernamePassword('joe', 'bar')
+    PASSWD_TEXT = b"admin:admin\njoe:foo\n"
+    admin = credentials.UsernamePassword(b'admin', b'admin')
+    joeWrong = credentials.UsernamePassword(b'joe', b'bar')
 
 
     def setUp(self):
@@ -22,7 +22,7 @@ class WordsTap(unittest.TestCase):
         Create a file with two users.
         """
         self.filename = self.mktemp()
-        self.file = open(self.filename, 'w')
+        self.file = open(self.filename, 'wb')
         self.file.write(self.PASSWD_TEXT)
         self.file.flush()
 

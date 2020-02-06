@@ -11,47 +11,52 @@ listeners or connectors are added)::
     epollreactor.install()
 """
 
+from __future__ import division, absolute_import
+
+from select import epoll, EPOLLHUP, EPOLLERR, EPOLLIN, EPOLLOUT
 import errno
 
-from zope.interface import implements
+from zope.interface import implementer
 
 from twisted.internet.interfaces import IReactorFDSet
 
-from twisted.python import log, _epoll
+from twisted.python import log
 from twisted.internet import posixbase
 
 
+@implementer(IReactorFDSet)
 class EPollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
     """
-    A reactor that uses epoll(4).
+    A reactor that uses epoll(7).
 
-    @ivar _poller: A L{poll} which will be used to check for I/O
+    @ivar _poller: A C{epoll} which will be used to check for I/O
         readiness.
 
     @ivar _selectables: A dictionary mapping integer file descriptors to
-        instances of L{FileDescriptor} which have been registered with the
-        reactor.  All L{FileDescriptors} which are currently receiving read or
+        instances of C{FileDescriptor} which have been registered with the
+        reactor.  All C{FileDescriptors} which are currently receiving read or
         write readiness notifications will be present as values in this
         dictionary.
 
-    @ivar _reads: A dictionary mapping integer file descriptors to arbitrary
-        values (this is essentially a set).  Keys in this dictionary will be
-        registered with C{_poller} for read readiness notifications which will
-        be dispatched to the corresponding L{FileDescriptor} instances in
-        C{_selectables}.
+    @ivar _reads: A set containing integer file descriptors.  Values in this
+        set will be registered with C{_poller} for read readiness notifications
+        which will be dispatched to the corresponding C{FileDescriptor}
+        instances in C{_selectables}.
 
-    @ivar _writes: A dictionary mapping integer file descriptors to arbitrary
-        values (this is essentially a set).  Keys in this dictionary will be
-        registered with C{_poller} for write readiness notifications which will
-        be dispatched to the corresponding L{FileDescriptor} instances in
-        C{_selectables}.
+    @ivar _writes: A set containing integer file descriptors.  Values in this
+        set will be registered with C{_poller} for write readiness
+        notifications which will be dispatched to the corresponding
+        C{FileDescriptor} instances in C{_selectables}.
+
+    @ivar _continuousPolling: A L{_ContinuousPolling} instance, used to handle
+        file descriptors (e.g. filesystem files) that are not supported by
+        C{epoll(7)}.
     """
-    implements(IReactorFDSet)
 
     # Attributes for _PollLikeMixin
-    _POLL_DISCONNECTED = (_epoll.HUP | _epoll.ERR)
-    _POLL_IN = _epoll.IN
-    _POLL_OUT = _epoll.OUT
+    _POLL_DISCONNECTED = (EPOLLHUP | EPOLLERR)
+    _POLL_IN = EPOLLIN
+    _POLL_OUT = EPOLLOUT
 
     def __init__(self):
         """
@@ -59,11 +64,13 @@ class EPollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
         base class.
         """
         # Create the poller we're going to use.  The 1024 here is just a hint
-        # to the kernel, it is not a hard maximum.
-        self._poller = _epoll.epoll(1024)
-        self._reads = {}
-        self._writes = {}
+        # to the kernel, it is not a hard maximum.  After Linux 2.6.8, the size
+        # argument is completely ignored.
+        self._poller = epoll(1024)
+        self._reads = set()
+        self._writes = set()
         self._selectables = {}
+        self._continuousPolling = posixbase._ContinuousPolling(self)
         posixbase.PosixReactorBase.__init__(self)
 
 
@@ -76,21 +83,21 @@ class EPollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
         """
         fd = xer.fileno()
         if fd not in primary:
-            cmd = _epoll.CTL_ADD
             flags = event
-            if fd in other:
-                flags |= antievent
-                cmd = _epoll.CTL_MOD
             # epoll_ctl can raise all kinds of IOErrors, and every one
             # indicates a bug either in the reactor or application-code.
             # Let them all through so someone sees a traceback and fixes
             # something.  We'll do the same thing for every other call to
             # this method in this file.
-            self._poller._control(cmd, fd, flags)
+            if fd in other:
+                flags |= antievent
+                self._poller.modify(fd, flags)
+            else:
+                self._poller.register(fd, flags)
 
             # Update our own tracking state *only* after the epoll call has
             # succeeded.  Otherwise we may get out of sync.
-            primary[fd] = 1
+            primary.add(fd)
             selectables[fd] = xer
 
 
@@ -98,14 +105,34 @@ class EPollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
         """
         Add a FileDescriptor for notification of data available to read.
         """
-        self._add(reader, self._reads, self._writes, self._selectables, _epoll.IN, _epoll.OUT)
+        try:
+            self._add(reader, self._reads, self._writes, self._selectables,
+                      EPOLLIN, EPOLLOUT)
+        except IOError as e:
+            if e.errno == errno.EPERM:
+                # epoll(7) doesn't support certain file descriptors,
+                # e.g. filesystem files, so for those we just poll
+                # continuously:
+                self._continuousPolling.addReader(reader)
+            else:
+                raise
 
 
     def addWriter(self, writer):
         """
         Add a FileDescriptor for notification of data available to write.
         """
-        self._add(writer, self._writes, self._reads, self._selectables, _epoll.OUT, _epoll.IN)
+        try:
+            self._add(writer, self._writes, self._reads, self._selectables,
+                      EPOLLOUT, EPOLLIN)
+        except IOError as e:
+            if e.errno == errno.EPERM:
+                # epoll(7) doesn't support certain file descriptors,
+                # e.g. filesystem files, so for those we just poll
+                # continuously:
+                self._continuousPolling.addWriter(writer)
+            else:
+                raise
 
 
     def _remove(self, xer, primary, other, selectables, event, antievent):
@@ -123,46 +150,57 @@ class EPollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
             else:
                 return
         if fd in primary:
-            cmd = _epoll.CTL_DEL
-            flags = event
             if fd in other:
                 flags = antievent
-                cmd = _epoll.CTL_MOD
+                # See comment above modify call in _add.
+                self._poller.modify(fd, flags)
             else:
                 del selectables[fd]
-            del primary[fd]
-            # See comment above _control call in _add.
-            self._poller._control(cmd, fd, flags)
+                # See comment above _control call in _add.
+                self._poller.unregister(fd)
+            primary.remove(fd)
 
 
     def removeReader(self, reader):
         """
         Remove a Selectable for notification of data available to read.
         """
-        self._remove(reader, self._reads, self._writes, self._selectables, _epoll.IN, _epoll.OUT)
+        if self._continuousPolling.isReading(reader):
+            self._continuousPolling.removeReader(reader)
+            return
+        self._remove(reader, self._reads, self._writes, self._selectables,
+                     EPOLLIN, EPOLLOUT)
 
 
     def removeWriter(self, writer):
         """
         Remove a Selectable for notification of data available to write.
         """
-        self._remove(writer, self._writes, self._reads, self._selectables, _epoll.OUT, _epoll.IN)
+        if self._continuousPolling.isWriting(writer):
+            self._continuousPolling.removeWriter(writer)
+            return
+        self._remove(writer, self._writes, self._reads, self._selectables,
+                     EPOLLOUT, EPOLLIN)
+
 
     def removeAll(self):
         """
         Remove all selectables, and return a list of them.
         """
-        return self._removeAll(
-            [self._selectables[fd] for fd in self._reads],
-            [self._selectables[fd] for fd in self._writes])
+        return (self._removeAll(
+                [self._selectables[fd] for fd in self._reads],
+                [self._selectables[fd] for fd in self._writes]) +
+                self._continuousPolling.removeAll())
 
 
     def getReaders(self):
-        return [self._selectables[fd] for fd in self._reads]
+        return ([self._selectables[fd] for fd in self._reads] +
+                self._continuousPolling.getReaders())
 
 
     def getWriters(self):
-        return [self._selectables[fd] for fd in self._writes]
+        return ([self._selectables[fd] for fd in self._writes] +
+                self._continuousPolling.getWriters())
 
 
     def doPoll(self, timeout):
@@ -170,16 +208,15 @@ class EPollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
         Poll the poller for new events.
         """
         if timeout is None:
-            timeout = 1
-        timeout = int(timeout * 1000) # convert seconds to milliseconds
+            timeout = -1  # Wait indefinitely.
 
         try:
             # Limit the number of events to the number of io objects we're
             # currently tracking (because that's maybe a good heuristic) and
             # the amount of time we block to the value specified by our
             # caller.
-            l = self._poller.wait(len(self._selectables), timeout)
-        except IOError, err:
+            l = self._poller.poll(timeout, len(self._selectables))
+        except IOError as err:
             if err.errno == errno.EINTR:
                 return
             # See epoll_wait(2) for documentation on the other conditions
@@ -210,4 +247,3 @@ def install():
 
 
 __all__ = ["EPollReactor", "install"]
-

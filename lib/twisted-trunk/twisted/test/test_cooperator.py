@@ -6,6 +6,8 @@ This module contains tests for L{twisted.internet.task.Cooperator} and
 related functionality.
 """
 
+from __future__ import division, absolute_import
+
 from twisted.internet import reactor, defer, task
 from twisted.trial import unittest
 
@@ -62,7 +64,7 @@ class FakeScheduler(object):
 
 
 
-class TestCooperator(unittest.TestCase):
+class CooperatorTests(unittest.TestCase):
     RESULT = 'done'
 
     def ebIter(self, err):
@@ -206,8 +208,8 @@ class TestCooperator(unittest.TestCase):
         # about this, so we have to carefully clean up after ourselves.
         c._tick()
         c.stop()
-        self.failUnless(_TPF.stopped)
-        self.assertEqual(output, range(10))
+        self.assertTrue(_TPF.stopped)
+        self.assertEqual(output, list(range(10)))
 
 
     def testCallbackReCoiterate(self):
@@ -227,7 +229,7 @@ class TestCooperator(unittest.TestCase):
                 return '<FakeCall %r>' % (self.func,)
 
         def sched(f):
-            self.failIf(calls, repr(calls))
+            self.assertFalse(calls, repr(calls))
             calls.append(FakeCall(f))
             return calls[-1]
 
@@ -248,6 +250,81 @@ class TestCooperator(unittest.TestCase):
                 work += 1
             if work > 50:
                 self.fail("Cooperator took too long")
+
+
+    def test_removingLastTaskStopsScheduledCall(self):
+        """
+        If the last task in a Cooperator is removed, the scheduled call for
+        the next tick is cancelled, since it is no longer necessary.
+
+        This behavior is useful for tests that want to assert they have left
+        no reactor state behind when they're done.
+        """
+        calls = [None]
+        def sched(f):
+            calls[0] = FakeDelayedCall(f)
+            return calls[0]
+        coop = task.Cooperator(scheduler=sched)
+
+        # Add two task; this should schedule the tick:
+        task1 = coop.cooperate(iter([1, 2]))
+        task2 = coop.cooperate(iter([1, 2]))
+        self.assertEqual(calls[0].func, coop._tick)
+
+        # Remove first task; scheduled call should still be going:
+        task1.stop()
+        self.assertFalse(calls[0].cancelled)
+        self.assertEqual(coop._delayedCall, calls[0])
+
+        # Remove second task; scheduled call should be cancelled:
+        task2.stop()
+        self.assertTrue(calls[0].cancelled)
+        self.assertIsNone(coop._delayedCall)
+
+        # Add another task; scheduled call will be recreated:
+        coop.cooperate(iter([1, 2]))
+        self.assertFalse(calls[0].cancelled)
+        self.assertEqual(coop._delayedCall, calls[0])
+
+
+    def test_runningWhenStarted(self):
+        """
+        L{Cooperator.running} reports C{True} if the L{Cooperator}
+        was started on creation.
+        """
+        c = task.Cooperator()
+        self.assertTrue(c.running)
+
+
+    def test_runningWhenNotStarted(self):
+        """
+        L{Cooperator.running} reports C{False} if the L{Cooperator}
+        has not been started.
+        """
+        c = task.Cooperator(started=False)
+        self.assertFalse(c.running)
+
+
+    def test_runningWhenRunning(self):
+        """
+        L{Cooperator.running} reports C{True} when the L{Cooperator}
+        is running.
+        """
+        c = task.Cooperator(started=False)
+        c.start()
+        self.addCleanup(c.stop)
+        self.assertTrue(c.running)
+
+
+    def test_runningWhenStopped(self):
+        """
+        L{Cooperator.running} reports C{False} after the L{Cooperator}
+        has been stopped.
+        """
+        c = task.Cooperator(started=False)
+        c.start()
+        c.stop()
+        self.assertFalse(c.running)
 
 
 
@@ -432,7 +509,7 @@ class RunStateTests(unittest.TestCase):
         self.deferNext()
         self.scheduler.pump()
         self.assertEqual(len(self.work), 1)
-        self.failUnless(isinstance(self.work[0], defer.Deferred))
+        self.assertIsInstance(self.work[0], defer.Deferred)
         self.scheduler.pump()
         self.assertEqual(len(self.work), 1)
         self.task.pause()
@@ -484,8 +561,8 @@ class RunStateTests(unittest.TestCase):
         self.assertEqual(len(results1), 1)
         self.assertEqual(len(results2), 1)
 
-        self.assertIdentical(results1[0], self.task._iterator)
-        self.assertIdentical(results2[0], self.task._iterator)
+        self.assertIs(results1[0], self.task._iterator)
+        self.assertIs(results2[0], self.task._iterator)
 
         self.assertEqual(final1, [1])
         self.assertEqual(final2, [2])

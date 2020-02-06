@@ -1,6 +1,10 @@
-import _base
+from __future__ import absolute_import, division, unicode_literals
 
-class Filter(_base.Filter):
+from . import base
+
+
+class Filter(base.Filter):
+    """Removes optional tags from the token stream"""
     def slider(self):
         previous1 = previous2 = None
         for token in self.source:
@@ -8,14 +12,15 @@ class Filter(_base.Filter):
                 yield previous2, previous1, token
             previous2 = previous1
             previous1 = token
-        yield previous2, previous1, None
+        if previous1 is not None:
+            yield previous2, previous1, None
 
     def __iter__(self):
         for previous, token, next in self.slider():
             type = token["type"]
             if type == "StartTag":
-                if (token["data"] or 
-                    not self.is_optional_start(token["name"], previous, next)):
+                if (token["data"] or
+                        not self.is_optional_start(token["name"], previous, next)):
                     yield token
             elif type == "EndTag":
                 if not self.is_optional_end(token["name"], next):
@@ -55,7 +60,7 @@ class Filter(_base.Filter):
         elif tagname == 'colgroup':
             # A colgroup element's start tag may be omitted if the first thing
             # inside the colgroup element is a col element, and if the element
-            # is not immediately preceeded by another colgroup element whose
+            # is not immediately preceded by another colgroup element whose
             # end tag has been omitted.
             if type in ("StartTag", "EmptyTag"):
                 # XXX: we do not look at the preceding event, so instead we never
@@ -67,13 +72,13 @@ class Filter(_base.Filter):
         elif tagname == 'tbody':
             # A tbody element's start tag may be omitted if the first thing
             # inside the tbody element is a tr element, and if the element is
-            # not immediately preceeded by a tbody, thead, or tfoot element
+            # not immediately preceded by a tbody, thead, or tfoot element
             # whose end tag has been omitted.
             if type == "StartTag":
                 # omit the thead and tfoot elements' end tag when they are
                 # immediately followed by a tbody element. See is_optional_end.
                 if previous and previous['type'] == 'EndTag' and \
-                  previous['name'] in ('tbody','thead','tfoot'):
+                        previous['name'] in ('tbody', 'thead', 'tfoot'):
                     return False
                 return next["name"] == 'tr'
             else:
@@ -121,10 +126,10 @@ class Filter(_base.Filter):
             # there is no more content in the parent element.
             if type in ("StartTag", "EmptyTag"):
                 return next["name"] in ('address', 'article', 'aside',
-                                        'blockquote', 'datagrid', 'dialog', 
+                                        'blockquote', 'datagrid', 'dialog',
                                         'dir', 'div', 'dl', 'fieldset', 'footer',
                                         'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-                                        'header', 'hr', 'menu', 'nav', 'ol', 
+                                        'header', 'hr', 'menu', 'nav', 'ol',
                                         'p', 'pre', 'section', 'table', 'ul')
             else:
                 return type == "EndTag" or type is None

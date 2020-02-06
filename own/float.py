@@ -4,6 +4,9 @@ from math import sin, cos, sqrt
 import util
 import optparse
 import time
+import sys
+if sys.version_info[0] > 2:
+    xrange = range
 
 class Point(object):
 

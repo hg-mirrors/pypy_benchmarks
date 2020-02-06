@@ -1,7 +1,0 @@
-include NEWS
-include README
-include Makefile
-include COPYING
-recursive-include docs conf.py *.txt Makefile make.bat
-recursive-include examples *.py
-graft dulwich/tests/data

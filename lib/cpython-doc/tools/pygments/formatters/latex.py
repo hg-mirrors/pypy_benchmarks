@@ -5,13 +5,17 @@
 
     Formatter for LaTeX fancyvrb output.
 
-    :copyright: Copyright 2006-2010 by the Pygments team, see AUTHORS.
+    :copyright: Copyright 2006-2019 by the Pygments team, see AUTHORS.
     :license: BSD, see LICENSE for details.
 """
 
+from __future__ import division
+
 from pygments.formatter import Formatter
+from pygments.lexer import Lexer
 from pygments.token import Token, STANDARD_TYPES
-from pygments.util import get_bool_opt, get_int_opt, StringIO
+from pygments.util import get_bool_opt, get_int_opt, StringIO, xrange, \
+    iteritems
 
 
 __all__ = ['LatexFormatter']
@@ -21,13 +25,21 @@ def escape_tex(text, commandprefix):
     return text.replace('\\', '\x00'). \
                 replace('{', '\x01'). \
                 replace('}', '\x02'). \
-                replace('^', '\x03'). \
-                replace('_', '\x04'). \
                 replace('\x00', r'\%sZbs{}' % commandprefix). \
                 replace('\x01', r'\%sZob{}' % commandprefix). \
                 replace('\x02', r'\%sZcb{}' % commandprefix). \
-                replace('\x03', r'\%sZca{}' % commandprefix). \
-                replace('\x04', r'\%sZus{}' % commandprefix)
+                replace('^', r'\%sZca{}' % commandprefix). \
+                replace('_', r'\%sZus{}' % commandprefix). \
+                replace('&', r'\%sZam{}' % commandprefix). \
+                replace('<', r'\%sZlt{}' % commandprefix). \
+                replace('>', r'\%sZgt{}' % commandprefix). \
+                replace('#', r'\%sZsh{}' % commandprefix). \
+                replace('%', r'\%sZpc{}' % commandprefix). \
+                replace('$', r'\%sZdl{}' % commandprefix). \
+                replace('-', r'\%sZhy{}' % commandprefix). \
+                replace("'", r'\%sZsq{}' % commandprefix). \
+                replace('"', r'\%sZdq{}' % commandprefix). \
+                replace('~', r'\%sZti{}' % commandprefix)
 
 
 DOC_TEMPLATE = r'''
@@ -81,6 +93,9 @@ DOC_TEMPLATE = r'''
 # * \PY@tok@classname sets the \PY@it etc. to reflect the chosen style
 #   for its class.
 # * \PY resets the style, parses the classnames and then calls \PY@do.
+#
+# Tip: to read this code, print it out in substituted form using e.g.
+# >>> print STYLE_TEMPLATE % {'cp': 'PY'}
 
 STYLE_TEMPLATE = r'''
 \makeatletter
@@ -101,6 +116,16 @@ STYLE_TEMPLATE = r'''
 \def\%(cp)sZob{\char`\{}
 \def\%(cp)sZcb{\char`\}}
 \def\%(cp)sZca{\char`\^}
+\def\%(cp)sZam{\char`\&}
+\def\%(cp)sZlt{\char`\<}
+\def\%(cp)sZgt{\char`\>}
+\def\%(cp)sZsh{\char`\#}
+\def\%(cp)sZpc{\char`\%%}
+\def\%(cp)sZdl{\char`\$}
+\def\%(cp)sZhy{\char`\-}
+\def\%(cp)sZsq{\char`\'}
+\def\%(cp)sZdq{\char`\"}
+\def\%(cp)sZti{\char`\~}
 %% for compatibility with earlier versions
 \def\%(cp)sZat{@}
 \def\%(cp)sZlb{[}
@@ -131,12 +156,12 @@ class LatexFormatter(Formatter):
 
     .. sourcecode:: latex
 
-        \begin{Verbatim}[commandchars=@\[\]]
-        @PY[k][def ]@PY[n+nf][foo](@PY[n][bar]):
-            @PY[k][pass]
+        \begin{Verbatim}[commandchars=\\\{\}]
+        \PY{k}{def }\PY{n+nf}{foo}(\PY{n}{bar}):
+            \PY{k}{pass}
         \end{Verbatim}
 
-    The special command used here (``@PY``) and all the other macros it needs
+    The special command used here (``\PY``) and all the other macros it needs
     are output by the `get_style_defs` method.
 
     With the `full` option, a complete LaTeX document is output, including
@@ -184,19 +209,40 @@ class LatexFormatter(Formatter):
     `commandprefix`
         The LaTeX commands used to produce colored output are constructed
         using this prefix and some letters (default: ``'PY'``).
-        *New in Pygments 0.7.*
 
-        *New in Pygments 0.10:* the default is now ``'PY'`` instead of ``'C'``.
+        .. versionadded:: 0.7
+        .. versionchanged:: 0.10
+           The default is now ``'PY'`` instead of ``'C'``.
 
     `texcomments`
         If set to ``True``, enables LaTeX comment lines.  That is, LaTex markup
         in comment tokens is not escaped so that LaTeX can render it (default:
-        ``False``).  *New in Pygments 1.2.*
+        ``False``).
+
+        .. versionadded:: 1.2
 
     `mathescape`
         If set to ``True``, enables LaTeX math mode escape in comments. That
         is, ``'$...$'`` inside a comment will trigger math mode (default:
-        ``False``).  *New in Pygments 1.2.*
+        ``False``).
+
+        .. versionadded:: 1.2
+
+    `escapeinside`
+        If set to a string of length 2, enables escaping to LaTeX. Text
+        delimited by these 2 characters is read as LaTeX code and
+        typeset accordingly. It has no effect in string literals. It has
+        no effect in comments if `texcomments` or `mathescape` is
+        set. (default: ``''``).
+
+        .. versionadded:: 2.0
+
+    `envname`
+        Allows you to pick an alternative environment name replacing Verbatim.
+        The alternate environment still has to support Verbatim's option syntax.
+        (default: ``'Verbatim'``).
+
+        .. versionadded:: 2.0
     """
     name = 'LaTeX'
     aliases = ['latex', 'tex']
@@ -214,9 +260,15 @@ class LatexFormatter(Formatter):
         self.commandprefix = options.get('commandprefix', 'PY')
         self.texcomments = get_bool_opt(options, 'texcomments', False)
         self.mathescape = get_bool_opt(options, 'mathescape', False)
+        self.escapeinside = options.get('escapeinside', '')
+        if len(self.escapeinside) == 2:
+            self.left = self.escapeinside[0]
+            self.right = self.escapeinside[1]
+        else:
+            self.escapeinside = ''
+        self.envname = options.get('envname', u'Verbatim')
 
         self._create_stylesheet()
-
 
     def _create_stylesheet(self):
         t2n = self.ttype2name = {Token: ''}
@@ -225,7 +277,7 @@ class LatexFormatter(Formatter):
 
         def rgbcolor(col):
             if col:
-                return ','.join(['%.2f' %(int(col[i] + col[i + 1], 16) / 255.0)
+                return ','.join(['%.2f' % (int(col[i] + col[i + 1], 16) / 255.0)
                                  for i in (0, 2, 4)])
             else:
                 return '1,1,1'
@@ -249,11 +301,13 @@ class LatexFormatter(Formatter):
                 cmndef += (r'\def\$$@tc##1{\textcolor[rgb]{%s}{##1}}' %
                            rgbcolor(ndef['color']))
             if ndef['border']:
-                cmndef += (r'\def\$$@bc##1{\fcolorbox[rgb]{%s}{%s}{##1}}' %
+                cmndef += (r'\def\$$@bc##1{\setlength{\fboxsep}{0pt}'
+                           r'\fcolorbox[rgb]{%s}{%s}{\strut ##1}}' %
                            (rgbcolor(ndef['border']),
                             rgbcolor(ndef['bgcolor'])))
             elif ndef['bgcolor']:
-                cmndef += (r'\def\$$@bc##1{\colorbox[rgb]{%s}{##1}}' %
+                cmndef += (r'\def\$$@bc##1{\setlength{\fboxsep}{0pt}'
+                           r'\colorbox[rgb]{%s}{\strut ##1}}' %
                            rgbcolor(ndef['bgcolor']))
             if cmndef == '':
                 continue
@@ -268,8 +322,9 @@ class LatexFormatter(Formatter):
         """
         cp = self.commandprefix
         styles = []
-        for name, definition in self.cmd2def.iteritems():
-            styles.append(r'\def\%s@tok@%s{%s}' % (cp, name, definition))
+        for name, definition in iteritems(self.cmd2def):
+            styles.append(r'\expandafter\def\csname %s@tok@%s\endcsname{%s}' %
+                          (cp, name, definition))
         return STYLE_TEMPLATE % {'cp': self.commandprefix,
                                  'styles': '\n'.join(styles)}
 
@@ -282,17 +337,17 @@ class LatexFormatter(Formatter):
             realoutfile = outfile
             outfile = StringIO()
 
-        outfile.write(r'\begin{Verbatim}[commandchars=\\\{\}')
+        outfile.write(u'\\begin{' + self.envname + u'}[commandchars=\\\\\\{\\}')
         if self.linenos:
             start, step = self.linenostart, self.linenostep
-            outfile.write(',numbers=left' +
-                          (start and ',firstnumber=%d' % start or '') +
-                          (step and ',stepnumber=%d' % step or ''))
-        if self.mathescape or self.texcomments:
-            outfile.write(r',codes={\catcode`\$=3\catcode`\^=7\catcode`\_=8}')
+            outfile.write(u',numbers=left' +
+                          (start and u',firstnumber=%d' % start or u'') +
+                          (step and u',stepnumber=%d' % step or u''))
+        if self.mathescape or self.texcomments or self.escapeinside:
+            outfile.write(u',codes={\\catcode`\\$=3\\catcode`\\^=7\\catcode`\\_=8}')
         if self.verboptions:
-            outfile.write(',' + self.verboptions)
-        outfile.write(']\n')
+            outfile.write(u',' + self.verboptions)
+        outfile.write(u']\n')
 
         for ttype, value in tokensource:
             if ttype in Token.Comment:
@@ -305,7 +360,7 @@ class LatexFormatter(Formatter):
                         start += value[i]
 
                     value = value[len(start):]
-                    start = escape_tex(start, self.commandprefix)
+                    start = escape_tex(start, cp)
 
                     # ... but do not escape inside comment.
                     value = start + value
@@ -315,13 +370,26 @@ class LatexFormatter(Formatter):
                     in_math = False
                     for i, part in enumerate(parts):
                         if not in_math:
-                            parts[i] = escape_tex(part, self.commandprefix)
+                            parts[i] = escape_tex(part, cp)
                         in_math = not in_math
                     value = '$'.join(parts)
+                elif self.escapeinside:
+                    text = value
+                    value = ''
+                    while text:
+                        a, sep1, text = text.partition(self.left)
+                        if sep1:
+                            b, sep2, text = text.partition(self.right)
+                            if sep2:
+                                value += escape_tex(a, cp) + b
+                            else:
+                                value += escape_tex(a + sep1 + b, cp)
+                        else:
+                            value += escape_tex(a, cp)
                 else:
-                    value = escape_tex(value, self.commandprefix)
-            else:
-                value = escape_tex(value, self.commandprefix)
+                    value = escape_tex(value, cp)
+            elif ttype not in Token.Escape:
+                value = escape_tex(value, cp)
             styles = []
             while ttype is not Token:
                 try:
@@ -342,13 +410,73 @@ class LatexFormatter(Formatter):
             else:
                 outfile.write(value)
 
-        outfile.write('\\end{Verbatim}\n')
+        outfile.write(u'\\end{' + self.envname + u'}\n')
 
         if self.full:
+            encoding = self.encoding or 'utf8'
+            # map known existings encodings from LaTeX distribution
+            encoding = {
+                'utf_8': 'utf8',
+                'latin_1': 'latin1',
+                'iso_8859_1': 'latin1',
+            }.get(encoding.replace('-', '_'), encoding)
             realoutfile.write(DOC_TEMPLATE %
                 dict(docclass  = self.docclass,
                      preamble  = self.preamble,
                      title     = self.title,
-                     encoding  = self.encoding or 'latin1',
+                     encoding  = encoding,
                      styledefs = self.get_style_defs(),
                      code      = outfile.getvalue()))
+
+
+class LatexEmbeddedLexer(Lexer):
+    """
+    This lexer takes one lexer as argument, the lexer for the language
+    being formatted, and the left and right delimiters for escaped text.
+
+    First everything is scanned using the language lexer to obtain
+    strings and comments. All other consecutive tokens are merged and
+    the resulting text is scanned for escaped segments, which are given
+    the Token.Escape type. Finally text that is not escaped is scanned
+    again with the language lexer.
+    """
+    def __init__(self, left, right, lang, **options):
+        self.left = left
+        self.right = right
+        self.lang = lang
+        Lexer.__init__(self, **options)
+
+    def get_tokens_unprocessed(self, text):
+        buf = ''
+        idx = 0
+        for i, t, v in self.lang.get_tokens_unprocessed(text):
+            if t in Token.Comment or t in Token.String:
+                if buf:
+                    for x in self.get_tokens_aux(idx, buf):
+                        yield x
+                    buf = ''
+                yield i, t, v
+            else:
+                if not buf:
+                    idx = i
+                buf += v
+        if buf:
+            for x in self.get_tokens_aux(idx, buf):
+                yield x
+
+    def get_tokens_aux(self, index, text):
+        while text:
+            a, sep1, text = text.partition(self.left)
+            if a:
+                for i, t, v in self.lang.get_tokens_unprocessed(a):
+                    yield index + i, t, v
+                    index += len(a)
+            if sep1:
+                b, sep2, text = text.partition(self.right)
+                if sep2:
+                    yield index + len(sep1), Token.Escape, b
+                    index += len(sep1) + len(b) + len(sep2)
+                else:
+                    yield index, Token.Error, sep1
+                    index += len(sep1)
+                    text = b

@@ -2,12 +2,14 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-from zope.interface import implements
+from __future__ import division, absolute_import
+
+from zope.interface import implementer
 
 from twisted.web.iweb import IRenderable
-
 from twisted.web.error import MissingRenderMethod, UnexposedMethodError
 from twisted.web.error import MissingTemplateLoader
+
 
 class Expose(object):
     """
@@ -30,7 +32,7 @@ class Expose(object):
         Add one or more functions to the set of exposed functions.
 
         This is a way to declare something about a class definition, similar to
-        L{zope.interface.implements}.  Use it like this::
+        L{zope.interface.declarations.implementer}.  Use it like this::
 
             magic = Expose('perform extra magic')
             class Foo(Bar):
@@ -106,7 +108,7 @@ def renderer():
         class Foo(Element):
             @renderer
             def twiddle(self, request, tag):
-                return tag['Hello, world.']
+                return tag('Hello, world.')
 
         <div xmlns:t="http://twistedmatrix.com/ns/twisted.web.template/0.1">
             <span t:render="twiddle" />
@@ -121,6 +123,7 @@ def renderer():
 
 
 
+@implementer(IRenderable)
 class Element(object):
     """
     Base for classes which can render part of a page.
@@ -133,7 +136,7 @@ class Element(object):
     allows the rendering logic to be easily re-used in different ways.
 
     Element returns render methods which are registered using
-    L{twisted.web.element.renderer}.  For example::
+    L{twisted.web._element.renderer}.  For example::
 
         class Menu(Element):
             @renderer
@@ -148,7 +151,6 @@ class Element(object):
     @ivar loader: The factory which will be used to load documents to
         return from C{render}.
     """
-    implements(IRenderable)
     loader = None
 
     def __init__(self, loader=None):
@@ -181,4 +183,3 @@ class Element(object):
         if loader is None:
             raise MissingTemplateLoader(self)
         return loader.load()
-

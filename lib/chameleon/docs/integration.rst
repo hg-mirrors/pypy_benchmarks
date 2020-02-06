@@ -10,10 +10,10 @@ translation (internationalization) configuration.
 Pyramid
 -------
 
-Chameleon is the default template engine for the `Pyramid
-<http://pylonsproject.org/projects/pyramid/about>`_ framework. See the
-section on `Page Templates
-<http://docs.pylonsproject.org/projects/pyramid/1.1/narr/templates.html#chameleon-zpt-templates>`_ for a complete reference.
+`pyramid_chameleon
+<http://docs.pylonsproject.org/projects/pyramid-chameleon/en/latest/>`_
+is a set of bindings that make templates written for the Chameleon
+templating system work under the Pyramid web framework.
 
 Zope 2 / Plone
 --------------
@@ -39,3 +39,8 @@ in the `grokcore.chameleon
 This package will setup Grok's policy for templating integration and
 associate the Chameleon template components for the ``.cpt`` template
 filename extension.
+
+Django
+------
+
+Install the `django-chameleon-templates <https://bitbucket.org/kveroneau/django-chameleon-templates>`_ app to enable Chameleon as a template engine.

@@ -9,41 +9,36 @@ Component architecture for Twisted, based on Zope3 components.
 Using the Zope3 API directly is strongly recommended. Everything
 you need is in the top-level of the zope.interface package, e.g.::
 
-   from zope.interface import Interface, implements
+   from zope.interface import Interface, implementer
 
    class IFoo(Interface):
        pass
 
+   @implementer(IFoo)
    class Foo:
-       implements(IFoo)
 
-   print IFoo.implementedBy(Foo) # True
-   print IFoo.providedBy(Foo()) # True
+   print(IFoo.implementedBy(Foo)) # True
+   print(IFoo.providedBy(Foo())) # True
 
 L{twisted.python.components.registerAdapter} from this module may be used to
-add to Twisted's global adapter registry. 
+add to Twisted's global adapter registry.
 
 L{twisted.python.components.proxyForInterface} is a factory for classes
 which allow access to only the parts of another class defined by a specified
 interface.
 """
 
-# system imports
-import warnings
+from __future__ import division, absolute_import, print_function
 
 # zope3 imports
 from zope.interface import interface, declarations
 from zope.interface.adapter import AdapterRegistry
 
 # twisted imports
+from twisted.python.compat import NativeStringIO
 from twisted.python import reflect
-from twisted.persisted import styles
+from twisted.python._oldstyle import _oldStyle
 
-
-class ComponentsDeprecationWarning(DeprecationWarning):
-    """
-    Nothing emits this warning anymore.
-    """
 
 
 # Twisted's global adapter registry
@@ -51,25 +46,6 @@ globalRegistry = AdapterRegistry()
 
 # Attribute that registerAdapter looks at. Is this supposed to be public?
 ALLOW_DUPLICATES = 0
-
-# Define a function to find the registered adapter factory, using either a
-# version of Zope Interface which has the `registered' method or an older
-# version which does not.
-if getattr(AdapterRegistry, 'registered', None) is None:
-    def _registered(registry, required, provided):
-        """
-        Return the adapter factory for the given parameters in the given
-        registry, or None if there is not one.
-        """
-        return registry.get(required).selfImplied.get(provided, {}).get('')
-else:
-    def _registered(registry, required, provided):
-        """
-        Return the adapter factory for the given parameters in the given
-        registry, or None if there is not one.
-        """
-        return registry.registered([required], provided)
-
 
 def registerAdapter(adapterFactory, origInterface, *interfaceClasses):
     """Register an adapter class.
@@ -88,7 +64,7 @@ def registerAdapter(adapterFactory, origInterface, *interfaceClasses):
         origInterface = declarations.implementedBy(origInterface)
 
     for interfaceClass in interfaceClasses:
-        factory = _registered(self, origInterface, interfaceClass)
+        factory = self.registered([origInterface], interfaceClass)
         if factory is not None and not ALLOW_DUPLICATES:
             raise ValueError("an adapter (%s) was already registered." % (factory, ))
     for interfaceClass in interfaceClasses:
@@ -110,34 +86,37 @@ def getAdapterFactory(fromInterface, toInterface, default):
     return factory
 
 
+def _addHook(registry):
+    """
+    Add an adapter hook which will attempt to look up adapters in the given
+    registry.
+
+    @type registry: L{zope.interface.adapter.AdapterRegistry}
+
+    @return: The hook which was added, for later use with L{_removeHook}.
+    """
+    lookup = registry.lookup1
+    def _hook(iface, ob):
+        factory = lookup(declarations.providedBy(ob), iface)
+        if factory is None:
+            return None
+        else:
+            return factory(ob)
+    interface.adapter_hooks.append(_hook)
+    return _hook
+
+
+def _removeHook(hook):
+    """
+    Remove a previously added adapter hook.
+
+    @param hook: An object previously returned by a call to L{_addHook}.  This
+        will be removed from the list of adapter hooks.
+    """
+    interface.adapter_hooks.remove(hook)
+
 # add global adapter lookup hook for our newly created registry
-def _hook(iface, ob, lookup=globalRegistry.lookup1):
-    factory = lookup(declarations.providedBy(ob), iface)
-    if factory is None:
-        return None
-    else:
-        return factory(ob)
-interface.adapter_hooks.append(_hook)
-
-## backwardsCompatImplements and fixClassImplements should probably stick around for another
-## release cycle. No harm doing so in any case.
-
-def backwardsCompatImplements(klass):
-    """DEPRECATED.
-
-    Does nothing. Previously handled backwards compat from a
-    zope.interface using class to a class wanting old twisted
-    components interface behaviors.
-    """
-    warnings.warn("components.backwardsCompatImplements doesn't do anything in Twisted 2.3, stop calling it.", ComponentsDeprecationWarning, stacklevel=2)
-
-def fixClassImplements(klass):
-    """DEPRECATED.
-
-    Does nothing. Previously converted class from __implements__ to
-    zope implementation.
-    """
-    warnings.warn("components.fixClassImplements doesn't do anything in Twisted 2.3, stop calling it.", ComponentsDeprecationWarning, stacklevel=2)
+_addHook(globalRegistry)
 
 
 def getRegistry():
@@ -149,6 +128,7 @@ def getRegistry():
 # FIXME: deprecate attribute somehow?
 CannotAdapt = TypeError
 
+@_oldStyle
 class Adapter:
     """I am the default implementation of an Adapter for some interface.
 
@@ -192,7 +172,8 @@ class Adapter:
         return self.original.isuper(iface, adapter)
 
 
-class Componentized(styles.Versioned):
+@_oldStyle
+class Componentized:
     """I am a mixin to allow you to be adapted in various ways persistently.
 
     I define a list of persistent adapters.  This is to allow adapter classes
@@ -213,6 +194,10 @@ class Componentized(styles.Versioned):
         return getAdapterFactory(klass, interfaceClass, default)
 
     def setAdapter(self, interfaceClass, adapterClass):
+        """
+        Cache a provider for the given interface, by adapting C{self} using
+        the given adapter class.
+        """
         self.setComponent(interfaceClass, adapterClass(self))
 
     def addAdapter(self, adapterClass, ignoreClass=0):
@@ -227,6 +212,7 @@ class Componentized(styles.Versioned):
 
     def setComponent(self, interfaceClass, component):
         """
+        Cache a provider of the given interface.
         """
         self._adapterCache[reflect.qual(interfaceClass)] = component
 
@@ -243,8 +229,6 @@ class Componentized(styles.Versioned):
         Otherwise, an 'appropriate' interface is one for which its class has
         been registered as an adapter for my class according to the rules of
         getComponent.
-
-        @return: the list of appropriate interfaces
         """
         for iface in declarations.providedBy(component):
             if (ignoreClass or
@@ -264,7 +248,7 @@ class Componentized(styles.Versioned):
         @return: a list of the interfaces that were removed.
         """
         l = []
-        for k, v in self._adapterCache.items():
+        for k, v in list(self._adapterCache.items()):
             if v is component:
                 del self._adapterCache[k]
                 l.append(reflect.namedObject(k))
@@ -287,7 +271,7 @@ class Componentized(styles.Versioned):
         True on your adapter class.
         """
         k = reflect.qual(interface)
-        if self._adapterCache.has_key(k):
+        if k in self._adapterCache:
             return self._adapterCache[k]
         else:
             adapter = interface.__adapt__(self)
@@ -312,9 +296,8 @@ class ReprableComponentized(Componentized):
         Componentized.__init__(self)
 
     def __repr__(self):
-        from cStringIO import StringIO
         from pprint import pprint
-        sio = StringIO()
+        sio = NativeStringIO()
         pprint(self._adapterCache, sio)
         return sio.getvalue()
 
@@ -362,14 +345,18 @@ class _ProxiedClassMethod(object):
 
     @ivar methodName: the name of the method which this should invoke when
         called.
-    @type methodName: C{str}
+    @type methodName: L{str}
+
+    @ivar __name__: The name of the method being proxied (the same as
+        C{methodName}).
+    @type __name__: L{str}
 
     @ivar originalAttribute: name of the attribute of the proxy where the
         original object is stored.
-    @type orginalAttribute: C{str}
+    @type originalAttribute: L{str}
     """
     def __init__(self, methodName, originalAttribute):
-        self.methodName = methodName
+        self.methodName = self.__name__ = methodName
         self.originalAttribute = originalAttribute
 
 
@@ -391,8 +378,8 @@ class _ProxiedClassMethod(object):
 class _ProxyDescriptor(object):
     """
     A descriptor which will proxy attribute access, mutation, and
-    deletion to the L{original} attribute of the object it is being accessed
-    from.
+    deletion to the L{_ProxyDescriptor.originalAttribute} of the
+    object it is being accessed from.
 
     @ivar attributeName: the name of the attribute which this descriptor will
         retrieve from instances' C{original} attribute.
@@ -400,7 +387,7 @@ class _ProxyDescriptor(object):
 
     @ivar originalAttribute: name of the attribute of the proxy where the
         original object is stored.
-    @type orginalAttribute: C{str}
+    @type originalAttribute: C{str}
     """
     def __init__(self, attributeName, originalAttribute):
         self.attributeName = attributeName
@@ -409,7 +396,7 @@ class _ProxyDescriptor(object):
 
     def __get__(self, oself, type=None):
         """
-        Retrieve the C{self.attributeName} property from L{oself}.
+        Retrieve the C{self.attributeName} property from I{oself}.
         """
         if oself is None:
             return _ProxiedClassMethod(self.attributeName,
@@ -420,7 +407,7 @@ class _ProxyDescriptor(object):
 
     def __set__(self, oself, value):
         """
-        Set the C{self.attributeName} property of L{oself}.
+        Set the C{self.attributeName} property of I{oself}.
         """
         original = getattr(oself, self.originalAttribute)
         setattr(original, self.attributeName, value)
@@ -428,7 +415,7 @@ class _ProxyDescriptor(object):
 
     def __delete__(self, oself):
         """
-        Delete the C{self.attributeName} property of L{oself}.
+        Delete the C{self.attributeName} property of I{oself}.
         """
         original = getattr(oself, self.originalAttribute)
         delattr(original, self.attributeName)
@@ -436,13 +423,7 @@ class _ProxyDescriptor(object):
 
 
 __all__ = [
-    # Sticking around:
-    "ComponentsDeprecationWarning",
     "registerAdapter", "getAdapterFactory",
     "Adapter", "Componentized", "ReprableComponentized", "getRegistry",
     "proxyForInterface",
-
-    # Deprecated:
-    "backwardsCompatImplements",
-    "fixClassImplements",
 ]

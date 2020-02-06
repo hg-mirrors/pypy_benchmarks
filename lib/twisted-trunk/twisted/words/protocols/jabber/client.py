@@ -3,10 +3,12 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-from twisted.internet import defer
-from twisted.words.xish import domish, xpath, utility
+from __future__ import absolute_import, division
+
+from twisted.python.compat import _coercedUnicode, unicode
 from twisted.words.protocols.jabber import xmlstream, sasl, error
 from twisted.words.protocols.jabber.jid import JID
+from twisted.words.xish import domish, xpath, utility
 
 NS_XMPP_STREAMS = 'urn:ietf:params:xml:ns:xmpp-streams'
 NS_XMPP_BIND = 'urn:ietf:params:xml:ns:xmpp-bind'
@@ -37,7 +39,7 @@ class IQ(domish.Element):
         @type xmlstream: L{xmlstream.XmlStream}
         @param xmlstream: XmlStream to use for transmission of this IQ
 
-        @type type: L{str}
+        @type type: C{str}
         @param type: IQ type identifier ('get' or 'set')
         """
 
@@ -59,7 +61,7 @@ class IQ(domish.Element):
         Call this method to send this IQ request via the associated XmlStream.
 
         @param to: Jabber ID of the entity to send the request to
-        @type to: L{str}
+        @type to: C{str}
 
         @returns: Callback list for this IQ. Any callbacks added to this list
                   will be fired when the result comes back.
@@ -83,6 +85,14 @@ class IQAuthInitializer(object):
     This protocol is defined in
     U{JEP-0078<http://www.jabber.org/jeps/jep-0078.html>} and mainly serves for
     compatibility with pre-XMPP-1.0 server implementations.
+
+    @cvar INVALID_USER_EVENT: Token to signal that authentication failed, due
+        to invalid username.
+    @type INVALID_USER_EVENT: L{str}
+
+    @cvar AUTH_FAILED_EVENT: Token to signal that authentication failed, due to
+        invalid password.
+    @type AUTH_FAILED_EVENT: L{str}
     """
 
     INVALID_USER_EVENT    = "//event/client/basicauth/invaliduser"
@@ -106,7 +116,7 @@ class IQAuthInitializer(object):
 
     def _cbAuthQuery(self, iq):
         jid = self.xmlstream.authenticator.jid
-        password = self.xmlstream.authenticator.password
+        password = _coercedUnicode(self.xmlstream.authenticator.password)
 
         # Construct auth request
         reply = xmlstream.IQ(self.xmlstream, "set")
@@ -116,8 +126,8 @@ class IQAuthInitializer(object):
 
         # Prefer digest over plaintext
         if DigestAuthQry.matches(iq):
-            digest = xmlstream.hashPassword(self.xmlstream.sid, unicode(password))
-            reply.query.addElement("digest", content = digest)
+            digest = xmlstream.hashPassword(self.xmlstream.sid, password)
+            reply.query.addElement("digest", content=unicode(digest))
         else:
             reply.query.addElement("password", content = password)
 
@@ -168,12 +178,23 @@ class BasicAuthenticator(xmlstream.ConnectAuthenticator):
     calling the L{registerAccount} method. If the registration succeeds, a
     L{xmlstream.STREAM_AUTHD_EVENT} will be fired. Otherwise, one of the above
     errors will be generated (again).
+
+
+    @cvar INVALID_USER_EVENT: See L{IQAuthInitializer.INVALID_USER_EVENT}.
+    @type INVALID_USER_EVENT: L{str}
+
+    @cvar AUTH_FAILED_EVENT: See L{IQAuthInitializer.AUTH_FAILED_EVENT}.
+    @type AUTH_FAILED_EVENT: L{str}
+
+    @cvar REGISTER_FAILED_EVENT: Token to signal that registration failed.
+    @type REGISTER_FAILED_EVENT: L{str}
+
     """
 
     namespace = "jabber:client"
 
-    INVALID_USER_EVENT    = IQAuthInitializer.INVALID_USER_EVENT
-    AUTH_FAILED_EVENT     = IQAuthInitializer.AUTH_FAILED_EVENT
+    INVALID_USER_EVENT = IQAuthInitializer.INVALID_USER_EVENT
+    AUTH_FAILED_EVENT = IQAuthInitializer.AUTH_FAILED_EVENT
     REGISTER_FAILED_EVENT = "//event/client/basicauth/registerfailed"
 
     def __init__(self, jid, password):
@@ -185,14 +206,10 @@ class BasicAuthenticator(xmlstream.ConnectAuthenticator):
         xs.version = (0, 0)
         xmlstream.ConnectAuthenticator.associateWithStream(self, xs)
 
-        inits = [ (xmlstream.TLSInitiatingInitializer, False),
-                  (IQAuthInitializer, True),
-                ]
-
-        for initClass, required in inits:
-            init = initClass(xs)
-            init.required = required
-            xs.initializers.append(init)
+        xs.initializers = [
+            xmlstream.TLSInitiatingInitializer(xs, required=False),
+            IQAuthInitializer(xs),
+        ]
 
     # TODO: move registration into an Initializer?
 
@@ -276,12 +293,12 @@ class SessionInitializer(xmlstream.BaseFeatureInitiatingInitializer):
 
     def start(self):
         iq = xmlstream.IQ(self.xmlstream, 'set')
-        session = iq.addElement((NS_XMPP_SESSION, 'session'))
+        iq.addElement((NS_XMPP_SESSION, 'session'))
         return iq.send()
 
 
 
-def XMPPClientFactory(jid, password):
+def XMPPClientFactory(jid, password, configurationForTLS=None):
     """
     Client factory for XMPP 1.0 (only).
 
@@ -293,12 +310,23 @@ def XMPPClientFactory(jid, password):
 
     @param jid: Jabber ID to connect with.
     @type jid: L{jid.JID}
+
     @param password: password to authenticate with.
     @type password: L{unicode}
+
+    @param configurationForTLS: An object which creates appropriately
+        configured TLS connections. This is passed to C{startTLS} on the
+        transport and is preferably created using
+        L{twisted.internet.ssl.optionsForClientTLS}. If C{None}, the default is
+        to verify the server certificate against the trust roots as provided by
+        the platform. See L{twisted.internet._sslverify.platformTrust}.
+    @type configurationForTLS: L{IOpenSSLClientConnectionCreator} or C{None}
+
     @return: XML stream factory.
     @rtype: L{xmlstream.XmlStreamFactory}
     """
-    a = XMPPAuthenticator(jid, password)
+    a = XMPPAuthenticator(jid, password,
+                          configurationForTLS=configurationForTLS)
     return xmlstream.XmlStreamFactory(a)
 
 
@@ -319,11 +347,11 @@ class XMPPAuthenticator(xmlstream.ConnectAuthenticator):
     object.
 
     After inspection of the failure, initialization can then be restarted by
-    calling L{initializeStream}. For example, in case of authentication
-    failure, a user may be given the opportunity to input the correct password.
-    By setting the L{password} instance variable and restarting initialization,
-    the stream authentication step is then retried, and subsequent steps are
-    performed if succesful.
+    calling L{ConnectAuthenticator.initializeStream}. For example, in case of
+    authentication failure, a user may be given the opportunity to input the
+    correct password.  By setting the L{password} instance variable and restarting
+    initialization, the stream authentication step is then retried, and subsequent
+    steps are performed if successful.
 
     @ivar jid: Jabber ID to authenticate with. This may contain a resource
                part, as a suggestion to the server for resource binding. A
@@ -333,16 +361,29 @@ class XMPPAuthenticator(xmlstream.ConnectAuthenticator):
                resource binding step, and this is stored in this instance
                variable.
     @type jid: L{jid.JID}
+
     @ivar password: password to be used during SASL authentication.
     @type password: L{unicode}
     """
 
     namespace = 'jabber:client'
 
-    def __init__(self, jid, password):
+    def __init__(self, jid, password, configurationForTLS=None):
+        """
+        @param configurationForTLS: An object which creates appropriately
+            configured TLS connections. This is passed to C{startTLS} on the
+            transport and is preferably created using
+            L{twisted.internet.ssl.optionsForClientTLS}. If C{None}, the
+            default is to verify the server certificate against the trust roots
+            as provided by the platform. See
+            L{twisted.internet._sslverify.platformTrust}.
+        @type configurationForTLS: L{IOpenSSLClientConnectionCreator} or
+            C{None}
+        """
         xmlstream.ConnectAuthenticator.__init__(self, jid.host)
         self.jid = jid
         self.password = password
+        self._configurationForTLS = configurationForTLS
 
 
     def associateWithStream(self, xs):
@@ -351,19 +392,17 @@ class XMPPAuthenticator(xmlstream.ConnectAuthenticator):
 
         Populates stream's list of initializers, along with their
         requiredness. This list is used by
-        L{ConnectAuthenticator.initializeStream} to perform the initalization
+        L{ConnectAuthenticator.initializeStream} to perform the initialization
         steps.
         """
         xmlstream.ConnectAuthenticator.associateWithStream(self, xs)
 
-        xs.initializers = [CheckVersionInitializer(xs)]
-        inits = [ (xmlstream.TLSInitiatingInitializer, False),
-                  (sasl.SASLInitiatingInitializer, True),
-                  (BindInitializer, False),
-                  (SessionInitializer, False),
+        xs.initializers = [
+                CheckVersionInitializer(xs),
+                xmlstream.TLSInitiatingInitializer(
+                    xs, required=True,
+                    configurationForTLS=self._configurationForTLS),
+                sasl.SASLInitiatingInitializer(xs, required=True),
+                BindInitializer(xs, required=True),
+                SessionInitializer(xs, required=False),
                 ]
-
-        for initClass, required in inits:
-            init = initClass(xs)
-            init.required = required
-            xs.initializers.append(init)

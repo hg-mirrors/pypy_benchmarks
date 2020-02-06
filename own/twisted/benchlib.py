@@ -1,4 +1,4 @@
-
+from __future__ import print_function
 import sys
 from twisted.internet.defer import Deferred
 from twisted.internet import reactor
@@ -40,12 +40,12 @@ def benchmark_report(acceptCount, duration, name):
     if acceptCount < 10:
         failure = 1
         raise Exception("Run out of TCP connections")
-    print PRINT_TEMPL % {
+    print(PRINT_TEMPL % {
         'stats'    : acceptCount / duration,
         'name'     : name,
         'count'    : acceptCount,
         'duration' : duration
-        }
+        })
 
 def setup_driver(f, argv, reactor):
     from twisted.python.usage import Options
@@ -105,7 +105,7 @@ def sleep_to_purge_connexions():
     # For tests that do a lot of TCP connexions, we sleep a bit more than
     # 2 minutes at the end.  This makes sure that the sockets have time to
     # get out of the TIME_WAIT state before we do anything more.
-    print >> sys.stderr, "sleeping up to 132 seconds...",
+    print("sleeping up to 132 seconds...", file=sys.stderr)
     import time, os
     for i in range(24):
         g = os.popen('netstat -atn')
@@ -122,4 +122,4 @@ def sleep_to_purge_connexions():
             data.count('TIME_WAIT') < 20):
             break
         time.sleep(5.5)
-    print >> sys.stderr, "done"
+    print('done', file=sys.stderr)

@@ -6,20 +6,19 @@
 Serial Port Protocol
 """
 
-# system imports
-import os, errno
+from __future__ import division, absolute_import
 
 # dependent on pyserial ( http://pyserial.sf.net/ )
 # only tested w/ 1.18 (5 Dec 2002)
-import serial
-from serial import PARITY_NONE, PARITY_EVEN, PARITY_ODD
-from serial import STOPBITS_ONE, STOPBITS_TWO
-from serial import FIVEBITS, SIXBITS, SEVENBITS, EIGHTBITS
+from serial import PARITY_NONE
+from serial import STOPBITS_ONE
+from serial import EIGHTBITS
 
-from serialport import BaseSerialPort
+from twisted.internet.serialport import BaseSerialPort
 
-# twisted imports
-from twisted.internet import abstract, fdesc, main
+from twisted.internet import abstract, fdesc
+
+
 
 class SerialPort(BaseSerialPort, abstract.FileDescriptor):
     """
@@ -28,11 +27,14 @@ class SerialPort(BaseSerialPort, abstract.FileDescriptor):
 
     connected = 1
 
-    def __init__(self, protocol, deviceNameOrPortNumber, reactor, 
+    def __init__(self, protocol, deviceNameOrPortNumber, reactor,
         baudrate = 9600, bytesize = EIGHTBITS, parity = PARITY_NONE,
         stopbits = STOPBITS_ONE, timeout = 0, xonxoff = 0, rtscts = 0):
         abstract.FileDescriptor.__init__(self, reactor)
-        self._serial = serial.Serial(deviceNameOrPortNumber, baudrate = baudrate, bytesize = bytesize, parity = parity, stopbits = stopbits, timeout = timeout, xonxoff = xonxoff, rtscts = rtscts)
+        self._serial = self._serialFactory(
+            deviceNameOrPortNumber, baudrate=baudrate, bytesize=bytesize,
+            parity=parity, stopbits=stopbits, timeout=timeout,
+            xonxoff=xonxoff, rtscts=rtscts)
         self.reactor = reactor
         self.flushInput()
         self.flushOutput()
@@ -40,8 +42,10 @@ class SerialPort(BaseSerialPort, abstract.FileDescriptor):
         self.protocol.makeConnection(self)
         self.startReading()
 
+
     def fileno(self):
         return self._serial.fd
+
 
     def writeSomeData(self, data):
         """
@@ -49,12 +53,21 @@ class SerialPort(BaseSerialPort, abstract.FileDescriptor):
         """
         return fdesc.writeToFD(self.fileno(), data)
 
+
     def doRead(self):
         """
         Some data's readable from serial device.
         """
         return fdesc.readFromFD(self.fileno(), self.protocol.dataReceived)
 
+
     def connectionLost(self, reason):
+        """
+        Called when the serial port disconnects.
+
+        Will call C{connectionLost} on the protocol that is handling the
+        serial data.
+        """
         abstract.FileDescriptor.connectionLost(self, reason)
         self._serial.close()
+        self.protocol.connectionLost(reason)

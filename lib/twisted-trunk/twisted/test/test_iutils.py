@@ -5,11 +5,16 @@
 Test running processes with the APIs in L{twisted.internet.utils}.
 """
 
+from __future__ import division, absolute_import
+
 import warnings, os, stat, sys, signal
 
+from twisted.python.compat import _PY3
 from twisted.python.runtime import platform
 from twisted.trial import unittest
 from twisted.internet import error, reactor, utils, interfaces
+from twisted.internet.defer import Deferred
+from twisted.python.test.test_util import SuppressedWarningsTests
 
 
 class ProcessUtilsTests(unittest.TestCase):
@@ -31,9 +36,8 @@ class ProcessUtilsTests(unittest.TestCase):
         path to it.
         """
         script = self.mktemp()
-        scriptFile = file(script, 'wt')
-        scriptFile.write(os.linesep.join(sourceLines) + os.linesep)
-        scriptFile.close()
+        with open(script, 'wt') as scriptFile:
+            scriptFile.write(os.linesep.join(sourceLines) + os.linesep)
         return os.path.abspath(script)
 
 
@@ -44,11 +48,17 @@ class ProcessUtilsTests(unittest.TestCase):
         """
         scriptFile = self.makeSourceFile([
                 "import sys",
-                "for s in 'hello world\\n':",
-                "    sys.stdout.write(s)",
+                "for s in b'hello world\\n':",
+                "    if hasattr(sys.stdout, 'buffer'):",
+                "        # Python 3",
+                "        s = bytes([s])",
+                "        sys.stdout.buffer.write(s)",
+                "    else:",
+                "        # Python 2",
+                "        sys.stdout.write(s)",
                 "    sys.stdout.flush()"])
         d = utils.getProcessOutput(self.exe, ['-u', scriptFile])
-        return d.addCallback(self.assertEqual, "hello world\n")
+        return d.addCallback(self.assertEqual, b"hello world\n")
 
 
     def test_outputWithErrorIgnored(self):
@@ -86,7 +96,7 @@ class ProcessUtilsTests(unittest.TestCase):
             'sys.stderr.flush()'])
 
         d = utils.getProcessOutput(self.exe, ['-u', scriptFile], errortoo=True)
-        return d.addCallback(self.assertEqual, "foofoo")
+        return d.addCallback(self.assertEqual, b"foofoo")
 
 
     def test_value(self):
@@ -107,17 +117,27 @@ class ProcessUtilsTests(unittest.TestCase):
         stdout, the data written to the child's stderr, and the exit status of
         the child.
         """
-        exe = sys.executable
         scriptFile = self.makeSourceFile([
             "import sys",
-            "sys.stdout.write('hello world!\\n')",
-            "sys.stderr.write('goodbye world!\\n')",
+            "if hasattr(sys.stdout, 'buffer'):",
+            "    # Python 3",
+            "    sys.stdout.buffer.write(b'hello world!\\n')",
+            "    sys.stderr.buffer.write(b'goodbye world!\\n')",
+            "else:",
+            "    # Python 2",
+            "    sys.stdout.write(b'hello world!\\n')",
+            "    sys.stderr.write(b'goodbye world!\\n')",
             "sys.exit(1)"
             ])
 
-        def gotOutputAndValue((out, err, code)):
-            self.assertEqual(out, "hello world!\n")
-            self.assertEqual(err, "goodbye world!" + os.linesep)
+        def gotOutputAndValue(out_err_code):
+            out, err, code = out_err_code
+            self.assertEqual(out, b"hello world!\n")
+            if _PY3:
+                self.assertEqual(err, b"goodbye world!\n")
+            else:
+                self.assertEqual(err, b"goodbye world!" +
+                                      os.linesep)
             self.assertEqual(code, 1)
         d = utils.getProcessOutputAndValue(self.exe, ["-u", scriptFile])
         return d.addCallback(gotOutputAndValue)
@@ -127,7 +147,7 @@ class ProcessUtilsTests(unittest.TestCase):
         """
         If the child process exits because of a signal, the L{Deferred}
         returned by L{getProcessOutputAndValue} fires a L{Failure} of a tuple
-        containing the the child's stdout, stderr, and the signal which caused
+        containing the child's stdout, stderr, and the signal which caused
         it to exit.
         """
         # Use SIGKILL here because it's guaranteed to be delivered. Using
@@ -141,15 +161,15 @@ class ProcessUtilsTests(unittest.TestCase):
             "sys.stderr.flush()",
             "os.kill(os.getpid(), signal.SIGKILL)"])
 
-        def gotOutputAndValue((out, err, sig)):
-            self.assertEqual(out, "stdout bytes\n")
-            self.assertEqual(err, "stderr bytes\n")
+        def gotOutputAndValue(out_err_sig):
+            out, err, sig = out_err_sig
+            self.assertEqual(out, b"stdout bytes\n")
+            self.assertEqual(err, b"stderr bytes\n")
             self.assertEqual(sig, signal.SIGKILL)
 
         d = utils.getProcessOutputAndValue(self.exe, ['-u', scriptFile])
         d = self.assertFailure(d, tuple)
         return d.addCallback(gotOutputAndValue)
-
     if platform.isWindows():
         test_outputSignal.skip = "Windows doesn't have real signals."
 
@@ -161,7 +181,7 @@ class ProcessUtilsTests(unittest.TestCase):
                 "import os, sys",
                 "sys.stdout.write(os.getcwd())"])
         d = utilFunc(self.exe, ['-u', scriptFile], path=dir)
-        d.addCallback(check, dir)
+        d.addCallback(check, dir.encode(sys.getfilesystemencoding()))
         return d
 
 
@@ -188,7 +208,8 @@ class ProcessUtilsTests(unittest.TestCase):
         L{getProcessOutputAndValue} runs the given command with the working
         directory given by the C{path} parameter.
         """
-        def check((out, err, status), dir):
+        def check(out_err_status, dir):
+            out, err, status = out_err_status
             self.assertEqual(out, dir)
             self.assertEqual(status, 0)
         return self._pathTest(utils.getProcessOutputAndValue, check)
@@ -202,7 +223,7 @@ class ProcessUtilsTests(unittest.TestCase):
         scriptFile = self.makeSourceFile([
                 "import os, sys, stat",
                 # Fix the permissions so we can report the working directory.
-                # On OS X (and maybe elsewhere), os.getcwd() fails with EACCES
+                # On macOS (and maybe elsewhere), os.getcwd() fails with EACCES
                 # if +x is missing from the working directory.
                 "os.chmod(%r, stat.S_IXUSR)" % (dir,),
                 "sys.stdout.write(os.getcwd())"])
@@ -218,8 +239,11 @@ class ProcessUtilsTests(unittest.TestCase):
             os.chmod, dir, stat.S_IMODE(os.stat('.').st_mode))
         os.chmod(dir, 0)
 
-        d = utilFunc(self.exe, ['-u', scriptFile])
-        d.addCallback(check, dir)
+        # Pass in -S so that if run using the coverage .pth trick, it won't be
+        # loaded and cause Coverage to try and get the current working
+        # directory (see the comments above why this can be a problem) on OSX.
+        d = utilFunc(self.exe, ['-S', '-u', scriptFile])
+        d.addCallback(check, dir.encode(sys.getfilesystemencoding()))
         return d
 
 
@@ -252,30 +276,56 @@ class ProcessUtilsTests(unittest.TestCase):
         directory as the parent process and succeeds even if the current
         working directory is not accessible.
         """
-        def check((out, err, status), dir):
+        def check(out_err_status, dir):
+            out, err, status = out_err_status
             self.assertEqual(out, dir)
             self.assertEqual(status, 0)
         return self._defaultPathTest(
             utils.getProcessOutputAndValue, check)
 
 
+    def test_get_processOutputAndValueStdin(self):
+        """
+        Standard input can be made available to the child process by passing
+        bytes for the `stdinBytes` parameter.
+        """
+        scriptFile = self.makeSourceFile([
+            "import sys",
+            "sys.stdout.write(sys.stdin.read())",
+        ])
+        stdinBytes = b"These are the bytes to see."
+        d = utils.getProcessOutputAndValue(
+            self.exe,
+            ['-u', scriptFile],
+            stdinBytes=stdinBytes,
+        )
 
-class WarningSuppression(unittest.TestCase):
-    def setUp(self):
-        self.warnings = []
-        self.originalshow = warnings.showwarning
-        warnings.showwarning = self.showwarning
+        def gotOutputAndValue(out_err_code):
+            out, err, code = out_err_code
+            # Avoid making an exact equality comparison in case there is extra
+            # random output on stdout (warnings, stray print statements,
+            # logging, who knows).
+            self.assertIn(stdinBytes, out)
+            self.assertEqual(0, code)
+        d.addCallback(gotOutputAndValue)
+        return d
 
 
-    def tearDown(self):
-        warnings.showwarning = self.originalshow
 
+class SuppressWarningsTests(unittest.SynchronousTestCase):
+    """
+    Tests for L{utils.suppressWarnings}.
+    """
+    def test_suppressWarnings(self):
+        """
+        L{utils.suppressWarnings} decorates a function so that the given
+        warnings are suppressed.
+        """
+        result = []
+        def showwarning(self, *a, **kw):
+            result.append((a, kw))
+        self.patch(warnings, "showwarning", showwarning)
 
-    def showwarning(self, *a, **kw):
-        self.warnings.append((a, kw))
-
-
-    def testSuppressWarnings(self):
         def f(msg):
             warnings.warn(msg)
         g = utils.suppressWarnings(f, (('ignore',), dict(message="This is message")))
@@ -283,14 +333,59 @@ class WarningSuppression(unittest.TestCase):
         # Start off with a sanity check - calling the original function
         # should emit the warning.
         f("Sanity check message")
-        self.assertEqual(len(self.warnings), 1)
+        self.assertEqual(len(result), 1)
 
         # Now that that's out of the way, call the wrapped function, and
         # make sure no new warnings show up.
         g("This is message")
-        self.assertEqual(len(self.warnings), 1)
+        self.assertEqual(len(result), 1)
 
         # Finally, emit another warning which should not be ignored, and
         # make sure it is not.
         g("Unignored message")
-        self.assertEqual(len(self.warnings), 2)
+        self.assertEqual(len(result), 2)
+
+
+
+class DeferredSuppressedWarningsTests(SuppressedWarningsTests):
+    """
+    Tests for L{utils.runWithWarningsSuppressed}, the version that supports
+    Deferreds.
+    """
+    # Override the non-Deferred-supporting function from the base class with
+    # the function we are testing in this class:
+    runWithWarningsSuppressed = staticmethod(utils.runWithWarningsSuppressed)
+
+    def test_deferredCallback(self):
+        """
+        If the function called by L{utils.runWithWarningsSuppressed} returns a
+        C{Deferred}, the warning filters aren't removed until the Deferred
+        fires.
+        """
+        filters = [(("ignore", ".*foo.*"), {}),
+                   (("ignore", ".*bar.*"), {})]
+        result = Deferred()
+        self.runWithWarningsSuppressed(filters, lambda: result)
+        warnings.warn("ignore foo")
+        result.callback(3)
+        warnings.warn("ignore foo 2")
+        self.assertEqual(
+            ["ignore foo 2"], [w['message'] for w in self.flushWarnings()])
+
+
+    def test_deferredErrback(self):
+        """
+        If the function called by L{utils.runWithWarningsSuppressed} returns a
+        C{Deferred}, the warning filters aren't removed until the Deferred
+        fires with an errback.
+        """
+        filters = [(("ignore", ".*foo.*"), {}),
+                   (("ignore", ".*bar.*"), {})]
+        result = Deferred()
+        d = self.runWithWarningsSuppressed(filters, lambda: result)
+        warnings.warn("ignore foo")
+        result.errback(ZeroDivisionError())
+        d.addErrback(lambda f: f.trap(ZeroDivisionError))
+        warnings.warn("ignore foo 2")
+        self.assertEqual(
+            ["ignore foo 2"], [w['message'] for w in self.flushWarnings()])

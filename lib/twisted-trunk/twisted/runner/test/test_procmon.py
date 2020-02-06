@@ -4,6 +4,7 @@
 """
 Tests for L{twisted.runner.procmon}.
 """
+import pickle
 
 from twisted.trial import unittest
 from twisted.runner.procmon import LoggingProtocol, ProcessMonitor
@@ -11,6 +12,7 @@ from twisted.internet.error import (ProcessDone, ProcessTerminated,
                                     ProcessExitedAlready)
 from twisted.internet.task import Clock
 from twisted.python.failure import Failure
+from twisted.logger import globalLogPublisher
 from twisted.test.proto_helpers import MemoryReactor
 
 
@@ -129,6 +131,31 @@ class ProcmonTests(unittest.TestCase):
         self.pm.threshold = 10
 
 
+    def test_reprLooksGood(self):
+        """
+        Repr includes all details
+        """
+        self.pm.addProcess("foo", ["arg1", "arg2"],
+                           uid=1, gid=2, env={})
+        representation = repr(self.pm)
+        self.assertIn('foo', representation)
+        self.assertIn('1', representation)
+        self.assertIn('2', representation)
+
+
+    def test_simpleReprLooksGood(self):
+        """
+        Repr does not include unneeded details.
+
+        Values of attributes that just mean "inherit from launching
+        process" do not appear in the repr of a process.
+        """
+        self.pm.addProcess("foo", ["arg1", "arg2"], env={})
+        representation = repr(self.pm)
+        self.assertNotIn('(', representation)
+        self.assertNotIn(')', representation)
+
+
     def test_getStateIncludesProcesses(self):
         """
         The list of monitored processes must be included in the pickle state.
@@ -159,7 +186,7 @@ class ProcmonTests(unittest.TestCase):
                           {"foo": (["arg1", "arg2"], 1, 2, {})})
         self.pm.startService()
         self.reactor.advance(0)
-        self.assertEqual(self.pm.protocols.keys(), ["foo"])
+        self.assertEqual(list(self.pm.protocols.keys()), ["foo"])
 
 
     def test_addProcessDuplicateKeyError(self):
@@ -184,6 +211,18 @@ class ProcmonTests(unittest.TestCase):
         self.reactor.advance(0)
         self.assertEqual(
             self.reactor.spawnedProcesses[0]._environment, fakeEnv)
+
+
+    def test_addProcessCwd(self):
+        """
+        L{ProcessMonitor.addProcess} takes an C{cwd} parameter that is passed
+        to L{IReactorProcess.spawnProcess}.
+        """
+        self.pm.startService()
+        self.pm.addProcess("foo", ["foo"], cwd='/mnt/lala')
+        self.reactor.advance(0)
+        self.assertEqual(
+            self.reactor.spawnedProcesses[0]._path, '/mnt/lala')
 
 
     def test_removeProcess(self):
@@ -227,7 +266,7 @@ class ProcmonTests(unittest.TestCase):
         """
         self.pm.addProcess("foo", ["foo"])
         self.pm.startProcess("foo")
-        self.assertIdentical(None, self.pm.startProcess("foo"))
+        self.assertIsNone(self.pm.startProcess("foo"))
 
 
     def test_startProcessUnknownKeyError(self):
@@ -303,8 +342,124 @@ class ProcmonTests(unittest.TestCase):
         rescheduled, but in the meantime, the service is stopped.
         """
         self.pm.addProcess("foo", ["foo"])
-        self.assertIdentical(None, self.pm.stopProcess("foo"))
+        self.assertIsNone(self.pm.stopProcess("foo"))
 
+
+    def test_outputReceivedCompleteLine(self):
+        """
+        Getting a complete output line on stdout generates a log message.
+        """
+        events = []
+        self.addCleanup(globalLogPublisher.removeObserver, events.append)
+        globalLogPublisher.addObserver(events.append)
+        self.pm.addProcess("foo", ["foo"])
+        # Schedule the process to start
+        self.pm.startService()
+        # Advance the reactor to start the process
+        self.reactor.advance(0)
+        self.assertIn("foo", self.pm.protocols)
+        # Long time passes
+        self.reactor.advance(self.pm.threshold)
+        # Process greets
+        self.pm.protocols["foo"].outReceived(b'hello world!\n')
+        self.assertEquals(len(events), 1)
+        namespace = events[0]['log_namespace']
+        stream = events[0]['stream']
+        tag = events[0]['tag']
+        line = events[0]['line']
+        self.assertEquals(namespace, 'twisted.runner.procmon.ProcessMonitor')
+        self.assertEquals(stream, 'stdout')
+        self.assertEquals(tag, 'foo')
+        self.assertEquals(line, u'hello world!')
+
+
+    def test_ouputReceivedCompleteErrLine(self):
+        """
+        Getting a complete output line on stderr generates a log message.
+        """
+        events = []
+        self.addCleanup(globalLogPublisher.removeObserver, events.append)
+        globalLogPublisher.addObserver(events.append)
+        self.pm.addProcess("foo", ["foo"])
+        # Schedule the process to start
+        self.pm.startService()
+        # Advance the reactor to start the process
+        self.reactor.advance(0)
+        self.assertIn("foo", self.pm.protocols)
+        # Long time passes
+        self.reactor.advance(self.pm.threshold)
+        # Process greets
+        self.pm.protocols["foo"].errReceived(b'hello world!\n')
+        self.assertEquals(len(events), 1)
+        namespace = events[0]['log_namespace']
+        stream = events[0]['stream']
+        tag = events[0]['tag']
+        line = events[0]['line']
+        self.assertEquals(namespace, 'twisted.runner.procmon.ProcessMonitor')
+        self.assertEquals(stream, 'stderr')
+        self.assertEquals(tag, 'foo')
+        self.assertEquals(line, u'hello world!')
+
+
+
+
+    def test_outputReceivedCompleteLineInvalidUTF8(self):
+        """
+        Getting invalid UTF-8 results in the repr of the raw message
+        """
+        events = []
+        self.addCleanup(globalLogPublisher.removeObserver, events.append)
+        globalLogPublisher.addObserver(events.append)
+        self.pm.addProcess("foo", ["foo"])
+        # Schedule the process to start
+        self.pm.startService()
+        # Advance the reactor to start the process
+        self.reactor.advance(0)
+        self.assertIn("foo", self.pm.protocols)
+        # Long time passes
+        self.reactor.advance(self.pm.threshold)
+        # Process greets
+        self.pm.protocols["foo"].outReceived(b'\xffhello world!\n')
+        self.assertEquals(len(events), 1)
+        message = events[0]
+        namespace = message['log_namespace']
+        stream = message['stream']
+        tag = message['tag']
+        output = message['line']
+        self.assertEquals(namespace, 'twisted.runner.procmon.ProcessMonitor')
+        self.assertEquals(stream, 'stdout')
+        self.assertEquals(tag, 'foo')
+        self.assertEquals(output, repr(b'\xffhello world!'))
+
+
+    def test_outputReceivedPartialLine(self):
+        """
+        Getting partial line results in no events until process end
+        """
+        events = []
+        self.addCleanup(globalLogPublisher.removeObserver, events.append)
+        globalLogPublisher.addObserver(events.append)
+        self.pm.addProcess("foo", ["foo"])
+        # Schedule the process to start
+        self.pm.startService()
+        # Advance the reactor to start the process
+        self.reactor.advance(0)
+        self.assertIn("foo", self.pm.protocols)
+        # Long time passes
+        self.reactor.advance(self.pm.threshold)
+        # Process greets
+        self.pm.protocols["foo"].outReceived(b'hello world!')
+        self.assertEquals(len(events), 0)
+        self.pm.protocols["foo"].processEnded(Failure(ProcessDone(0)))
+        self.assertEquals(len(events), 1)
+        namespace = events[0]['log_namespace']
+        stream = events[0]['stream']
+        tag = events[0]['tag']
+        line = events[0]['line']
+        self.assertEquals(namespace, 'twisted.runner.procmon.ProcessMonitor')
+        self.assertEquals(stream, 'stdout')
+        self.assertEquals(tag, 'foo')
+        self.assertEquals(line, u'hello world!')
 
     def test_connectionLostLongLivedProcess(self):
         """
@@ -405,7 +560,7 @@ class ProcmonTests(unittest.TestCase):
         self.pm.startService()
         # advance the reactor to start the process
         self.reactor.advance(0)
-        self.assertTrue("foo" in self.pm.protocols)
+        self.assertIn("foo", self.pm.protocols)
 
 
     def test_stopService(self):
@@ -430,6 +585,22 @@ class ProcmonTests(unittest.TestCase):
         # The processes shouldn't be restarted
         self.assertEqual({}, self.pm.protocols)
 
+
+    def test_restartAllRestartsOneProcess(self):
+        """
+        L{ProcessMonitor.restartAll} succeeds when there is one process.
+        """
+        self.pm.addProcess("foo", ["foo"])
+        self.pm.startService()
+        self.reactor.advance(1)
+        self.pm.restartAll()
+        # Just enough time for the process to die,
+        # not enough time to start a new one.
+        self.reactor.advance(1)
+        processes = list(self.reactor.spawnedProcesses)
+        myProcess = processes.pop()
+        self.assertEquals(processes, [])
+        self.assertIsNone(myProcess.pid)
 
     def test_stopServiceCancelRestarts(self):
         """
@@ -476,53 +647,63 @@ class ProcmonTests(unittest.TestCase):
         self.assertEqual(self.pm.protocols, {})
 
 
-    def test_activeAttributeEqualsRunning(self):
+
+class DeprecationTests(unittest.SynchronousTestCase):
+
+    """
+    Tests that check functionality that should be deprecated is deprecated.
+    """
+
+    def setUp(self):
         """
-        L{ProcessMonitor.active} unneccessarily duplicates the standard
-        L{IService.running} flag.
+        Create reactor and process monitor.
         """
-        self.assertEqual(self.pm.active, self.pm.running)
-        self.pm.startService()
-        self.assertEqual(self.pm.active, self.pm.running)
+        self.reactor = DummyProcessReactor()
+        self.pm = ProcessMonitor(reactor=self.reactor)
 
 
-    def test_activeAttributeDeprecation(self):
+    def test_toTuple(self):
         """
-        L{ProcessMonitor.active} unneccessarily duplicates the standard
-        L{IService.running} flag and is therefore deprecated.
+        _Process.toTuple is deprecated.
+
+        When getting the deprecated processes property, the actual
+        data (kept in the class _Process) is converted to a tuple --
+        which produces a DeprecationWarning per process so converted.
         """
-        def getActive():
-            return self.pm.active
-        expectedMessage = "active is deprecated since Twisted 10.1.0.  Use " \
-                          "running instead."
+        self.pm.addProcess("foo", ["foo"])
+        myprocesses = self.pm.processes
+        self.assertEquals(len(myprocesses), 1)
+        warnings = self.flushWarnings()
+        foundToTuple = False
+        for warning in warnings:
+            self.assertIs(warning['category'], DeprecationWarning)
+            if 'toTuple' in warning['message']:
+                foundToTuple = True
+        self.assertTrue(foundToTuple,
+                        "no tuple deprecation found:{}".format(repr(warnings)))
 
-        self.assertWarns(DeprecationWarning,
-                         expectedMessage, __file__, getActive)
 
-
-    def test_consistencyAttributeDeprecation(self):
+    def test_processes(self):
         """
-        L{ProcessMonitor.consistency} is no longer needed since the removal of
-        the ProcessMonitor._checkConsistency function and is therefore
-        deprecated.
+        Accessing L{ProcessMonitor.processes} results in deprecation warning
+
+        Even when there are no processes, and thus no process is converted
+        to a tuple, accessing the L{ProcessMonitor.processes} property
+        should generate its own DeprecationWarning.
         """
-        def getConsistency():
-            return self.pm.consistency
-        expectedMessage = "consistency is deprecated since Twisted 10.1.0."
+        myProcesses = self.pm.processes
+        self.assertEquals(myProcesses, {})
+        warnings = self.flushWarnings()
+        first = warnings.pop(0)
+        self.assertIs(first['category'], DeprecationWarning)
+        self.assertEquals(warnings, [])
 
-        self.assertWarns(DeprecationWarning,
-                         expectedMessage, __file__, getConsistency)
 
-
-    def test_consistencyDelayAttributeDeprecation(self):
+    def test_getstate(self):
         """
-        L{ProcessMonitor.consistencyDelay} is no longer needed since the
-        removal of the ProcessMonitor._checkConsistency function and is
-        therefore deprecated.
+        Pickling an L{ProcessMonitor} results in deprecation warnings
         """
-        def getConsistencyDelay():
-            return self.pm.consistencyDelay
-        expectedMessage = "consistencyDelay is deprecated since Twisted 10.1.0."
-
-        self.assertWarns(DeprecationWarning,
-                         expectedMessage, __file__, getConsistencyDelay)
+        pickle.dumps(self.pm)
+        warnings = self.flushWarnings()
+        for warning in warnings:
+            self.assertIs(warning['category'], DeprecationWarning)

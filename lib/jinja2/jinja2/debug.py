@@ -7,14 +7,15 @@
     ugly stuff with the Python traceback system in order to achieve tracebacks
     with correct line numbers, locals and contents.
 
-    :copyright: (c) 2010 by the Jinja Team.
+    :copyright: (c) 2017 by the Jinja Team.
     :license: BSD, see LICENSE for more details.
 """
 import sys
 import traceback
-from types import TracebackType
-from jinja2.utils import CodeType, missing, internal_code
+from types import TracebackType, CodeType
+from jinja2.utils import missing, internal_code
 from jinja2.exceptions import TemplateSyntaxError
+from jinja2._compat import iteritems, reraise, PY2
 
 # on pypy we can take advantage of transparent proxies
 try:
@@ -25,7 +26,7 @@ except ImportError:
 
 # how does the raise helper look like?
 try:
-    exec "raise TypeError, 'foo'"
+    exec("raise TypeError, 'foo'")
 except SyntaxError:
     raise_helper = 'raise __jinja_exception__[1]'
 except TypeError:
@@ -158,7 +159,7 @@ def translate_exception(exc_info, initial_skip=0):
     frames = []
 
     # skip some internal frames if wanted
-    for x in xrange(initial_skip):
+    for x in range(initial_skip):
         if tb is not None:
             tb = tb.tb_next
     initial_tb = tb
@@ -189,9 +190,39 @@ def translate_exception(exc_info, initial_skip=0):
     # reraise it unchanged.
     # XXX: can we backup here?  when could this happen?
     if not frames:
-        raise exc_info[0], exc_info[1], exc_info[2]
+        reraise(exc_info[0], exc_info[1], exc_info[2])
 
     return ProcessedTraceback(exc_info[0], exc_info[1], frames)
+
+
+def get_jinja_locals(real_locals):
+    ctx = real_locals.get('context')
+    if ctx:
+        locals = ctx.get_all().copy()
+    else:
+        locals = {}
+
+    local_overrides = {}
+
+    for name, value in iteritems(real_locals):
+        if not name.startswith('l_') or value is missing:
+            continue
+        try:
+            _, depth, name = name.split('_', 2)
+            depth = int(depth)
+        except ValueError:
+            continue
+        cur_depth = local_overrides.get(name, (-1,))[0]
+        if cur_depth < depth:
+            local_overrides[name] = (depth, value)
+
+    for name, (_, value) in iteritems(local_overrides):
+        if value is missing:
+            locals.pop(name, None)
+        else:
+            locals[name] = value
+
+    return locals
 
 
 def fake_exc_info(exc_info, filename, lineno):
@@ -200,15 +231,7 @@ def fake_exc_info(exc_info, filename, lineno):
 
     # figure the real context out
     if tb is not None:
-        real_locals = tb.tb_frame.f_locals.copy()
-        ctx = real_locals.get('context')
-        if ctx:
-            locals = ctx.get_all()
-        else:
-            locals = {}
-        for name, value in real_locals.iteritems():
-            if name.startswith('l_') and value is not missing:
-                locals[name[2:]] = value
+        locals = get_jinja_locals(tb.tb_frame.f_locals)
 
         # if there is a local called __jinja_exception__, we get
         # rid of it to not break the debug functionality.
@@ -244,17 +267,26 @@ def fake_exc_info(exc_info, filename, lineno):
                 location = 'block "%s"' % function[6:]
             else:
                 location = 'template'
-        code = CodeType(0, code.co_nlocals, code.co_stacksize,
-                        code.co_flags, code.co_code, code.co_consts,
-                        code.co_names, code.co_varnames, filename,
-                        location, code.co_firstlineno,
-                        code.co_lnotab, (), ())
-    except:
+
+        if PY2:
+            code = CodeType(0, code.co_nlocals, code.co_stacksize,
+                            code.co_flags, code.co_code, code.co_consts,
+                            code.co_names, code.co_varnames, filename,
+                            location, code.co_firstlineno,
+                            code.co_lnotab, (), ())
+        else:
+            code = CodeType(0, code.co_kwonlyargcount,
+                            code.co_nlocals, code.co_stacksize,
+                            code.co_flags, code.co_code, code.co_consts,
+                            code.co_names, code.co_varnames, filename,
+                            location, code.co_firstlineno,
+                            code.co_lnotab, (), ())
+    except Exception as e:
         pass
 
     # execute the code and catch the new traceback
     try:
-        exec code in globals, locals
+        exec(code, globals, locals)
     except:
         exc_info = sys.exc_info()
         new_tb = exc_info[2].tb_next
@@ -272,11 +304,15 @@ def _init_ugly_crap():
     import ctypes
     from types import TracebackType
 
-    # figure out side of _Py_ssize_t
-    if hasattr(ctypes.pythonapi, 'Py_InitModule4_64'):
-        _Py_ssize_t = ctypes.c_int64
+    if PY2:
+        # figure out size of _Py_ssize_t for Python 2:
+        if hasattr(ctypes.pythonapi, 'Py_InitModule4_64'):
+            _Py_ssize_t = ctypes.c_int64
+        else:
+            _Py_ssize_t = ctypes.c_int
     else:
-        _Py_ssize_t = ctypes.c_int
+        # platform ssize_t on Python 3
+        _Py_ssize_t = ctypes.c_ssize_t
 
     # regular python
     class _PyObject(ctypes.Structure):
@@ -329,11 +365,14 @@ def _init_ugly_crap():
 # proxies.
 tb_set_next = None
 if tproxy is None:
-    try:
-        from jinja2._debugsupport import tb_set_next
-    except ImportError:
+    # traceback.tb_next can be modified since CPython 3.7
+    if sys.version_info >= (3, 7):
+        def tb_set_next(tb, next):
+            tb.tb_next = next
+    else:
+        # On Python 3.6 and older, use ctypes
         try:
             tb_set_next = _init_ugly_crap()
-        except:
+        except Exception:
             pass
-    del _init_ugly_crap
+del _init_ugly_crap

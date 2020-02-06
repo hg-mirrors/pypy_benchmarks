@@ -5,9 +5,12 @@
 Test cases for twisted.words.xish.utility
 """
 
+from __future__ import absolute_import, division
+
+from collections import OrderedDict
+
 from twisted.trial import unittest
 
-from twisted.python.util import OrderedDict
 from twisted.words.xish import utility
 from twisted.words.xish.domish import Element
 from twisted.words.xish.utility import EventDispatcher
@@ -53,7 +56,7 @@ class OrderedCallbackTracker:
 
 
 
-class EventDispatcherTest(unittest.TestCase):
+class EventDispatcherTests(unittest.TestCase):
     """
     Tests for L{EventDispatcher}.
     """
@@ -99,7 +102,7 @@ class EventDispatcherTest(unittest.TestCase):
         """
         Test adding two observers for the same query.
 
-        When the event is dispath both of the observers need to be called.
+        When the event is dispatched both of the observers need to be called.
         """
         d = EventDispatcher()
         cb1 = CallbackTracker()
@@ -308,7 +311,7 @@ class EventDispatcherTest(unittest.TestCase):
 
 
 
-class XmlPipeTest(unittest.TestCase):
+class XmlPipeTests(unittest.TestCase):
     """
     Tests for L{twisted.words.xish.utility.XmlPipe}.
     """

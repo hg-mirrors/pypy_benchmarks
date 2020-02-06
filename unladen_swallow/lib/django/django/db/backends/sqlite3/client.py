@@ -1,10 +1,12 @@
-from django.db.backends import BaseDatabaseClient
-from django.conf import settings
-import os
+import subprocess
+
+from django.db.backends.base.client import BaseDatabaseClient
+
 
 class DatabaseClient(BaseDatabaseClient):
     executable_name = 'sqlite3'
 
     def runshell(self):
-        args = ['', settings.DATABASE_NAME]
-        os.execvp(self.executable_name, args)
+        args = [self.executable_name,
+                self.connection.settings_dict['NAME']]
+        subprocess.check_call(args)

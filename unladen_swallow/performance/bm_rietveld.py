@@ -42,6 +42,12 @@ import cPickle
 import optparse
 import os
 import time
+import sys
+
+if sys.version_info[0] > 2:
+    print('cannot run rietveld on Python3')
+    sys.exit(42)
+
 
 # Local imports
 import util

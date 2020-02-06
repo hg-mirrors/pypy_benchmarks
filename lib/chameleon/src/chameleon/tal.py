@@ -29,7 +29,7 @@ except NameError:
 
 try:
     # optional library: `zope.interface`
-    import interfaces
+    from chameleon import interfaces
     import zope.interface
 except ImportError:
     interfaces = None
@@ -37,9 +37,10 @@ except ImportError:
 
 NAME = r"[a-zA-Z_][-a-zA-Z0-9_]*"
 DEFINE_RE = re.compile(r"(?s)\s*(?:(global|local)\s+)?" +
-                       r"(%s|\(%s(?:,\s*%s)*\))\s+(.*)\Z" % (NAME, NAME, NAME))
-SUBST_RE = re.compile(r"\s*(?:(text|structure)\s+)?(.*)\Z", re.S)
-ATTR_RE = re.compile(r"\s*([^\s]+)\s+([^\s].*)\Z", re.S)
+                       r"(%s|\(%s(?:,\s*%s)*\))\s+(.*)\Z" % (NAME, NAME, NAME),
+                       re.UNICODE)
+SUBST_RE = re.compile(r"\s*(?:(text|structure)\s+)?(.*)\Z", re.S | re.UNICODE)
+ATTR_RE = re.compile(r"\s*([^\s{}'\"]+)\s+([^\s].*)\Z", re.S | re.UNICODE)
 
 ENTITY_RE = re.compile(r'(&(#?)(x?)(\d{1,5}|\w{1,8});)')
 
@@ -56,6 +57,8 @@ WHITELIST = frozenset([
     "script",
     "switch",
     "case",
+    "xmlns",
+    "xml"
     ])
 
 
@@ -80,18 +83,21 @@ def split_parts(arg):
 
 
 def parse_attributes(clause):
-    attrs = {}
+    attrs = []
+    seen = set()
     for part in split_parts(clause):
         m = ATTR_RE.match(part)
         if not m:
-            raise LanguageError(
-                "Bad syntax in attributes.", clause)
-        name, expr = groups(m, part)
-        if name in attrs:
+            name, expr = None, part.strip()
+        else:
+            name, expr = groups(m, part)
+
+        if name in seen:
             raise LanguageError(
                 "Duplicate attribute name in attributes.", part)
 
-        attrs[name] = expr
+        seen.add(name)
+        attrs.append((name, expr))
 
     return attrs
 
@@ -110,11 +116,46 @@ def parse_substitution(clause):
 
 
 def parse_defines(clause):
+    """
+    Parses a tal:define value.
+
+    # Basic syntax, implicit local
+    >>> parse_defines('hello lovely')
+    [('local', ('hello',), 'lovely')]
+
+    # Explicit local
+    >>> parse_defines('local hello lovely')
+    [('local', ('hello',), 'lovely')]
+
+    # With global
+    >>> parse_defines('global hello lovely')
+    [('global', ('hello',), 'lovely')]
+
+    # Multiple expressions
+    >>> parse_defines('hello lovely; tea time')
+    [('local', ('hello',), 'lovely'), ('local', ('tea',), 'time')]
+
+    # With multiple names
+    >>> parse_defines('(hello, howdy) lovely')
+    [('local', ['hello', 'howdy'], 'lovely')]
+
+    # With unicode whitespace
+    >>> try:
+    ...     s = '\xc2\xa0hello lovely'.decode('utf-8')
+    ... except AttributeError:
+    ...     s = '\xa0hello lovely'
+    >>> from chameleon.utils import unicode_string
+    >>> parse_defines(s) == [
+    ...     ('local', ('hello',), 'lovely')
+    ... ]
+    True
+
+    """
     defines = []
     for part in split_parts(clause):
         m = DEFINE_RE.match(part)
         if m is None:
-            return
+            raise LanguageError("Invalid define syntax", part)
         context, name, expr = groups(m, part)
         context = context or "local"
 
@@ -128,7 +169,8 @@ def parse_defines(clause):
     return defines
 
 
-def prepare_attributes(attrs, dyn_attributes, ns_attributes, drop_ns):
+def prepare_attributes(attrs, dyn_attributes, i18n_attributes,
+                       ns_attributes, drop_ns):
     drop = set([attribute['name'] for attribute, (ns, value)
                 in zip(attrs, ns_attributes)
                 if ns in drop_ns or (
@@ -139,6 +181,7 @@ def prepare_attributes(attrs, dyn_attributes, ns_attributes, drop_ns):
 
     attributes = []
     normalized = {}
+    computed = []
 
     for attribute in attrs:
         name = attribute['name']
@@ -157,8 +200,9 @@ def prepare_attributes(attrs, dyn_attributes, ns_attributes, drop_ns):
 
         normalized[name.lower()] = len(attributes) - 1
 
-    for name, expr in dyn_attributes.items():
-        index = normalized.get(name.lower())
+    for name, expr in dyn_attributes:
+        index = normalized.get(name.lower()) if name else None
+
         if index is not None:
             _, text, quote, space, eq, _ = attributes[index]
             add = attributes.__setitem__
@@ -169,18 +213,25 @@ def prepare_attributes(attrs, dyn_attributes, ns_attributes, drop_ns):
             eq = "="
             index = len(attributes)
             add = attributes.insert
+            if name is not None:
+                normalized[name.lower()] = len(attributes) - 1
 
         attribute = name, text, quote, space, eq, expr
         add(index, attribute)
+
+    for name in i18n_attributes:
+        attr = name.lower()
+        if attr not in normalized:
+            attributes.append((name, name, '"', " ", "=", None))
+            normalized[attr] = len(attributes) - 1
 
     return attributes
 
 
 class RepeatItem(object):
-    if interfaces is not None:
-        zope.interface.implements(interfaces.ITALESIterator)
-
     __slots__ = "length", "_iterator"
+
+    __allow_access_to_unprotected_subobjects__ = True
 
     def __init__(self, iterator, length):
         self.length = length
@@ -192,7 +243,7 @@ class RepeatItem(object):
     try:
         iter(()).__len__
     except AttributeError:
-        @property
+        @descriptorint
         def index(self):
             try:
                 remaining = self._iterator.__length_hint__()
@@ -200,16 +251,16 @@ class RepeatItem(object):
                 remaining = len(tuple(copy.copy(self._iterator)))
             return self.length - remaining - 1
     else:
-        @property
+        @descriptorint
         def index(self):
             remaining = self._iterator.__len__()
             return self.length - remaining - 1
 
-    @property
+    @descriptorint
     def start(self):
         return self.index == 0
 
-    @property
+    @descriptorint
     def end(self):
         return self.index == self.length - 1
 
@@ -254,6 +305,15 @@ class RepeatItem(object):
         """
 
         return self.index % 2 == 0 and 'even' or ''
+
+    @descriptorstr
+    def parity(self):
+        """Return 'odd' or 'even' depending on the position's parity
+
+        Useful for assigning CSS class names to table rows.
+        """
+
+        return self.index % 2 == 0 and 'even' or 'odd'
 
     def next(self):
         raise NotImplementedError(
@@ -361,6 +421,10 @@ class RepeatItem(object):
         return self.Roman().lower()
 
 
+if interfaces is not None:
+    zope.interface.classImplements(RepeatItem, interfaces.ITALESIterator)
+
+
 class RepeatDict(dict):
     """Repeat dictionary implementation.
 
@@ -372,36 +436,39 @@ class RepeatDict(dict):
     >>> repeat['numbers']
     <chameleon.tal.RepeatItem object at ...>
 
-    """
+    >>> repeat.numbers
+    <chameleon.tal.RepeatItem object at ...>
 
-    __slots__ = "__setitem__", "__getitem__", "__getattr__"
+    >>> getattr(repeat, 'missing_key', None) is None
+    True
+
+	>>> try:
+	...     from chameleon import interfaces
+	...     interfaces.ITALESIterator(repeat,None) is None
+	... except ImportError:
+	...     True
+	...
+	True
+	"""
+
+    __slots__ = "__setitem__", "__getitem__"
 
     def __init__(self, d):
         self.__setitem__ = d.__setitem__
         self.__getitem__ = d.__getitem__
-        self.__getattr__ = d.__getitem__
+
+    def __getattr__(self,key):
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError(key)
+
 
     def __call__(self, key, iterable):
         """We coerce the iterable to a tuple and return an iterator
         after registering it in the repeat dictionary."""
 
-        try:
-            iterable = tuple(iterable)
-        except TypeError:
-            if iterable is None:
-                iterable = ()
-            else:
-                # The message below to the TypeError is the Python
-                # 2.5-style exception message. Python 2.4.X also
-                # raises a TypeError, but with a different message.
-                # ("TypeError: iteration over non-sequence").  The
-                # Python 2.5 error message is more helpful.  We
-                # construct the 2.5-style message explicitly here so
-                # that both Python 2.4.X and Python 2.5+ will raise
-                # the same error.  This makes writing the tests eaiser
-                # and makes the output easier to understand.
-                raise TypeError("%r object is not iterable" %
-                                type(iterable).__name__)
+        iterable = list(iterable) if iterable is not None else ()
 
         length = len(iterable)
         iterator = iter(iterable)
@@ -415,9 +482,6 @@ class RepeatDict(dict):
 class ErrorInfo(object):
     """Information about an exception passed to an on-error handler."""
 
-    if interfaces is not None:
-        zope.interface.implements(interfaces.ITALExpressionErrorInfo)
-
     def __init__(self, err, position=(None, None)):
         if isinstance(err, Exception):
             self.type = err.__class__
@@ -427,3 +491,7 @@ class ErrorInfo(object):
             self.value = None
         self.lineno = position[0]
         self.offset = position[1]
+
+
+if interfaces is not None:
+    zope.interface.classImplements(ErrorInfo, interfaces.ITALExpressionErrorInfo)

@@ -5,29 +5,23 @@
 
     Utility functions.
 
-    :copyright: (c) 2010 by the Jinja Team.
+    :copyright: (c) 2017 by the Jinja Team.
     :license: BSD, see LICENSE for more details.
 """
 import re
-import sys
+import json
 import errno
-try:
-    from urllib.parse import quote_from_bytes as url_quote
-except ImportError:
-    from urllib import quote as url_quote
-try:
-    from thread import allocate_lock
-except ImportError:
-    from dummy_thread import allocate_lock
 from collections import deque
-from itertools import imap
+from threading import Lock
+from jinja2._compat import text_type, string_types, implements_iterator, \
+     url_quote, abc
 
 
 _word_split_re = re.compile(r'(\s+)')
 _punctuation_re = re.compile(
     '^(?P<lead>(?:%s)*)(?P<middle>.*?)(?P<trail>(?:%s)*)$' % (
-        '|'.join(imap(re.escape, ('(', '<', '&lt;'))),
-        '|'.join(imap(re.escape, ('.', ',', ')', '>', '\n', '&gt;')))
+        '|'.join(map(re.escape, ('(', '<', '&lt;'))),
+        '|'.join(map(re.escape, ('.', ',', ')', '>', '\n', '&gt;')))
     )
 )
 _simple_email_re = re.compile(r'^\S+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+$')
@@ -42,77 +36,9 @@ missing = type('MissingType', (), {'__repr__': lambda x: 'missing'})()
 # internal code
 internal_code = set()
 
+concat = u''.join
 
-# concatenate a list of strings and convert them to unicode.
-# unfortunately there is a bug in python 2.4 and lower that causes
-# unicode.join trash the traceback.
-_concat = u''.join
-try:
-    def _test_gen_bug():
-        raise TypeError(_test_gen_bug)
-        yield None
-    _concat(_test_gen_bug())
-except TypeError, _error:
-    if not _error.args or _error.args[0] is not _test_gen_bug:
-        def concat(gen):
-            try:
-                return _concat(list(gen))
-            except Exception:
-                # this hack is needed so that the current frame
-                # does not show up in the traceback.
-                exc_type, exc_value, tb = sys.exc_info()
-                raise exc_type, exc_value, tb.tb_next
-    else:
-        concat = _concat
-    del _test_gen_bug, _error
-
-
-# for python 2.x we create outselves a next() function that does the
-# basics without exception catching.
-try:
-    next = next
-except NameError:
-    def next(x):
-        return x.next()
-
-
-# if this python version is unable to deal with unicode filenames
-# when passed to encode we let this function encode it properly.
-# This is used in a couple of places.  As far as Jinja is concerned
-# filenames are unicode *or* bytestrings in 2.x and unicode only in
-# 3.x because compile cannot handle bytes
-if sys.version_info < (3, 0):
-    def _encode_filename(filename):
-        if isinstance(filename, unicode):
-            return filename.encode('utf-8')
-        return filename
-else:
-    def _encode_filename(filename):
-        assert filename is None or isinstance(filename, str), \
-            'filenames must be strings'
-        return filename
-
-from keyword import iskeyword as is_python_keyword
-
-
-# common types.  These do exist in the special types module too which however
-# does not exist in IronPython out of the box.  Also that way we don't have
-# to deal with implementation specific stuff here
-class _C(object):
-    def method(self): pass
-def _func():
-    yield None
-FunctionType = type(_func)
-GeneratorType = type(_func())
-MethodType = type(_C.method)
-CodeType = type(_C.method.func_code)
-try:
-    raise TypeError()
-except TypeError:
-    _tb = sys.exc_info()[2]
-    TracebackType = type(_tb)
-    FrameType = type(_tb.tb_frame)
-del _C, _tb, _func
+_slash_escape = '\\/' not in json.dumps('/')
 
 
 def contextfunction(f):
@@ -132,7 +58,7 @@ def contextfunction(f):
 
 
 def evalcontextfunction(f):
-    """This decoraotr can be used to mark a function or method as an eval
+    """This decorator can be used to mark a function or method as an eval
     context callable.  This is similar to the :func:`contextfunction`
     but instead of passing the context, an evaluation context object is
     passed.  For more information about the eval context, see
@@ -156,7 +82,7 @@ def environmentfunction(f):
 
 def internalcode(f):
     """Marks the function as internally used"""
-    internal_code.add(f.func_code)
+    internal_code.add(f.__code__)
     return f
 
 
@@ -186,7 +112,7 @@ def clear_caches():
     """Jinja2 keeps internal caches for environments and lexers.  These are
     used so that Jinja2 doesn't have to recreate environments and lexers all
     the time.  Normally you don't have to care about that but if you are
-    messuring memory consumption you may want to clean the caches.
+    measuring memory consumption you may want to clean the caches.
     """
     from jinja2.environment import _spontaneous_environments
     from jinja2.lexer import _lexer_cache
@@ -195,7 +121,7 @@ def clear_caches():
 
 
 def import_string(import_name, silent=False):
-    """Imports an object based on a string.  This use useful if you want to
+    """Imports an object based on a string.  This is useful if you want to
     use import paths as endpoints or something similar.  An import path can
     be specified either in dotted notation (``xml.sax.saxutils.escape``)
     or with a colon as object delimiter (``xml.sax.saxutils:escape``).
@@ -226,8 +152,8 @@ def open_if_exists(filename, mode='rb'):
     """
     try:
         return open(filename, mode)
-    except IOError, e:
-        if e.errno not in (errno.ENOENT, errno.EISDIR):
+    except IOError as e:
+        if e.errno not in (errno.ENOENT, errno.EISDIR, errno.EINVAL):
             raise
 
 
@@ -260,7 +186,7 @@ def pformat(obj, verbose=False):
         return pformat(obj)
 
 
-def urlize(text, trim_url_limit=None, nofollow=False):
+def urlize(text, trim_url_limit=None, rel=None, target=None):
     """Converts any URLs in text into clickable links. Works on http://,
     https:// and www. links. Links can have trailing punctuation (periods,
     commas, close-parens) and leading punctuation (opening parens) and
@@ -271,12 +197,16 @@ def urlize(text, trim_url_limit=None, nofollow=False):
 
     If nofollow is True, the URLs in link text will get a rel="nofollow"
     attribute.
+
+    If target is not None, a target attribute will be added to the link.
     """
     trim_url = lambda x, limit=trim_url_limit: limit is not None \
                          and (x[:limit] + (len(x) >=limit and '...'
                          or '')) or x
-    words = _word_split_re.split(unicode(escape(text)))
-    nofollow_attr = nofollow and ' rel="nofollow"' or ''
+    words = _word_split_re.split(text_type(escape(text)))
+    rel_attr = rel and ' rel="%s"' % text_type(escape(rel)) or ''
+    target_attr = target and ' target="%s"' % escape(target) or ''
+
     for i, word in enumerate(words):
         match = _punctuation_re.match(word)
         if match:
@@ -284,18 +214,19 @@ def urlize(text, trim_url_limit=None, nofollow=False):
             if middle.startswith('www.') or (
                 '@' not in middle and
                 not middle.startswith('http://') and
+                not middle.startswith('https://') and
                 len(middle) > 0 and
                 middle[0] in _letters + _digits and (
                     middle.endswith('.org') or
                     middle.endswith('.net') or
                     middle.endswith('.com')
                 )):
-                middle = '<a href="http://%s"%s>%s</a>' % (middle,
-                    nofollow_attr, trim_url(middle))
+                middle = '<a href="http://%s"%s%s>%s</a>' % (middle,
+                    rel_attr, target_attr, trim_url(middle))
             if middle.startswith('http://') or \
                middle.startswith('https://'):
-                middle = '<a href="%s"%s>%s</a>' % (middle,
-                    nofollow_attr, trim_url(middle))
+                middle = '<a href="%s"%s%s>%s</a>' % (middle,
+                    rel_attr, target_attr, trim_url(middle))
             if '@' in middle and not middle.startswith('www.') and \
                not ':' in middle and _simple_email_re.match(middle):
                 middle = '<a href="mailto:%s">%s</a>' % (middle, middle)
@@ -305,13 +236,13 @@ def urlize(text, trim_url_limit=None, nofollow=False):
 
 
 def generate_lorem_ipsum(n=5, html=True, min=20, max=100):
-    """Generate some lorem impsum for the template."""
+    """Generate some lorem ipsum for the template."""
     from jinja2.constants import LOREM_IPSUM_WORDS
     from random import choice, randrange
     words = LOREM_IPSUM_WORDS.split()
     result = []
 
-    for _ in xrange(n):
+    for _ in range(n):
         next_capitalized = True
         last_comma = last_fullstop = 0
         word = None
@@ -319,7 +250,7 @@ def generate_lorem_ipsum(n=5, html=True, min=20, max=100):
         p = []
 
         # each paragraph contains out of 20 to 100 words.
-        for idx, _ in enumerate(xrange(randrange(min, max))):
+        for idx, _ in enumerate(range(randrange(min, max))):
             while True:
                 word = choice(words)
                 if word != last:
@@ -353,7 +284,7 @@ def generate_lorem_ipsum(n=5, html=True, min=20, max=100):
     return Markup(u'\n'.join(u'<p>%s</p>' % escape(x) for x in result))
 
 
-def unicode_urlencode(obj, charset='utf-8'):
+def unicode_urlencode(obj, charset='utf-8', for_qs=False):
     """URL escapes a single bytestring or unicode string with the
     given charset if applicable to URL safe quoting under all rules
     that need to be considered under all supported Python versions.
@@ -361,11 +292,15 @@ def unicode_urlencode(obj, charset='utf-8'):
     If non strings are provided they are converted to their unicode
     representation first.
     """
-    if not isinstance(obj, basestring):
-        obj = unicode(obj)
-    if isinstance(obj, unicode):
+    if not isinstance(obj, string_types):
+        obj = text_type(obj)
+    if isinstance(obj, text_type):
         obj = obj.encode(charset)
-    return unicode(url_quote(obj))
+    safe = not for_qs and b'/' or b''
+    rv = text_type(url_quote(obj, safe))
+    if for_qs:
+        rv = rv.replace('%20', '+')
+    return rv
 
 
 class LRUCache(object):
@@ -385,17 +320,9 @@ class LRUCache(object):
         # alias all queue methods for faster lookup
         self._popleft = self._queue.popleft
         self._pop = self._queue.pop
-        if hasattr(self._queue, 'remove'):
-            self._remove = self._queue.remove
-        self._wlock = allocate_lock()
+        self._remove = self._queue.remove
+        self._wlock = Lock()
         self._append = self._queue.append
-
-    def _remove(self, obj):
-        """Python 2.4 compatibility."""
-        for idx, item in enumerate(self._queue):
-            if item == obj:
-                del self._queue[idx]
-                break
 
     def __getstate__(self):
         return {
@@ -412,7 +339,7 @@ class LRUCache(object):
         return (self.capacity,)
 
     def copy(self):
-        """Return an shallow copy of the instance."""
+        """Return a shallow copy of the instance."""
         rv = self.__class__(self.capacity)
         rv._mapping.update(self._mapping)
         rv._queue = deque(self._queue)
@@ -429,11 +356,15 @@ class LRUCache(object):
         """Set `default` if the key is not in the cache otherwise
         leave unchanged. Return the value of this key.
         """
+        self._wlock.acquire()
         try:
-            return self[key]
-        except KeyError:
-            self[key] = default
-            return default
+            try:
+                return self[key]
+            except KeyError:
+                self[key] = default
+                return default
+        finally:
+            self._wlock.release()
 
     def clear(self):
         """Clear the cache."""
@@ -462,19 +393,23 @@ class LRUCache(object):
         """Get an item from the cache. Moves the item up so that it has the
         highest priority then.
 
-        Raise an `KeyError` if it does not exist.
+        Raise a `KeyError` if it does not exist.
         """
-        rv = self._mapping[key]
-        if self._queue[-1] != key:
-            try:
-                self._remove(key)
-            except ValueError:
-                # if something removed the key from the container
-                # when we read, ignore the ValueError that we would
-                # get otherwise.
-                pass
-            self._append(key)
-        return rv
+        self._wlock.acquire()
+        try:
+            rv = self._mapping[key]
+            if self._queue[-1] != key:
+                try:
+                    self._remove(key)
+                except ValueError:
+                    # if something removed the key from the container
+                    # when we read, ignore the ValueError that we would
+                    # get otherwise.
+                    pass
+                self._append(key)
+            return rv
+        finally:
+            self._wlock.release()
 
     def __setitem__(self, key, value):
         """Sets the value for an item. Moves the item up so that it
@@ -483,11 +418,7 @@ class LRUCache(object):
         self._wlock.acquire()
         try:
             if key in self._mapping:
-                try:
-                    self._remove(key)
-                except ValueError:
-                    # __getitem__ is not locked, it might happen
-                    pass
+                self._remove(key)
             elif len(self._mapping) == self.capacity:
                 del self._mapping[self._popleft()]
             self._append(key)
@@ -497,7 +428,7 @@ class LRUCache(object):
 
     def __delitem__(self, key):
         """Remove an item from the cache dict.
-        Raise an `KeyError` if it does not exist.
+        Raise a `KeyError` if it does not exist.
         """
         self._wlock.acquire()
         try:
@@ -549,14 +480,92 @@ class LRUCache(object):
     __copy__ = copy
 
 
-# register the LRU cache as mutable mapping if possible
-try:
-    from collections import MutableMapping
-    MutableMapping.register(LRUCache)
-except ImportError:
-    pass
+abc.MutableMapping.register(LRUCache)
 
 
+def select_autoescape(enabled_extensions=('html', 'htm', 'xml'),
+                      disabled_extensions=(),
+                      default_for_string=True,
+                      default=False):
+    """Intelligently sets the initial value of autoescaping based on the
+    filename of the template.  This is the recommended way to configure
+    autoescaping if you do not want to write a custom function yourself.
+
+    If you want to enable it for all templates created from strings or
+    for all templates with `.html` and `.xml` extensions::
+
+        from jinja2 import Environment, select_autoescape
+        env = Environment(autoescape=select_autoescape(
+            enabled_extensions=('html', 'xml'),
+            default_for_string=True,
+        ))
+
+    Example configuration to turn it on at all times except if the template
+    ends with `.txt`::
+
+        from jinja2 import Environment, select_autoescape
+        env = Environment(autoescape=select_autoescape(
+            disabled_extensions=('txt',),
+            default_for_string=True,
+            default=True,
+        ))
+
+    The `enabled_extensions` is an iterable of all the extensions that
+    autoescaping should be enabled for.  Likewise `disabled_extensions` is
+    a list of all templates it should be disabled for.  If a template is
+    loaded from a string then the default from `default_for_string` is used.
+    If nothing matches then the initial value of autoescaping is set to the
+    value of `default`.
+
+    For security reasons this function operates case insensitive.
+
+    .. versionadded:: 2.9
+    """
+    enabled_patterns = tuple('.' + x.lstrip('.').lower()
+                             for x in enabled_extensions)
+    disabled_patterns = tuple('.' + x.lstrip('.').lower()
+                              for x in disabled_extensions)
+    def autoescape(template_name):
+        if template_name is None:
+            return default_for_string
+        template_name = template_name.lower()
+        if template_name.endswith(enabled_patterns):
+            return True
+        if template_name.endswith(disabled_patterns):
+            return False
+        return default
+    return autoescape
+
+
+def htmlsafe_json_dumps(obj, dumper=None, **kwargs):
+    """Works exactly like :func:`dumps` but is safe for use in ``<script>``
+    tags.  It accepts the same arguments and returns a JSON string.  Note that
+    this is available in templates through the ``|tojson`` filter which will
+    also mark the result as safe.  Due to how this function escapes certain
+    characters this is safe even if used outside of ``<script>`` tags.
+
+    The following characters are escaped in strings:
+
+    -   ``<``
+    -   ``>``
+    -   ``&``
+    -   ``'``
+
+    This makes it safe to embed such strings in any place in HTML with the
+    notable exception of double quoted attributes.  In that case single
+    quote your attributes or HTML escape it in addition.
+    """
+    if dumper is None:
+        dumper = json.dumps
+    rv = dumper(obj, **kwargs) \
+        .replace(u'<', u'\\u003c') \
+        .replace(u'>', u'\\u003e') \
+        .replace(u'&', u'\\u0026') \
+        .replace(u"'", u'\\u0027')
+    return Markup(rv)
+
+
+@implements_iterator
 class Cycler(object):
     """A cycle helper for templates."""
 
@@ -581,6 +590,8 @@ class Cycler(object):
         self.pos = (self.pos + 1) % len(self.items)
         return rv
 
+    __next__ = next
+
 
 class Joiner(object):
     """A joining helper for templates."""
@@ -596,25 +607,36 @@ class Joiner(object):
         return self.sep
 
 
-# try markupsafe first, if that fails go with Jinja2's bundled version
-# of markupsafe.  Markupsafe was previously Jinja2's implementation of
-# the Markup object but was moved into a separate package in a patchleve
-# release
-try:
-    from markupsafe import Markup, escape, soft_unicode
-except ImportError:
-    from jinja2._markupsafe import Markup, escape, soft_unicode
+class Namespace(object):
+    """A namespace object that can hold arbitrary attributes.  It may be
+    initialized from a dictionary or with keyword argments."""
+
+    def __init__(*args, **kwargs):
+        self, args = args[0], args[1:]
+        self.__attrs = dict(*args, **kwargs)
+
+    def __getattribute__(self, name):
+        if name == '_Namespace__attrs':
+            return object.__getattribute__(self, name)
+        try:
+            return self.__attrs[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setitem__(self, name, value):
+        self.__attrs[name] = value
+
+    def __repr__(self):
+        return '<Namespace %r>' % self.__attrs
 
 
-# partials
+# does this python version support async for in and async generators?
 try:
-    from functools import partial
-except ImportError:
-    class partial(object):
-        def __init__(self, _func, *args, **kwargs):
-            self._func = _func
-            self._args = args
-            self._kwargs = kwargs
-        def __call__(self, *args, **kwargs):
-            kwargs.update(self._kwargs)
-            return self._func(*(self._args + args), **kwargs)
+    exec('async def _():\n async for _ in ():\n  yield _')
+    have_async_gen = True
+except SyntaxError:
+    have_async_gen = False
+
+
+# Imported here because that's where it was in the past
+from markupsafe import Markup, escape, soft_unicode

@@ -2,28 +2,42 @@ from __future__ import with_statement
 
 import os
 import sys
-import copy
-import atexit
 import hashlib
-import shutil
 import logging
 import tempfile
 import inspect
 
-pkg_digest = hashlib.sha1(__name__.encode('utf-8'))
-
 try:
-    import pkg_resources
-except ImportError:
-    logging.info("Setuptools not installed. Unable to determine version.")
-else:
+    RecursionError
+except NameError:
+    RecursionError = RuntimeError
+
+def get_package_versions():
+    try:
+        import pkg_resources
+    except ImportError:
+        logging.info("Setuptools not installed. Unable to determine version.")
+        return []
+
+    versions = dict()
     for path in sys.path:
         for distribution in pkg_resources.find_distributions(path):
             if distribution.has_version():
-                version = distribution.version.encode('utf-8')
-                pkg_digest.update(version)
+                versions.setdefault(
+                    distribution.project_name,
+                    distribution.version,
+                )
+
+    return sorted(versions.items())
 
 
+pkg_digest = hashlib.sha1(__name__.encode('utf-8'))
+for name, version in get_package_versions():
+    pkg_digest.update(name.encode('utf-8'))
+    pkg_digest.update(version.encode('utf-8'))
+
+
+from .exc import RenderError
 from .exc import TemplateError
 from .exc import ExceptionFormatter
 from .compiler import Compiler
@@ -38,7 +52,7 @@ from .utils import DebuggingOutputStream
 from .utils import Scope
 from .utils import join
 from .utils import mangle
-from .utils import derive_formatted_exception
+from .utils import create_formatted_exception
 from .utils import read_bytes
 from .utils import raise_with_traceback
 from .utils import byte_string
@@ -48,16 +62,14 @@ log = logging.getLogger('chameleon.template')
 
 
 def _make_module_loader():
+    remove = False
     if CACHE_DIRECTORY:
         path = CACHE_DIRECTORY
     else:
         path = tempfile.mkdtemp()
+        remove = True
 
-        @atexit.register
-        def cleanup(path=path, shutil=shutil):
-            shutil.rmtree(path)
-
-    return ModuleLoader(path)
+    return ModuleLoader(path, remove)
 
 
 class BaseTemplate(object):
@@ -109,22 +121,18 @@ class BaseTemplate(object):
     # Expression engine must be provided by subclass
     engine = None
 
-    def __init__(self, body, **config):
+    # When ``strict`` is set, expressions must be valid at compile
+    # time. When not set, this is only required at evaluation time.
+    strict = True
+
+    def __init__(self, body=None, **config):
         self.__dict__.update(config)
 
-        if isinstance(body, byte_string):
-            body, encoding, content_type = read_bytes(
-                body, self.default_encoding
-                )
-        else:
-            content_type = body.startswith('<?xml')
-            encoding = None
+        if body is not None:
+            self.write(body)
 
-        self.content_type = content_type
-        self.content_encoding = encoding
-
-        self.cook(body)
-
+        # This is only necessary if the ``debug`` flag was passed as a
+        # keyword argument
         if self.__dict__.get('debug') is True:
             self.loader = _make_module_loader()
 
@@ -147,10 +155,10 @@ class BaseTemplate(object):
         return self.__dict__.get('keep_source', DEBUG_MODE)
 
     def cook(self, body):
-        digest = self._digest(body)
         builtins_dict = self.builtins.copy()
         builtins_dict.update(self.extra_builtins)
-        names, builtins = zip(*builtins_dict.items())
+        names, builtins = zip(*sorted(builtins_dict.items()))
+        digest = self.digest(body, names)
         program = self._cook(body, digest, names)
 
         initialize = program['initialize']
@@ -177,18 +185,26 @@ class BaseTemplate(object):
         stream = self.output_stream_factory()
         try:
             self._render(stream, econtext, rcontext)
+        except RecursionError:
+            raise
         except:
             cls, exc, tb = sys.exc_info()
             errors = rcontext.get('__error__')
             if errors:
+                formatter = exc.__str__
+                if isinstance(formatter, ExceptionFormatter):
+                    if errors is not formatter._errors:
+                        formatter._errors.extend(errors)
+                    raise
+
+                formatter = ExceptionFormatter(errors, econtext, rcontext)
+
                 try:
-                    exc = copy.copy(exc)
+                    exc = create_formatted_exception(
+                        exc, cls, formatter, RenderError
+                    )
                 except TypeError:
-                    name = type(exc).__name__
-                    log.warn("Unable to copy exception of type '%s'." % name)
-                else:
-                    formatter = ExceptionFormatter(errors, econtext, rcontext)
-                    exc = derive_formatted_exception(exc, cls, formatter)
+                    pass
 
                 raise_with_traceback(exc, tb)
 
@@ -196,23 +212,38 @@ class BaseTemplate(object):
 
         return join(stream)
 
-    def _get_module_name(self, digest):
-        return "%s.py" % digest
+    def write(self, body):
+        if isinstance(body, byte_string):
+            body, encoding, content_type = read_bytes(
+                body, self.default_encoding
+                )
+        else:
+            content_type = body.startswith('<?xml')
+            encoding = None
 
-    def _cook(self, body, digest, builtins):
-        name = self._get_module_name(digest)
-        cooked = self.loader.get(name)
+        self.content_type = content_type
+        self.content_encoding = encoding
+
+        self.cook(body)
+
+    def _get_module_name(self, name):
+        return "%s.py" % name
+
+    def _cook(self, body, name, builtins):
+        filename = self._get_module_name(name)
+        cooked = self.loader.get(filename)
         if cooked is None:
             try:
-                source = self._make(body, builtins)
+                source = self._compile(body, builtins)
                 if self.debug:
-                    source = "# template: %s\n#\n%s" % (self.filename, source)
+                    source = "# template: %s\n#\n%s" % (
+                        self.filename, source)
                 if self.keep_source:
                     self.source = source
-                cooked = self.loader.build(source, name)
+                cooked = self.loader.build(source, filename)
             except TemplateError:
                 exc = sys.exc_info()[1]
-                exc.filename = self.filename
+                exc.token.filename = self.filename
                 raise
         elif self.keep_source:
             module = sys.modules.get(cooked.get('__name__'))
@@ -220,24 +251,28 @@ class BaseTemplate(object):
                 self.source = inspect.getsource(module)
             else:
                 self.source = None
-
         return cooked
 
-    def _digest(self, body):
+    def digest(self, body, names):
         class_name = type(self).__name__.encode('utf-8')
         sha = pkg_digest.copy()
         sha.update(body.encode('utf-8', 'ignore'))
         sha.update(class_name)
-        return sha.hexdigest()
+        digest = sha.hexdigest()
 
-    def _compile(self, program, builtins):
-        compiler = Compiler(self.engine, program, builtins)
-        return compiler.code
+        if self.filename is not BaseTemplate.filename:
+            digest = os.path.splitext(self.filename)[0] + '-' + digest
 
-    def _make(self, body, builtins):
+        return digest
+
+    def _compile(self, body, builtins):
         program = self.parse(body)
         module = Module("initialize", program)
-        return self._compile(module, builtins)
+        compiler = Compiler(
+            self.engine, module, self.filename, body,
+            builtins, strict=self.strict
+        )
+        return compiler.code
 
 
 class BaseTemplateFile(BaseTemplate):
@@ -263,12 +298,7 @@ class BaseTemplateFile(BaseTemplate):
         if auto_reload is not None:
             self.auto_reload = auto_reload
 
-        self.__dict__.update(config)
-
-        # This is only necessary if the ``debug`` flag was passed as a
-        # keyword argument
-        if config.get('debug') is True:
-            self.loader = _make_module_loader()
+        super(BaseTemplateFile, self).__init__(**config)
 
         if EAGER_PARSING:
             self.cook_check()
@@ -283,6 +313,7 @@ class BaseTemplateFile(BaseTemplate):
 
         if self._cooked is False:
             body = self.read()
+            log.debug("cooking %r (%d bytes)..." % (self.filename, len(body)))
             self.cook(body)
 
     def mtime(self):
@@ -309,10 +340,10 @@ class BaseTemplateFile(BaseTemplate):
 
         return body
 
-    def _get_module_name(self, digest):
+    def _get_module_name(self, name):
         filename = os.path.basename(self.filename)
         mangled = mangle(filename)
-        return "%s_%s.py" % (mangled, digest)
+        return "%s_%s.py" % (mangled, name)
 
     def _get_filename(self):
         return self.__dict__.get('filename')

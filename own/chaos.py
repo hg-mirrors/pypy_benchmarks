@@ -3,7 +3,7 @@
 """create chaosgame-like fractals
 """
 
-from __future__ import division
+from __future__ import division, print_function
 
 import operator
 import optparse
@@ -12,6 +12,9 @@ import math
 random.seed(1234)
 import sys
 import time
+if sys.version_info[0] > 2:
+    from functools import reduce
+    xrange = range
 
 class GVector(object):
     def __init__(self, x = 0, y = 0, z = 0):
@@ -29,8 +32,7 @@ class GVector(object):
 
     def __add__(self, other):
         if not isinstance(other, GVector):
-            raise ValueError, \
-                    "Can't add GVector to " + str(type(other))
+            raise ValueError( "Can't add GVector to " + str(type(other)))
         v = GVector(self.x + other.x, self.y + other.y, self.z + other.z)
         return v
 
@@ -71,14 +73,13 @@ degree of the Spline."""
             self.knots = GetKnots(points, degree)
         else:
             if len(points) > len(knots) - degree + 1:
-                raise ValueError, "too many control points"
+                raise ValueError("too many control points")
             elif len(points) < len(knots) - degree + 1:
-                raise ValueError, "not enough control points"
+                raise ValueError("not enough control points")
             last = knots[0]
             for cur in knots[1:]:
                 if cur < last:
-                    raise ValueError, \
-                          "knots not strictly increasing"
+                    raise ValueError("knots not strictly increasing")
                 last = cur
             self.knots = knots
         self.points = points
@@ -93,7 +94,7 @@ degree of the Spline."""
         """Calculates a point of the B-Spline using de Boors Algorithm"""
         dom = self.GetDomain()
         if u < dom[0] or u > dom[1]:
-            raise ValueError, "Function value not in domain"
+            raise ValueError("Function value not in domain")
         if u == dom[0]:
             return self.points[0]
         if u == dom[1]:
@@ -131,17 +132,17 @@ degree of the Spline."""
         
 def save_im(im, fn):
     f = open(fn, "wb")
-    magic = 'P6\n'
+    magic = b'P6\n'
     maxval = 255
     w = len(im)
     h = len(im[0])
     f.write(magic)
-    f.write('%i %i\n%i\n' % (w, h, maxval))
+    f.write(b'%i %i\n%i\n' % (w, h, maxval))
     for j in range(h):
         for i in range(w):
             val = im[i][j]
             c = val * 255
-            f.write('%c%c%c' % (c, c, c))
+            f.write(b'%c%c%c' % (c, c, c))
     f.close()
 
 class Chaosgame(object):
@@ -199,7 +200,7 @@ class Chaosgame(object):
             basepoint.y += -derivative.x / derivative.Mag() * (y - 0.5) * \
                            self.thickness
         else:
-            print "r",
+            print("r", end='')
         self.truncate(basepoint)
         return basepoint
 

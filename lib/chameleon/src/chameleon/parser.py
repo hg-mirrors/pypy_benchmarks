@@ -10,13 +10,14 @@ from .exc import ParseError
 from .namespaces import XML_NS
 from .tokenize import Token
 
+match_double_hyphen = re.compile(r'--(?!(-)*>)')
 match_tag_prefix_and_name = re.compile(
-    r'^(?P<prefix></?)(?P<name>([^:\n ]+:)?[^ \n\t>/]+)'
-    '(?P<suffix>(?P<space>\s*)/?>)?',
+    r'^(?P<prefix></?)(?P<name>([^:\n\r ]+:)?[^ \n\t\r>/]+)'
+    r'(?P<suffix>(?P<space>\s*)/?>)?',
     re.UNICODE | re.DOTALL)
 match_single_attribute = re.compile(
     r'(?P<space>\s+)(?!\d)'
-    r'(?P<name>[^ =/>\n\t]+)'
+    r'(?P<name>[^ =/>\n\t\r]+)'
     r'((?P<eq>\s*=\s*)'
     r'((?P<quote>[\'"])(?P<value>.*?)(?P=quote)|'
     r'(?P<alt_value>[^\s\'">/]+))|'
@@ -29,7 +30,7 @@ match_cdata = re.compile(
 match_declaration = re.compile(
     r'^<!(?P<text>[^>]+)>$', re.DOTALL)
 match_processing_instruction = re.compile(
-    r'^<\?(?P<text>.*?)\?>', re.DOTALL)
+    r'^<\?(?P<name>\w+)(?P<text>.*?)\?>', re.DOTALL)
 match_xml_declaration = re.compile(r'^<\?xml(?=[ /])', re.DOTALL)
 
 log = logging.getLogger('chameleon.parser')
@@ -94,7 +95,7 @@ def match_tag(token, regex=match_tag_prefix_and_name):
     return d
 
 
-def parse_tag(token, namespace):
+def parse_tag(token, namespace, restricted_namespace):
     node = match_tag(token)
 
     update_namespace(node['attrs'], namespace)
@@ -107,7 +108,10 @@ def parse_tag(token, namespace):
     default = node['namespace'] = namespace.get(prefix, XML_NS)
 
     node['ns_attrs'] = unpack_attributes(
-        node['attrs'], namespace, default)
+        node['attrs'], namespace, default, restricted_namespace
+    )
+
+    node['ns_map'] = namespace
 
     return node
 
@@ -124,7 +128,7 @@ def update_namespace(attributes, namespace):
             namespace[name[6:]] = value
 
 
-def unpack_attributes(attributes, namespace, default):
+def unpack_attributes(attributes, namespace, default, restricted_namespace):
     namespaced = OrderedDict()
 
     for index, attribute in enumerate(attributes):
@@ -137,8 +141,11 @@ def unpack_attributes(attributes, namespace, default):
             try:
                 ns = namespace[prefix]
             except KeyError:
-                raise KeyError(
-                    "Undefined namespace prefix: %s." % prefix)
+                if restricted_namespace:
+                    raise KeyError(
+                        "Undefined namespace prefix: %s." % prefix)
+                else:
+                    ns = default
         else:
             ns = default
         namespaced[ns, name] = value
@@ -149,6 +156,12 @@ def unpack_attributes(attributes, namespace, default):
 def identify(string):
     if string.startswith("<"):
         if string.startswith("<!--"):
+            m = match_double_hyphen.search(string[4:])
+            if m is not None:
+                raise ParseError(
+                    "The string '--' is not allowed in a comment.",
+                    string[4 + m.start():4 + m.end()]
+                )
             return "comment"
         if string.startswith("<![CDATA["):
             return "cdata"
@@ -171,11 +184,12 @@ def identify(string):
 class ElementParser(object):
     """Parses tokens into elements."""
 
-    def __init__(self, stream, default_namespaces):
+    def __init__(self, stream, default_namespaces, restricted_namespace=True):
         self.stream = stream
         self.queue = []
         self.index = []
         self.namespaces = [default_namespaces.copy()]
+        self.restricted_namespace = restricted_namespace
 
     def __iter__(self):
         for token in self.stream:
@@ -192,8 +206,18 @@ class ElementParser(object):
     def visit_comment(self, kind, token):
         return "comment", (token, )
 
+    def visit_cdata(self, kind, token):
+        return "cdata", (token, )
+
     def visit_default(self, kind, token):
         return "default", (token, )
+
+    def visit_processing_instruction(self, kind, token):
+        m = match_processing_instruction.match(token)
+        if m is None:
+            return self.visit_default(kind, token)
+
+        return "processing_instruction", (groupdict(m, token), )
 
     def visit_text(self, kind, token):
         return kind, (token, )
@@ -201,7 +225,7 @@ class ElementParser(object):
     def visit_start_tag(self, kind, token):
         namespace = self.namespaces[-1].copy()
         self.namespaces.append(namespace)
-        node = parse_tag(token, namespace)
+        node = parse_tag(token, namespace, self.restricted_namespace)
         self.index.append((node['name'], len(self.queue)))
         return kind, (node, )
 
@@ -211,7 +235,7 @@ class ElementParser(object):
         except IndexError:
             raise ParseError("Unexpected end tag.", token)
 
-        node = parse_tag(token, namespace)
+        node = parse_tag(token, namespace, self.restricted_namespace)
 
         while self.index:
             name, pos = self.index.pop()
@@ -227,5 +251,8 @@ class ElementParser(object):
 
     def visit_empty_tag(self, kind, token):
         namespace = self.namespaces[-1].copy()
-        node = parse_tag(token, namespace)
+        node = parse_tag(token, namespace, self.restricted_namespace)
         return "element", (node, None, [])
+
+    def visit_xml_declaration(self, kind, token):
+        return self.visit_empty_tag(kind, token)

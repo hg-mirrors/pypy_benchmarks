@@ -1,9 +1,12 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
+"""
+Tests for L{twisted.python.win32}.
+"""
+
 from twisted.trial import unittest
-from twisted.python.runtime import platform
-from twisted.python.win32 import cmdLineQuote
+from twisted.python import win32
 
 
 class CommandLineQuotingTests(unittest.TestCase):
@@ -16,7 +19,7 @@ class CommandLineQuotingTests(unittest.TestCase):
         Calling C{cmdLineQuote} with an argument with no spaces should
         return the argument unchanged.
         """
-        self.assertEqual(cmdLineQuote('an_argument'), 'an_argument')
+        self.assertEqual(win32.cmdLineQuote('an_argument'), 'an_argument')
 
 
     def test_argWithSpaces(self):
@@ -24,7 +27,7 @@ class CommandLineQuotingTests(unittest.TestCase):
         Calling C{cmdLineQuote} with an argument containing spaces should
         return the argument surrounded by quotes.
         """
-        self.assertEqual(cmdLineQuote('An Argument'), '"An Argument"')
+        self.assertEqual(win32.cmdLineQuote('An Argument'), '"An Argument"')
 
 
     def test_emptyStringArg(self):
@@ -32,4 +35,4 @@ class CommandLineQuotingTests(unittest.TestCase):
         Calling C{cmdLineQuote} with an empty string should return a
         quoted empty string.
         """
-        self.assertEqual(cmdLineQuote(''), '""')
+        self.assertEqual(win32.cmdLineQuote(''), '""')

@@ -2,39 +2,288 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-
 """
-Various asynchronous TCP/IP classes.
+UNIX socket support for Twisted.
 
 End users shouldn't use this module directly - use the reactor APIs instead.
 
 Maintainer: Itamar Shtull-Trauring
 """
 
-# System imports
-import os, sys, stat, socket
-from errno import EINTR, EMSGSIZE, EAGAIN, EWOULDBLOCK, ECONNREFUSED
+from __future__ import division, absolute_import
 
-from zope.interface import implements, implementsOnly, implementedBy
+import os
+import stat
+import socket
+import struct
+from errno import EINTR, EMSGSIZE, EAGAIN, EWOULDBLOCK, ECONNREFUSED, ENOBUFS
+
+from zope.interface import implementer, implementer_only, implementedBy
 
 if not hasattr(socket, 'AF_UNIX'):
     raise ImportError("UNIX sockets not supported on this platform")
 
-# Twisted imports
-from twisted.internet import base, tcp, udp, error, interfaces, protocol, address
-from twisted.internet.error import CannotListenError
+from twisted.internet import main, base, tcp, udp, error, interfaces
+from twisted.internet import protocol, address
 from twisted.python import lockfile, log, reflect, failure
+from twisted.python.filepath import _coerceToFilesystemEncoding
+from twisted.python.util import untilConcludes
+from twisted.python.compat import lazyByteSlice
 
 
-class Server(tcp.Server):
+try:
+    from twisted.python import sendmsg
+except ImportError:
+    sendmsg = None
+
+
+
+def _ancillaryDescriptor(fd):
+    """
+    Pack an integer into an ancillary data structure suitable for use with
+    L{sendmsg.sendmsg}.
+    """
+    packed = struct.pack("i", fd)
+    return [(socket.SOL_SOCKET, sendmsg.SCM_RIGHTS, packed)]
+
+
+
+@implementer(interfaces.IUNIXTransport)
+class _SendmsgMixin(object):
+    """
+    Mixin for stream-oriented UNIX transports which uses sendmsg and recvmsg to
+    offer additional functionality, such as copying file descriptors into other
+    processes.
+
+    @ivar _writeSomeDataBase: The class which provides the basic implementation
+        of C{writeSomeData}.  Ultimately this should be a subclass of
+        L{twisted.internet.abstract.FileDescriptor}.  Subclasses which mix in
+        L{_SendmsgMixin} must define this.
+
+    @ivar _sendmsgQueue: A C{list} of C{int} holding file descriptors which are
+        currently buffered before being sent.
+
+    @ivar _fileDescriptorBufferSize: An C{int} giving the maximum number of file
+        descriptors to accept and queue for sending before pausing the
+        registered producer, if there is one.
+    """
+
+    _writeSomeDataBase = None
+    _fileDescriptorBufferSize = 64
+
+    def __init__(self):
+        self._sendmsgQueue = []
+
+
+    def _isSendBufferFull(self):
+        """
+        Determine whether the user-space send buffer for this transport is full
+        or not.
+
+        This extends the base determination by adding consideration of how many
+        file descriptors need to be sent using L{sendmsg.sendmsg}.  When there
+        are more than C{self._fileDescriptorBufferSize}, the buffer is
+        considered full.
+
+        @return: C{True} if it is full, C{False} otherwise.
+        """
+        # There must be some bytes in the normal send buffer, checked by
+        # _writeSomeDataBase._isSendBufferFull, in order to send file
+        # descriptors from _sendmsgQueue.  That means that the buffer will
+        # eventually be considered full even without this additional logic.
+        # However, since we send only one byte per file descriptor, having lots
+        # of elements in _sendmsgQueue incurs more overhead and perhaps slows
+        # things down.  Anyway, try this for now, maybe rethink it later.
+        return (
+            len(self._sendmsgQueue) > self._fileDescriptorBufferSize
+            or self._writeSomeDataBase._isSendBufferFull(self))
+
+
+    def sendFileDescriptor(self, fileno):
+        """
+        Queue the given file descriptor to be sent and start trying to send it.
+        """
+        self._sendmsgQueue.append(fileno)
+        self._maybePauseProducer()
+        self.startWriting()
+
+
+    def writeSomeData(self, data):
+        """
+        Send as much of C{data} as possible.  Also send any pending file
+        descriptors.
+        """
+        # Make it a programming error to send more file descriptors than you
+        # send regular bytes.  Otherwise, due to the limitation mentioned
+        # below, we could end up with file descriptors left, but no bytes to
+        # send with them, therefore no way to send those file descriptors.
+        if len(self._sendmsgQueue) > len(data):
+            return error.FileDescriptorOverrun()
+
+        # If there are file descriptors to send, try sending them first, using
+        # a little bit of data from the stream-oriented write buffer too.  It
+        # is not possible to send a file descriptor without sending some
+        # regular data.
+        index = 0
+        try:
+            while index < len(self._sendmsgQueue):
+                fd = self._sendmsgQueue[index]
+                try:
+                    untilConcludes(
+                        sendmsg.sendmsg, self.socket, data[index:index+1],
+                        _ancillaryDescriptor(fd))
+                except socket.error as se:
+                    if se.args[0] in (EWOULDBLOCK, ENOBUFS):
+                        return index
+                    else:
+                        return main.CONNECTION_LOST
+                else:
+                    index += 1
+        finally:
+            del self._sendmsgQueue[:index]
+
+        # Hand the remaining data to the base implementation.  Avoid slicing in
+        # favor of a buffer, in case that happens to be any faster.
+        limitedData = lazyByteSlice(data, index)
+        result = self._writeSomeDataBase.writeSomeData(self, limitedData)
+        try:
+            return index + result
+        except TypeError:
+            return result
+
+
+    def doRead(self):
+        """
+        Calls {IProtocol.dataReceived} with all available data and
+        L{IFileDescriptorReceiver.fileDescriptorReceived} once for each
+        received file descriptor in ancillary data.
+
+        This reads up to C{self.bufferSize} bytes of data from its socket, then
+        dispatches the data to protocol callbacks to be handled.  If the
+        connection is not lost through an error in the underlying recvmsg(),
+        this function will return the result of the dataReceived call.
+        """
+        try:
+            data, ancillary, flags = untilConcludes(
+                sendmsg.recvmsg, self.socket, self.bufferSize)
+        except socket.error as se:
+            if se.args[0] == EWOULDBLOCK:
+                return
+            else:
+                return main.CONNECTION_LOST
+
+        for cmsgLevel, cmsgType, cmsgData in ancillary:
+            if (cmsgLevel == socket.SOL_SOCKET and
+                cmsgType == sendmsg.SCM_RIGHTS):
+                self._ancillaryLevelSOLSOCKETTypeSCMRIGHTS(cmsgData)
+            else:
+                log.msg(
+                    format=(
+                        "%(protocolName)s (on %(hostAddress)r) "
+                        "received unsupported ancillary data "
+                        "(level=%(cmsgLevel)r, type=%(cmsgType)r) "
+                        "from %(peerAddress)r."),
+                    hostAddress=self.getHost(), peerAddress=self.getPeer(),
+                    protocolName=self._getLogPrefix(self.protocol),
+                    cmsgLevel=cmsgLevel, cmsgType=cmsgType,
+                )
+
+        return self._dataReceived(data)
+
+
+    def _ancillaryLevelSOLSOCKETTypeSCMRIGHTS(self, cmsgData):
+        """
+        Processes ancillary data with level SOL_SOCKET and type SCM_RIGHTS,
+        indicating that the ancillary data payload holds file descriptors.
+
+        Calls L{IFileDescriptorReceiver.fileDescriptorReceived} once for each
+        received file descriptor or logs a message if the protocol does not
+        implement L{IFileDescriptorReceiver}.
+
+        @param cmsgData: Ancillary data payload.
+        @type cmsgData: L{bytes}
+        """
+
+        fdCount = len(cmsgData) // 4
+        fds = struct.unpack('i'*fdCount, cmsgData)
+        if interfaces.IFileDescriptorReceiver.providedBy(self.protocol):
+            for fd in fds:
+                self.protocol.fileDescriptorReceived(fd)
+        else:
+            log.msg(
+                format=(
+                    "%(protocolName)s (on %(hostAddress)r) does not "
+                    "provide IFileDescriptorReceiver; closing file "
+                    "descriptor received (from %(peerAddress)r)."),
+                hostAddress=self.getHost(), peerAddress=self.getPeer(),
+                protocolName=self._getLogPrefix(self.protocol),
+            )
+            for fd in fds:
+                os.close(fd)
+
+
+class _UnsupportedSendmsgMixin(object):
+    """
+    Behaviorless placeholder used when C{twisted.python.sendmsg} is not
+    available, preventing L{IUNIXTransport} from being supported.
+    """
+
+
+
+if sendmsg:
+    _SendmsgMixin = _SendmsgMixin
+else:
+    _SendmsgMixin = _UnsupportedSendmsgMixin
+
+
+
+class Server(_SendmsgMixin, tcp.Server):
+
+    _writeSomeDataBase = tcp.Server
+
     def __init__(self, sock, protocol, client, server, sessionno, reactor):
+        _SendmsgMixin.__init__(self)
         tcp.Server.__init__(self, sock, protocol, (client, None), server, sessionno, reactor)
+
+    @classmethod
+    def _fromConnectedSocket(cls, fileDescriptor, factory, reactor):
+        """
+        Create a new L{Server} based on an existing connected I{SOCK_STREAM}
+        socket.
+
+        Arguments are the same as to L{Server.__init__}, except where noted.
+
+        @param fileDescriptor: An integer file descriptor associated with a
+            connected socket.  The socket must be in non-blocking mode.  Any
+            additional attributes desired, such as I{FD_CLOEXEC}, must also be
+            set already.
+
+        @return: A new instance of C{cls} wrapping the socket given by
+            C{fileDescriptor}.
+        """
+        skt = socket.fromfd(fileDescriptor, socket.AF_UNIX, socket.SOCK_STREAM)
+        protocolAddr = address.UNIXAddress(skt.getsockname())
+
+        proto = factory.buildProtocol(protocolAddr)
+        if proto is None:
+            skt.close()
+            return
+
+        # FIXME: is this a suitable sessionno?
+        sessionno = 0
+        self = cls(skt, proto, skt.getpeername(), None, sessionno, reactor)
+        self.repstr = "<%s #%s on %s>" % (
+            self.protocol.__class__.__name__, self.sessionno, skt.getsockname())
+        self.logstr = "%s,%s,%s" % (
+            self.protocol.__class__.__name__, self.sessionno, skt.getsockname())
+        proto.makeConnection(self)
+        return self
 
     def getHost(self):
         return address.UNIXAddress(self.socket.getsockname())
 
     def getPeer(self):
-        return address.UNIXAddress(self.hostname)
+        return address.UNIXAddress(self.hostname or None)
 
 
 
@@ -48,22 +297,17 @@ def _inFilesystemNamespace(path):
     path is stored in the filesystem and C{False} if the path is in this
     abstract namespace.
     """
-    return path[:1] != "\0"
+    return path[:1] not in (b"\0", u"\0")
 
 
 class _UNIXPort(object):
     def getHost(self):
-        """Returns a UNIXAddress.
+        """
+        Returns a UNIXAddress.
 
         This indicates the server's address.
         """
-        if sys.version_info > (2, 5) or _inFilesystemNamespace(self.port):
-            path = self.socket.getsockname()
-        else:
-            # Abstract namespace sockets aren't well supported on Python 2.4.
-            # getsockname() always returns ''.
-            path = self.port
-        return address.UNIXAddress(path)
+        return address.UNIXAddress(self.socket.getsockname())
 
 
 
@@ -74,15 +318,38 @@ class Port(_UNIXPort, tcp.Port):
     transport = Server
     lockFile = None
 
-    def __init__(self, fileName, factory, backlog=50, mode=0666, reactor=None, wantPID = 0):
-        tcp.Port.__init__(self, fileName, factory, backlog, reactor=reactor)
+    def __init__(self, fileName, factory, backlog=50, mode=0o666, reactor=None,
+                 wantPID = 0):
+        tcp.Port.__init__(self, self._buildAddr(fileName).name, factory,
+                          backlog, reactor=reactor)
         self.mode = mode
         self.wantPID = wantPID
+        self._preexistingSocket = None
+
+    @classmethod
+    def _fromListeningDescriptor(cls, reactor, fd, factory):
+        """
+        Create a new L{Port} based on an existing listening I{SOCK_STREAM}
+        socket.
+
+        Arguments are the same as to L{Port.__init__}, except where noted.
+
+        @param fd: An integer file descriptor associated with a listening
+            socket.  The socket must be in non-blocking mode.  Any additional
+            attributes desired, such as I{FD_CLOEXEC}, must also be set already.
+
+        @return: A new instance of C{cls} wrapping the socket given by C{fd}.
+        """
+        port = socket.fromfd(fd, cls.addressFamily, cls.socketType)
+        self = cls(port.getsockname(), factory, reactor=reactor)
+        self._preexistingSocket = port
+        return self
 
     def __repr__(self):
         factoryName = reflect.qual(self.factory.__class__)
         if hasattr(self, 'socket'):
-            return '<%s on %r>' % (factoryName, self.port)
+            return '<%s on %r>' % (
+                factoryName, _coerceToFilesystemEncoding('', self.port))
         else:
             return '<%s (not listening)>' % (factoryName,)
 
@@ -96,11 +363,15 @@ class Port(_UNIXPort, tcp.Port):
         This is called on unserialization, and must be called after creating a
         server to begin listening on the specified port.
         """
-        log.msg("%s starting on %r" % (self.factory.__class__, repr(self.port)))
+        tcp._reservedFD.reserve()
+        log.msg("%s starting on %r" % (
+            self._getLogPrefix(self.factory),
+            _coerceToFilesystemEncoding('', self.port)))
         if self.wantPID:
-            self.lockFile = lockfile.FilesystemLock(self.port + ".lock")
+            self.lockFile = lockfile.FilesystemLock(self.port + b".lock")
             if not self.lockFile.lock():
-                raise CannotListenError, (None, self.port, "Cannot acquire lock")
+                raise error.CannotListenError(None, self.port,
+                                              "Cannot acquire lock")
             else:
                 if not self.lockFile.clean:
                     try:
@@ -115,11 +386,16 @@ class Port(_UNIXPort, tcp.Port):
                         pass
 
         self.factory.doStart()
+
         try:
-            skt = self.createInternetSocket()
-            skt.bind(self.port)
-        except socket.error, le:
-            raise CannotListenError, (None, self.port, le)
+            if self._preexistingSocket is not None:
+                skt = self._preexistingSocket
+                self._preexistingSocket = None
+            else:
+                skt = self.createInternetSocket()
+                skt.bind(self.port)
+        except socket.error as le:
+            raise error.CannotListenError(None, self.port, le)
         else:
             if _inFilesystemNamespace(self.port):
                 # Make the socket readable and writable to the world.
@@ -136,7 +412,8 @@ class Port(_UNIXPort, tcp.Port):
         """
         Log message for closing socket
         """
-        log.msg('(UNIX Port %s Closed)' % (repr(self.port),))
+        log.msg('(UNIX Port %s Closed)' % (
+            _coerceToFilesystemEncoding('', self.port,)))
 
 
     def connectionLost(self, reason):
@@ -148,15 +425,19 @@ class Port(_UNIXPort, tcp.Port):
 
 
 
-class Client(tcp.BaseClient):
+class Client(_SendmsgMixin, tcp.BaseClient):
     """A client for Unix sockets."""
     addressFamily = socket.AF_UNIX
     socketType = socket.SOCK_STREAM
+    _writeSomeDataBase = tcp.BaseClient
 
     def __init__(self, filename, connector, reactor=None, checkPID = 0):
+        _SendmsgMixin.__init__(self)
+        # Normalise the filename using UNIXAddress
+        filename = address.UNIXAddress(filename).name
         self.connector = connector
         self.realAddress = self.addr = filename
-        if checkPID and not lockfile.isLocked(filename + ".lock"):
+        if checkPID and not lockfile.isLocked(filename + b".lock"):
             self._finishInit(None, None, error.BadFileError(filename), reactor)
         self._finishInit(self.doConnect, self.createInternetSocket(),
                          None, reactor)
@@ -181,14 +462,15 @@ class Connector(base.BaseConnector):
         return address.UNIXAddress(self.address)
 
 
+@implementer(interfaces.IUNIXDatagramTransport)
 class DatagramPort(_UNIXPort, udp.Port):
-    """Datagram UNIX port, listening for packets."""
-
-    implements(interfaces.IUNIXDatagramTransport)
+    """
+    Datagram UNIX port, listening for packets.
+    """
 
     addressFamily = socket.AF_UNIX
 
-    def __init__(self, addr, proto, maxPacketSize=8192, mode=0666, reactor=None):
+    def __init__(self, addr, proto, maxPacketSize=8192, mode=0o666, reactor=None):
         """Initialize with address to listen on.
         """
         udp.Port.__init__(self, addr, proto, maxPacketSize=maxPacketSize, reactor=reactor)
@@ -209,8 +491,8 @@ class DatagramPort(_UNIXPort, udp.Port):
             skt = self.createInternetSocket() # XXX: haha misnamed method
             if self.port:
                 skt.bind(self.port)
-        except socket.error, le:
-            raise error.CannotListenError, (None, self.port, le)
+        except socket.error as le:
+            raise error.CannotListenError(None, self.port, le)
         if self.port and _inFilesystemNamespace(self.port):
             # Make the socket readable and writable to the world.
             os.chmod(self.port, self.mode)
@@ -222,12 +504,12 @@ class DatagramPort(_UNIXPort, udp.Port):
         """Write a datagram."""
         try:
             return self.socket.sendto(datagram, address)
-        except socket.error, se:
+        except socket.error as se:
             no = se.args[0]
             if no == EINTR:
                 return self.write(datagram, address)
             elif no == EMSGSIZE:
-                raise error.MessageLengthError, "message too long"
+                raise error.MessageLengthError("message too long")
             elif no == EAGAIN:
                 # oh, well, drop the data. The only difference from UDP
                 # is that UDP won't ever notice.
@@ -258,15 +540,13 @@ class DatagramPort(_UNIXPort, udp.Port):
 
 
 
+@implementer_only(interfaces.IUNIXDatagramConnectedTransport,
+                  *(implementedBy(base.BasePort)))
 class ConnectedDatagramPort(DatagramPort):
     """
     A connected datagram UNIX socket.
     """
-
-    implementsOnly(interfaces.IUNIXDatagramConnectedTransport,
-                   *(implementedBy(base.BasePort)))
-
-    def __init__(self, addr, proto, maxPacketSize=8192, mode=0666,
+    def __init__(self, addr, proto, maxPacketSize=8192, mode=0o666,
                  bindAddress=None, reactor=None):
         assert isinstance(proto, protocol.ConnectedDatagramProtocol)
         DatagramPort.__init__(self, bindAddress, proto, maxPacketSize, mode,
@@ -305,7 +585,7 @@ class ConnectedDatagramPort(DatagramPort):
                 data, addr = self.socket.recvfrom(self.maxPacketSize)
                 read += len(data)
                 self.protocol.datagramReceived(data)
-            except socket.error, se:
+            except socket.error as se:
                 no = se.args[0]
                 if no in (EAGAIN, EINTR, EWOULDBLOCK):
                     return
@@ -323,12 +603,12 @@ class ConnectedDatagramPort(DatagramPort):
         """
         try:
             return self.socket.send(data)
-        except socket.error, se:
+        except socket.error as se:
             no = se.args[0]
             if no == EINTR:
                 return self.write(data)
             elif no == EMSGSIZE:
-                raise error.MessageLengthError, "message too long"
+                raise error.MessageLengthError("message too long")
             elif no == ECONNREFUSED:
                 self.protocol.connectionRefused()
             elif no == EAGAIN:

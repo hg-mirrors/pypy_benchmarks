@@ -1,67 +1,90 @@
-from django.core.management.base import NoArgsCommand, CommandError
+from __future__ import unicode_literals
+
+import sys
+from importlib import import_module
+
+from django.apps import apps
+from django.core.management.base import BaseCommand, CommandError
 from django.core.management.color import no_style
-from optparse import make_option
+from django.core.management.sql import emit_post_migrate_signal, sql_flush
+from django.db import DEFAULT_DB_ALIAS, connections, transaction
+from django.utils import six
+from django.utils.six.moves import input
 
-class Command(NoArgsCommand):
-    option_list = NoArgsCommand.option_list + (
-        make_option('--noinput', action='store_false', dest='interactive', default=True,
-            help='Tells Django to NOT prompt the user for input of any kind.'),
+
+class Command(BaseCommand):
+    help = (
+        'Removes ALL DATA from the database, including data added during '
+        'migrations. Does not achieve a "fresh install" state.'
     )
-    help = "Executes ``sqlflush`` on the current database."
 
-    def handle_noargs(self, **options):
-        from django.conf import settings
-        from django.db import connection, transaction, models
-        from django.core.management.sql import sql_flush, emit_post_sync_signal
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--noinput', '--no-input',
+            action='store_false', dest='interactive', default=True,
+            help='Tells Django to NOT prompt the user for input of any kind.',
+        )
+        parser.add_argument(
+            '--database', action='store', dest='database', default=DEFAULT_DB_ALIAS,
+            help='Nominates a database to flush. Defaults to the "default" database.',
+        )
 
-        verbosity = int(options.get('verbosity', 1))
-        interactive = options.get('interactive')
+    def handle(self, **options):
+        database = options['database']
+        connection = connections[database]
+        verbosity = options['verbosity']
+        interactive = options['interactive']
+        # The following are stealth options used by Django's internals.
+        reset_sequences = options.get('reset_sequences', True)
+        allow_cascade = options.get('allow_cascade', False)
+        inhibit_post_migrate = options.get('inhibit_post_migrate', False)
 
         self.style = no_style()
 
         # Import the 'management' module within each installed app, to register
         # dispatcher events.
-        for app_name in settings.INSTALLED_APPS:
+        for app_config in apps.get_app_configs():
             try:
-                __import__(app_name + '.management', {}, {}, [''])
+                import_module('.management', app_config.name)
             except ImportError:
                 pass
 
-        sql_list = sql_flush(self.style, only_django=True)
+        sql_list = sql_flush(self.style, connection, only_django=True,
+                             reset_sequences=reset_sequences,
+                             allow_cascade=allow_cascade)
 
         if interactive:
-            confirm = raw_input("""You have requested a flush of the database.
+            confirm = input("""You have requested a flush of the database.
 This will IRREVERSIBLY DESTROY all data currently in the %r database,
-and return each table to the state it was in after syncdb.
+and return each table to an empty state.
 Are you sure you want to do this?
 
-    Type 'yes' to continue, or 'no' to cancel: """ % settings.DATABASE_NAME)
+    Type 'yes' to continue, or 'no' to cancel: """ % connection.settings_dict['NAME'])
         else:
             confirm = 'yes'
 
         if confirm == 'yes':
             try:
-                cursor = connection.cursor()
-                for sql in sql_list:
-                    cursor.execute(sql)
-            except Exception, e:
-                transaction.rollback_unless_managed()
-                raise CommandError("""Database %s couldn't be flushed. Possible reasons:
-      * The database isn't running or isn't configured correctly.
-      * At least one of the expected database tables doesn't exist.
-      * The SQL was invalid.
-    Hint: Look at the output of 'django-admin.py sqlflush'. That's the SQL this command wasn't able to run.
-    The full error: %s""" % (settings.DATABASE_NAME, e))
-            transaction.commit_unless_managed()
+                with transaction.atomic(using=database,
+                                        savepoint=connection.features.can_rollback_ddl):
+                    with connection.cursor() as cursor:
+                        for sql in sql_list:
+                            cursor.execute(sql)
+            except Exception as e:
+                new_msg = (
+                    "Database %s couldn't be flushed. Possible reasons:\n"
+                    "  * The database isn't running or isn't configured correctly.\n"
+                    "  * At least one of the expected database tables doesn't exist.\n"
+                    "  * The SQL was invalid.\n"
+                    "Hint: Look at the output of 'django-admin sqlflush'. "
+                    "That's the SQL this command wasn't able to run.\n"
+                    "The full error: %s") % (connection.settings_dict['NAME'], e)
+                six.reraise(CommandError, CommandError(new_msg), sys.exc_info()[2])
 
-            # Emit the post sync signal. This allows individual
-            # applications to respond as if the database had been
-            # sync'd from scratch.
-            emit_post_sync_signal(models.get_models(), verbosity, interactive)
-
-            # Reinstall the initial_data fixture.
-            from django.core.management import call_command
-            call_command('loaddata', 'initial_data', **options)
-
+            # Empty sql_list may signify an empty database and post_migrate would then crash
+            if sql_list and not inhibit_post_migrate:
+                # Emit the post migrate signal. This allows individual applications to
+                # respond as if the database had been migrated from scratch.
+                emit_post_migrate_signal(verbosity, interactive, database)
         else:
-            print "Flush cancelled."
+            self.stdout.write("Flush cancelled.\n")

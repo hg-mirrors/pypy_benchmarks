@@ -243,7 +243,7 @@ class Battle(object):
 			return []
 		temp = self.getSuccessors(statep)
 		if statep[0] != 0:
-			temp = zip(*temp)[0] if temp else []
+			temp = list(zip(*temp))[0] if temp else []
 		return temp
 
 	def evaluate(self, tolerance=0.15):
@@ -262,7 +262,7 @@ class Battle(object):
 		itercount = 0
 		while dmax[initial_statep] - dmin[initial_statep] > tolerance:
 			itercount += 1
-			#print itercount, dmax[initial_statep] - dmin[initial_statep], len(frozen)
+			#print(itercount, dmax[initial_statep] - dmin[initial_statep], len(frozen))
 
 			for sp in stateps:
 				if sp in frozen:

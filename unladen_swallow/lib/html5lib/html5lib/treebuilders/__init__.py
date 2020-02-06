@@ -1,92 +1,88 @@
-"""A collection of modules for building different kinds of tree from
-HTML documents.
+"""A collection of modules for building different kinds of trees from HTML
+documents.
 
 To create a treebuilder for a new type of tree, you need to do
 implement several things:
 
-1) A set of classes for various types of elements: Document, Doctype,
-Comment, Element. These must implement the interface of
-_base.treebuilders.Node (although comment nodes have a different
-signature for their constructor, see treebuilders.simpletree.Comment)
-Textual content may also be implemented as another node type, or not, as
-your tree implementation requires.
+1. A set of classes for various types of elements: Document, Doctype, Comment,
+   Element. These must implement the interface of ``base.treebuilders.Node``
+   (although comment nodes have a different signature for their constructor,
+   see ``treebuilders.etree.Comment``) Textual content may also be implemented
+   as another node type, or not, as your tree implementation requires.
 
-2) A treebuilder object (called TreeBuilder by convention) that
-inherits from treebuilders._base.TreeBuilder. This has 4 required attributes:
-documentClass - the class to use for the bottommost node of a document
-elementClass - the class to use for HTML Elements
-commentClass - the class to use for comments
-doctypeClass - the class to use for doctypes
-It also has one required method:
-getDocument - Returns the root node of the complete document tree
+2. A treebuilder object (called ``TreeBuilder`` by convention) that inherits
+   from ``treebuilders.base.TreeBuilder``. This has 4 required attributes:
 
-3) If you wish to run the unit tests, you must also create a
-testSerializer method on your treebuilder which accepts a node and
-returns a string containing Node and its children serialized according
-to the format used in the unittests
+   * ``documentClass`` - the class to use for the bottommost node of a document
+   * ``elementClass`` - the class to use for HTML Elements
+   * ``commentClass`` - the class to use for comments
+   * ``doctypeClass`` - the class to use for doctypes
 
-The supplied simpletree module provides a python-only implementation
-of a full treebuilder and is a useful reference for the semantics of
-the various methods.
+   It also has one required method:
+
+   * ``getDocument`` - Returns the root node of the complete document tree
+
+3. If you wish to run the unit tests, you must also create a ``testSerializer``
+   method on your treebuilder which accepts a node and returns a string
+   containing Node and its children serialized according to the format used in
+   the unittests
+
 """
+
+from __future__ import absolute_import, division, unicode_literals
+
+from .._utils import default_etree
 
 treeBuilderCache = {}
 
+
 def getTreeBuilder(treeType, implementation=None, **kwargs):
-    """Get a TreeBuilder class for various types of tree with built-in support
-    
-    treeType - the name of the tree type required (case-insensitive). Supported
-               values are "simpletree", "dom", "etree" and "beautifulsoup"
-               
-               "simpletree" - a built-in DOM-ish tree type with support for some
-                              more pythonic idioms.
-                "dom" - A generic builder for DOM implementations, defaulting to
-                        a xml.dom.minidom based implementation for the sake of
-                        backwards compatibility (as releases up until 0.10 had a
-                        builder called "dom" that was a minidom implemenation).
-                "etree" - A generic builder for tree implementations exposing an
-                          elementtree-like interface (known to work with
-                          ElementTree, cElementTree and lxml.etree).
-                "beautifulsoup" - Beautiful soup (if installed)
-               
-    implementation - (Currently applies to the "etree" and "dom" tree types). A
-                      module implementing the tree type e.g.
-                      xml.etree.ElementTree or lxml.etree."""
-    
+    """Get a TreeBuilder class for various types of trees with built-in support
+
+    :arg treeType: the name of the tree type required (case-insensitive). Supported
+        values are:
+
+        * "dom" - A generic builder for DOM implementations, defaulting to a
+          xml.dom.minidom based implementation.
+        * "etree" - A generic builder for tree implementations exposing an
+          ElementTree-like interface, defaulting to xml.etree.cElementTree if
+          available and xml.etree.ElementTree if not.
+        * "lxml" - A etree-based builder for lxml.etree, handling limitations
+          of lxml's implementation.
+
+    :arg implementation: (Currently applies to the "etree" and "dom" tree
+        types). A module implementing the tree type e.g. xml.etree.ElementTree
+        or xml.etree.cElementTree.
+
+    :arg kwargs: Any additional options to pass to the TreeBuilder when
+        creating it.
+
+    Example:
+
+    >>> from html5lib.treebuilders import getTreeBuilder
+    >>> builder = getTreeBuilder('etree')
+
+    """
+
     treeType = treeType.lower()
     if treeType not in treeBuilderCache:
         if treeType == "dom":
-            import dom
-            # XXX: Keep backwards compatibility by using minidom if no implementation is given
-            if implementation == None:
+            from . import dom
+            # Come up with a sane default (pref. from the stdlib)
+            if implementation is None:
                 from xml.dom import minidom
                 implementation = minidom
-            # XXX: NEVER cache here, caching is done in the dom submodule
+            # NEVER cache here, caching is done in the dom submodule
             return dom.getDomModule(implementation, **kwargs).TreeBuilder
-        elif treeType == "simpletree":
-            import simpletree
-            treeBuilderCache[treeType] = simpletree.TreeBuilder
-        elif treeType == "beautifulsoup":
-            import soup
-            treeBuilderCache[treeType] = soup.TreeBuilder
         elif treeType == "lxml":
-            import etree_lxml
+            from . import etree_lxml
             treeBuilderCache[treeType] = etree_lxml.TreeBuilder
         elif treeType == "etree":
-            # Come up with a sane default
-            if implementation == None:
-                try:
-                    import xml.etree.cElementTree as ET
-                except ImportError:
-                    try:
-                        import xml.etree.ElementTree as ET
-                    except ImportError:
-                        try:
-                            import cElementTree as ET
-                        except ImportError:
-                            import elementtree.ElementTree as ET
-                implementation = ET
-            import etree
-            # XXX: NEVER cache here, caching is done in the etree submodule
+            from . import etree
+            if implementation is None:
+                implementation = default_etree
+            # NEVER cache here, caching is done in the etree submodule
             return etree.getETreeModule(implementation, **kwargs).TreeBuilder
+        else:
+            raise ValueError("""Unrecognised treebuilder "%s" """ % treeType)
     return treeBuilderCache.get(treeType)

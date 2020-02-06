@@ -27,6 +27,9 @@ new syntax to remain compatible with future Genshi releases.
 """
 
 import re
+import sys
+if sys.version_info[0] > 2:
+    unicode = str
 
 from genshi.core import TEXT
 from genshi.template.base import BadDirectiveError, Template, \
@@ -201,7 +204,7 @@ class NewTextTemplate(Template):
                 try:
                     suite = Suite(value, self.filepath, lineno,
                                   lookup=self.lookup)
-                except SyntaxError, err:
+                except SyntaxError as err:
                     raise TemplateSyntaxError(err, self.filepath,
                                               lineno + (err.lineno or 1) - 1)
                 pos = (self.filename, lineno, 0)

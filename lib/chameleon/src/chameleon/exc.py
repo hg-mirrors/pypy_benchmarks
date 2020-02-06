@@ -2,6 +2,7 @@
 
 import traceback
 
+from .utils import create_formatted_exception
 from .utils import format_kwargs
 from .utils import safe_native
 from .tokenize import Token
@@ -92,23 +93,52 @@ def compute_source_marker(line, column, expression, size):
     return s, column * " " + marker
 
 
-def format_exception(exc):
-    formatted = traceback.format_exception_only(type(exc), exc)[-1]
-    formatted_class = "%s:" % type(exc).__name__
+def iter_source_marker_lines(source, expression, line, column):
+    for i, l in enumerate(source):
+        if i + 1 != line:
+            continue
 
-    if formatted.startswith(formatted_class):
-        formatted = formatted[len(formatted_class):].lstrip()
+        s, marker = compute_source_marker(
+            l, column, expression, LENGTH
+        )
 
-    return formatted
+        yield " - Source:     %s" % s
+        yield "               %s" % marker
+        break
+
+
+def ellipsify(string, limit):
+    if len(string) > limit:
+        return "... " + string[-(limit - 4):]
+
+    return string
+
+
+class RenderError(Exception):
+    """An error raised during rendering.
+
+    This class is used as a mixin which is added to the original
+    exception.
+    """
 
 
 class TemplateError(Exception):
     """An error raised by Chameleon.
 
+    >>> from chameleon.tokenize import Token
+    >>> token = Token('token')
+    >>> message = 'message'
+
     Make sure the exceptions can be copied:
 
     >>> from copy import copy
-    >>> copy(TemplateError('message', 'token'))
+    >>> copy(TemplateError(message, token))
+    TemplateError('message', 'token')
+
+    And pickle/unpickled:
+
+    >>> from pickle import dumps, loads
+    >>> loads(dumps(TemplateError(message, token), -1))
     TemplateError('message', 'token')
 
     """
@@ -117,40 +147,72 @@ class TemplateError(Exception):
         if not isinstance(token, Token):
             token = Token(token, 0)
 
-        self.msg = msg
-        self.token = token
-        self.filename = token.filename
+        Exception.__init__(self, msg, token)
 
     def __copy__(self):
         inst = Exception.__new__(type(self))
-        inst.__dict__ = self.__dict__.copy()
+        inst.args = self.args
         return inst
 
     def __str__(self):
-        text = "%s\n\n" % self.msg
-        text += " - String:   \"%s\"" % self.token
+        text = "%s\n\n" % self.args[0]
+        text += " - String:     \"%s\"" % safe_native(self.token)
 
         if self.filename:
             text += "\n"
-            text += " - Filename: %s" % self.filename
+            text += " - Filename:   %s" % self.filename
 
-        try:
-            line, column = self.token.location
-        except AttributeError:
-            pass
-        else:
-            text += "\n"
-            text += " - Location: (%d:%d)" % (line, column)
+        line, column = self.location
+        text += "\n"
+        text += " - Location:   (line %d: col %d)" % (line, column)
+
+        if line and column:
+            if self.token.source:
+                lines = iter_source_marker_lines(
+                    self.token.source.splitlines(),
+                    self.token, line, column
+                )
+            elif self.filename and not self.filename.startswith('<'):
+                try:
+                    f = open(self.filename, 'r')
+                except IOError:
+                    pass
+                else:
+                    it = iter_source_marker_lines(
+                        iter(f), self.token, line, column
+                    )
+                    try:
+                        lines = list(lines)
+                    finally:
+                        f.close()
+            else:
+                lines = ()
+
+            # Prepend newlines.
+            for line in lines:
+                text += "\n" + line
 
         return text
 
     def __repr__(self):
         try:
             return "%s('%s', '%s')" % (
-                self.__class__.__name__, self.msg, self.token
+                self.__class__.__name__, self.args[0], safe_native(self.token)
                 )
         except AttributeError:
             return object.__repr__(self)
+
+    @property
+    def token(self):
+        return self.args[1]
+
+    @property
+    def filename(self):
+        return self.token.filename
+
+    @property
+    def location(self):
+        return self.token.location
 
     @property
     def offset(self):
@@ -227,7 +289,6 @@ class ExceptionFormatter(object):
 
             if isinstance(exc, UnicodeDecodeError):
                 string = safe_native(exc.object)
-
                 s, marker = compute_source_marker(
                     string, exc.start, string[exc.start:exc.end], LENGTH
                     )
@@ -235,32 +296,37 @@ class ExceptionFormatter(object):
                 out.append(" - Stream:     %s" % s)
                 out.append("               %s" % marker)
 
-            out.append(" - Expression: \"%s\"" % expression)
-            out.append(" - Filename:   %s" % (filename or "<string>"))
-            out.append(" - Location:   (%d:%d)" % (line, column))
+            _filename = ellipsify(filename, 60) if filename else "<string>"
 
-            if filename and line and column:
+            out.append(" - Expression: \"%s\"" % expression)
+            out.append(" - Filename:   %s" % _filename)
+            out.append(" - Location:   (line %d: col %d)" % (line, column))
+
+            if filename and not filename.startswith('<') and line and column:
                 try:
                     f = open(filename, 'r')
                 except IOError:
                     pass
                 else:
+                    lines = iter_source_marker_lines(
+                        iter(f), expression, line, column
+                    )
                     try:
-                        # Pick out source line and format marker
-                        for i, l in enumerate(f):
-                            if i + 1 == line:
-                                s, marker = compute_source_marker(
-                                    l, column, expression, LENGTH
-                                    )
-
-                                out.append("")
-                                out.append(" - Source:     %s" % s)
-                                out.append("               %s" % marker)
-                                break
+                        out.extend(lines)
                     finally:
                         f.close()
 
         out.append(" - Arguments:  %s" % "\n".join(formatted))
-        formatted_exc = format_exception(exc)
 
-        return "\n".join(map(safe_native, [formatted_exc] + out))
+        if isinstance(exc.__str__, ExceptionFormatter):
+            # This is a nested error that has already been wrapped
+            # We must unwrap it before trying to format it to prevent
+            # recursion
+            exc = create_formatted_exception(exc, type(exc), exc._original__str__)
+        formatted = traceback.format_exception_only(type(exc), exc)[-1]
+        formatted_class = "%s:" % type(exc).__name__
+
+        if formatted.startswith(formatted_class):
+            formatted = formatted[len(formatted_class):].lstrip()
+
+        return "\n".join(map(safe_native, [formatted] + out))

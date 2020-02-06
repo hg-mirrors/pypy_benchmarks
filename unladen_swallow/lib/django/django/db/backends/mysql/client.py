@@ -1,20 +1,23 @@
-from django.db.backends import BaseDatabaseClient
-from django.conf import settings
-import os
+import subprocess
+
+from django.db.backends.base.client import BaseDatabaseClient
+
 
 class DatabaseClient(BaseDatabaseClient):
     executable_name = 'mysql'
 
-    def runshell(self):
-        args = ['']
-        db = settings.DATABASE_OPTIONS.get('db', settings.DATABASE_NAME)
-        user = settings.DATABASE_OPTIONS.get('user', settings.DATABASE_USER)
-        passwd = settings.DATABASE_OPTIONS.get('passwd', settings.DATABASE_PASSWORD)
-        host = settings.DATABASE_OPTIONS.get('host', settings.DATABASE_HOST)
-        port = settings.DATABASE_OPTIONS.get('port', settings.DATABASE_PORT)
-        defaults_file = settings.DATABASE_OPTIONS.get('read_default_file')
+    @classmethod
+    def settings_to_cmd_args(cls, settings_dict):
+        args = [cls.executable_name]
+        db = settings_dict['OPTIONS'].get('db', settings_dict['NAME'])
+        user = settings_dict['OPTIONS'].get('user', settings_dict['USER'])
+        passwd = settings_dict['OPTIONS'].get('passwd', settings_dict['PASSWORD'])
+        host = settings_dict['OPTIONS'].get('host', settings_dict['HOST'])
+        port = settings_dict['OPTIONS'].get('port', settings_dict['PORT'])
+        cert = settings_dict['OPTIONS'].get('ssl', {}).get('ca')
+        defaults_file = settings_dict['OPTIONS'].get('read_default_file')
         # Seems to be no good way to set sql_mode with CLI.
-    
+
         if defaults_file:
             args += ["--defaults-file=%s" % defaults_file]
         if user:
@@ -22,10 +25,18 @@ class DatabaseClient(BaseDatabaseClient):
         if passwd:
             args += ["--password=%s" % passwd]
         if host:
-            args += ["--host=%s" % host]
+            if '/' in host:
+                args += ["--socket=%s" % host]
+            else:
+                args += ["--host=%s" % host]
         if port:
             args += ["--port=%s" % port]
+        if cert:
+            args += ["--ssl-ca=%s" % cert]
         if db:
             args += [db]
+        return args
 
-        os.execvp(self.executable_name, args)
+    def runshell(self):
+        args = DatabaseClient.settings_to_cmd_args(self.connection.settings_dict)
+        subprocess.check_call(args)

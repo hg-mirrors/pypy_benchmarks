@@ -3,27 +3,70 @@
 
 """
 Tests for implementations of L{IReactorProcess}.
+
+@var properEnv: A copy of L{os.environ} which has L{bytes} keys/values on POSIX
+    platforms and native L{str} keys/values on Windows.
 """
 
-__metaclass__ = type
+from __future__ import division, absolute_import, print_function
 
-import os, sys, signal, threading
+import io
+import os
+import signal
+import sys
+import threading
+import twisted
+import subprocess
 
-from twisted.trial.unittest import TestCase, SkipTest
+from twisted.trial.unittest import TestCase
 from twisted.internet.test.reactormixins import ReactorBuilder
-from twisted.python.compat import set
 from twisted.python.log import msg, err
 from twisted.python.runtime import platform
-from twisted.python.filepath import FilePath
+from twisted.python.filepath import FilePath, _asFilesystemBytes
+from twisted.python.compat import (networkString, range, items,
+                                   bytesEnviron, unicode)
 from twisted.internet import utils
 from twisted.internet.interfaces import IReactorProcess, IProcessTransport
 from twisted.internet.defer import Deferred, succeed
 from twisted.internet.protocol import ProcessProtocol
 from twisted.internet.error import ProcessDone, ProcessTerminated
-from twisted.internet import _signals
-from twisted.python import runtime
-if not runtime.platform.isWindows():
+
+
+# Get the current Python executable as a bytestring.
+pyExe = FilePath(sys.executable)._asBytesPath()
+twistedRoot = FilePath(twisted.__file__).parent().parent()
+
+_uidgidSkip = None
+if platform.isWindows():
+    resource = None
+    process = None
+    _uidgidSkip = "Cannot change UID/GID on Windows"
+
+    properEnv = dict(os.environ)
+    properEnv["PYTHONPATH"] = os.pathsep.join(sys.path)
+else:
+    import resource
     from twisted.internet import process
+    if os.getuid() != 0:
+        _uidgidSkip = "Cannot change UID/GID except as root"
+
+    properEnv = bytesEnviron()
+    properEnv[b"PYTHONPATH"] = os.pathsep.join(sys.path).encode(
+        sys.getfilesystemencoding())
+
+
+
+def onlyOnPOSIX(testMethod):
+    """
+    Only run this test on POSIX platforms.
+
+    @param testMethod: A test function, being decorated.
+
+    @return: the C{testMethod} argument.
+    """
+    if resource is None:
+        testMethod.skip = "Test only applies to POSIX platforms."
+    return testMethod
 
 
 
@@ -31,9 +74,17 @@ class _ShutdownCallbackProcessProtocol(ProcessProtocol):
     """
     An L{IProcessProtocol} which fires a Deferred when the process it is
     associated with ends.
+
+    @ivar received: A C{dict} mapping file descriptors to lists of bytes
+        received from the child process on those file descriptors.
     """
     def __init__(self, whenFinished):
         self.whenFinished = whenFinished
+        self.received = {}
+
+
+    def childDataReceived(self, fd, bytes):
+        self.received.setdefault(fd, []).append(bytes)
 
 
     def processEnded(self, reason):
@@ -62,7 +113,7 @@ class ProcessTestsBuilderBase(ReactorBuilder):
 
         reactor = self.buildReactor()
         transport = reactor.spawnProcess(
-            protocol, sys.executable, [sys.executable, "-c", ""],
+            protocol, pyExe, [pyExe, b"-c", b""],
             usePTY=self.usePTY)
 
         # The transport is available synchronously, so we can check it right
@@ -77,6 +128,87 @@ class ProcessTestsBuilderBase(ReactorBuilder):
         # Let the process run and exit so we don't leave a zombie around.
         ended.addCallback(lambda ignored: reactor.stop())
         self.runReactor(reactor)
+
+
+    def _writeTest(self, write):
+        """
+        Helper for testing L{IProcessTransport} write functionality.  This
+        method spawns a child process and gives C{write} a chance to write some
+        bytes to it.  It then verifies that the bytes were actually written to
+        it (by relying on the child process to echo them back).
+
+        @param write: A two-argument callable.  This is invoked with a process
+            transport and some bytes to write to it.
+        """
+        reactor = self.buildReactor()
+
+        ended = Deferred()
+        protocol = _ShutdownCallbackProcessProtocol(ended)
+
+        bytesToSend = b"hello, world" + networkString(os.linesep)
+        program = (
+            b"import sys\n"
+            b"sys.stdout.write(sys.stdin.readline())\n"
+            )
+
+        def startup():
+            transport = reactor.spawnProcess(
+                protocol, pyExe, [pyExe, b"-c", program])
+            try:
+                write(transport, bytesToSend)
+            except:
+                err(None, "Unhandled exception while writing")
+                transport.signalProcess('KILL')
+        reactor.callWhenRunning(startup)
+
+        ended.addCallback(lambda ignored: reactor.stop())
+
+        self.runReactor(reactor)
+        self.assertEqual(bytesToSend, b"".join(protocol.received[1]))
+
+
+    def test_write(self):
+        """
+        L{IProcessTransport.write} writes the specified C{bytes} to the standard
+        input of the child process.
+        """
+        def write(transport, bytesToSend):
+            transport.write(bytesToSend)
+        self._writeTest(write)
+
+
+    def test_writeSequence(self):
+        """
+        L{IProcessTransport.writeSequence} writes the specified C{list} of
+        C{bytes} to the standard input of the child process.
+        """
+        def write(transport, bytesToSend):
+            transport.writeSequence([bytesToSend])
+        self._writeTest(write)
+
+
+    def test_writeToChild(self):
+        """
+        L{IProcessTransport.writeToChild} writes the specified C{bytes} to the
+        specified file descriptor of the child process.
+        """
+        def write(transport, bytesToSend):
+            transport.writeToChild(0, bytesToSend)
+        self._writeTest(write)
+
+
+    def test_writeToChildBadFileDescriptor(self):
+        """
+        L{IProcessTransport.writeToChild} raises L{KeyError} if passed a file
+        descriptor which is was not set up by L{IReactorProcess.spawnProcess}.
+        """
+        def write(transport, bytesToSend):
+            try:
+                self.assertRaises(KeyError, transport.writeToChild, 13, bytesToSend)
+            finally:
+                # Just get the process to exit so the test can complete
+                transport.write(bytesToSend)
+        self._writeTest(write)
 
 
     def test_spawnProcessEarlyIsReaped(self):
@@ -105,8 +237,8 @@ class ProcessTestsBuilderBase(ReactorBuilder):
         # Start a process - before starting the reactor!
         ended = Deferred()
         reactor.spawnProcess(
-            _ShutdownCallbackProcessProtocol(ended), sys.executable,
-            [sys.executable, "-c", ""], usePTY=self.usePTY, childFDs=childFDs)
+            _ShutdownCallbackProcessProtocol(ended), pyExe,
+            [pyExe, b"-c", b""], usePTY=self.usePTY, childFDs=childFDs)
 
         # Wait for the SIGCHLD (which might have been delivered before we got
         # here, but that's okay because the signal handler was installed above,
@@ -147,15 +279,15 @@ class ProcessTestsBuilderBase(ReactorBuilder):
         sigNum = getattr(signal, 'SIG' + sigName)
         exited = Deferred()
         source = (
-            "import sys\n"
+            b"import sys\n"
             # Talk so the parent process knows the process is running.  This is
             # necessary because ProcessProtocol.makeConnection may be called
             # before this process is exec'd.  It would be unfortunate if we
             # SIGTERM'd the Twisted process while it was on its way to doing
             # the exec.
-            "sys.stdout.write('x')\n"
-            "sys.stdout.flush()\n"
-            "sys.stdin.read()\n")
+            b"sys.stdout.write('x')\n"
+            b"sys.stdout.flush()\n"
+            b"sys.stdin.read()\n")
 
         class Exiter(ProcessProtocol):
             def childDataReceived(self, fd, data):
@@ -179,10 +311,11 @@ class ProcessTestsBuilderBase(ReactorBuilder):
 
         reactor = self.buildReactor()
         reactor.callWhenRunning(
-            reactor.spawnProcess, Exiter(), sys.executable,
-            [sys.executable, "-c", source], usePTY=self.usePTY)
+            reactor.spawnProcess, Exiter(), pyExe,
+            [pyExe, b"-c", source], usePTY=self.usePTY)
 
-        def cbExited((failure,)):
+        def cbExited(args):
+            failure, = args
             # Trapping implicitly verifies that it's a Failure (rather than
             # an exception) and explicitly makes sure it's the right type.
             failure.trap(ProcessTerminated)
@@ -194,11 +327,11 @@ class ProcessTestsBuilderBase(ReactorBuilder):
                 # say.  Anyway, this inconsistency between different platforms
                 # is extremely unfortunate and I would remove it if I
                 # could. -exarkun
-                self.assertIdentical(err.signal, None)
+                self.assertIsNone(err.signal)
                 self.assertEqual(err.exitCode, 1)
             else:
                 self.assertEqual(err.signal, sigNum)
-                self.assertIdentical(err.exitCode, None)
+                self.assertIsNone(err.exitCode)
 
         exited.addCallback(cbExited)
         exited.addErrback(err)
@@ -215,87 +348,255 @@ class ProcessTestsBuilderBase(ReactorBuilder):
 
         Older versions of Twisted installed a SIGCHLD handler on POSIX without
         using the feature exposed by the SA_RESTART flag to sigaction(2).  The
-        most noticable problem this caused was for blocking reads and writes to
+        most noticeable problem this caused was for blocking reads and writes to
         sometimes fail with EINTR.
         """
         reactor = self.buildReactor()
-
-        # XXX Since pygobject/pygtk wants to use signal.set_wakeup_fd,
-        # we aren't actually providing this functionality on the glib2
-        # or gtk2 reactors yet.  See #4286 for the possibility of
-        # improving this.
-        skippedReactors = ["Glib2Reactor", "Gtk2Reactor", "PortableGtkReactor"]
-        hasSigInterrupt = getattr(signal, "siginterrupt", None) is not None
-        reactorClassName = reactor.__class__.__name__
-        if reactorClassName in skippedReactors and not hasSigInterrupt:
-            raise SkipTest(
-                "%s is not supported without siginterrupt" % reactorClassName)
-        if _signals.installHandler.__name__  == "_installHandlerUsingSignal":
-            raise SkipTest("_signals._installHandlerUsingSignal doesn't support this feature")
-
         result = []
 
         def f():
             try:
-                f1 = os.popen('%s -c "import time; time.sleep(0.1)"' %
-                    (sys.executable,))
-                f2 = os.popen('%s -c "import time; time.sleep(0.5); print \'Foo\'"' %
-                    (sys.executable,))
+                exe = pyExe.decode(sys.getfilesystemencoding())
+
+                subprocess.Popen([exe, "-c", "import time; time.sleep(0.1)"])
+                f2 = subprocess.Popen([exe, "-c",
+                                       ("import time; time.sleep(0.5);"
+                                        "print(\'Foo\')")],
+                                      stdout=subprocess.PIPE)
                 # The read call below will blow up with an EINTR from the
                 # SIGCHLD from the first process exiting if we install a
                 # SIGCHLD handler without SA_RESTART.  (which we used to do)
-                result.append(f2.read())
+                with f2.stdout:
+                    result.append(f2.stdout.read())
             finally:
                 reactor.stop()
 
         reactor.callWhenRunning(f)
         self.runReactor(reactor)
-        self.assertEqual(result, ["Foo\n"])
+        self.assertEqual(result, [b"Foo" + os.linesep.encode('ascii')])
 
 
+    @onlyOnPOSIX
     def test_openFileDescriptors(self):
         """
-        A spawned process has only stdin, stdout and stderr open
-        (file descriptor 3 is also reported as open, because of the call to
-        'os.listdir()').
+        Processes spawned with spawnProcess() close all extraneous file
+        descriptors in the parent.  They do have a stdin, stdout, and stderr
+        open.
         """
-        from twisted.python.runtime import platformType
-        if platformType != "posix":
-            raise SkipTest("Test only applies to POSIX platforms")
 
-        here = FilePath(__file__)
-        top = here.parent().parent().parent().parent()
-        source = (
-            "import sys",
-            "sys.path.insert(0, '%s')" % (top.path,),
-            "from twisted.internet import process",
-            "sys.stdout.write(str(process._listOpenFDs()))",
-            "sys.stdout.flush()")
+        # To test this, we are going to open a file descriptor in the parent
+        # that is unlikely to be opened in the child, then verify that it's not
+        # open in the child.
+        source = networkString("""
+import sys
+sys.path.insert(0, '{0}')
+from twisted.internet import process
+sys.stdout.write(repr(process._listOpenFDs()))
+sys.stdout.flush()""".format(twistedRoot.path))
 
-        def checkOutput(output):
-            self.assertEqual('[0, 1, 2, 3]', output)
+        r, w = os.pipe()
+        self.addCleanup(os.close, r)
+        self.addCleanup(os.close, w)
+
+        # The call to "os.listdir()" (in _listOpenFDs's implementation) opens a
+        # file descriptor (with "opendir"), which shows up in _listOpenFDs's
+        # result.  And speaking of "random" file descriptors, the code required
+        # for _listOpenFDs itself imports logger, which imports random, which
+        # (depending on your Python version) might leave /dev/urandom open.
+
+        # More generally though, even if we were to use an extremely minimal C
+        # program, the operating system would be within its rights to open file
+        # descriptors we might not know about in the C library's
+        # initialization; things like debuggers, profilers, or nsswitch plugins
+        # might open some and this test should pass in those environments.
+
+        # Although some of these file descriptors aren't predictable, we should
+        # at least be able to select a very large file descriptor which is very
+        # unlikely to be opened automatically in the subprocess.  (Apply a
+        # fudge factor to avoid hard-coding something too near a limit
+        # condition like the maximum possible file descriptor, which a library
+        # might at least hypothetically select.)
+
+        fudgeFactor = 17
+        unlikelyFD = (resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+                      - fudgeFactor)
+
+        os.dup2(w, unlikelyFD)
+        self.addCleanup(os.close, unlikelyFD)
+
+        output = io.BytesIO()
+        class GatheringProtocol(ProcessProtocol):
+            outReceived = output.write
+            def processEnded(self, reason):
+                reactor.stop()
 
         reactor = self.buildReactor()
 
-        class Protocol(ProcessProtocol):
-            def __init__(self):
-                self.output = []
-
-            def outReceived(self, data):
-                self.output.append(data)
-
-            def processEnded(self, reason):
-                try:
-                    checkOutput("".join(self.output))
-                finally:
-                    reactor.stop()
-
-        proto = Protocol()
         reactor.callWhenRunning(
-            reactor.spawnProcess, proto, sys.executable,
-            [sys.executable, "-Wignore", "-c", "\n".join(source)],
-            usePTY=self.usePTY)
+            reactor.spawnProcess, GatheringProtocol(), pyExe,
+            [pyExe, b"-Wignore", b"-c", source], usePTY=self.usePTY)
+
         self.runReactor(reactor)
+        reportedChildFDs = set(eval(output.getvalue()))
+
+        stdFDs = [0, 1, 2]
+
+        # Unfortunately this assertion is still not *entirely* deterministic,
+        # since hypothetically, any library could open any file descriptor at
+        # any time.  See comment above.
+        self.assertEqual(
+            reportedChildFDs.intersection(set(stdFDs + [unlikelyFD])),
+            set(stdFDs)
+        )
+
+
+    @onlyOnPOSIX
+    def test_errorDuringExec(self):
+        """
+        When L{os.execvpe} raises an exception, it will format that exception
+        on stderr as UTF-8, regardless of system encoding information.
+        """
+
+        def execvpe(*args, **kw):
+            # Ensure that real traceback formatting has some non-ASCII in it,
+            # by forcing the filename of the last frame to contain non-ASCII.
+            filename = u"<\N{SNOWMAN}>"
+            if not isinstance(filename, str):
+                filename = filename.encode("utf-8")
+            codeobj = compile("1/0", filename, "single")
+            eval(codeobj)
+
+        self.patch(os, "execvpe", execvpe)
+        self.patch(sys, "getfilesystemencoding", lambda: "ascii")
+
+        reactor = self.buildReactor()
+        output = io.BytesIO()
+
+        @reactor.callWhenRunning
+        def whenRunning():
+            class TracebackCatcher(ProcessProtocol, object):
+                errReceived = output.write
+                def processEnded(self, reason):
+                    reactor.stop()
+            reactor.spawnProcess(TracebackCatcher(), pyExe,
+                                 [pyExe, b"-c", b""])
+
+        self.runReactor(reactor, timeout=30)
+        self.assertIn(u"\N{SNOWMAN}".encode("utf-8"), output.getvalue())
+
+
+    def test_timelyProcessExited(self):
+        """
+        If a spawned process exits, C{processExited} will be called in a
+        timely manner.
+        """
+        reactor = self.buildReactor()
+
+        class ExitingProtocol(ProcessProtocol):
+            exited = False
+
+            def processExited(protoSelf, reason):
+                protoSelf.exited = True
+                reactor.stop()
+                self.assertEqual(reason.value.exitCode, 0)
+
+        protocol = ExitingProtocol()
+        reactor.callWhenRunning(
+            reactor.spawnProcess, protocol, pyExe,
+            [pyExe, b"-c", b"raise SystemExit(0)"],
+            usePTY=self.usePTY)
+
+        # This will timeout if processExited isn't called:
+        self.runReactor(reactor, timeout=30)
+        self.assertTrue(protocol.exited)
+
+
+    def _changeIDTest(self, which):
+        """
+        Launch a child process, using either the C{uid} or C{gid} argument to
+        L{IReactorProcess.spawnProcess} to change either its UID or GID to a
+        different value.  If the child process reports this hasn't happened,
+        raise an exception to fail the test.
+
+        @param which: Either C{b"uid"} or C{b"gid"}.
+        """
+        program = [
+            "import os",
+            "raise SystemExit(os.get%s() != 1)" % (which,)]
+
+        container = []
+        class CaptureExitStatus(ProcessProtocol):
+            def processEnded(self, reason):
+                container.append(reason)
+                reactor.stop()
+
+        reactor = self.buildReactor()
+        protocol = CaptureExitStatus()
+        reactor.callWhenRunning(
+            reactor.spawnProcess, protocol, pyExe,
+            [pyExe, "-c", "\n".join(program)],
+            **{which: 1})
+
+        self.runReactor(reactor)
+
+        self.assertEqual(0, container[0].value.exitCode)
+
+
+    def test_changeUID(self):
+        """
+        If a value is passed for L{IReactorProcess.spawnProcess}'s C{uid}, the
+        child process is run with that UID.
+        """
+        self._changeIDTest("uid")
+    if _uidgidSkip is not None:
+        test_changeUID.skip = _uidgidSkip
+
+
+    def test_changeGID(self):
+        """
+        If a value is passed for L{IReactorProcess.spawnProcess}'s C{gid}, the
+        child process is run with that GID.
+        """
+        self._changeIDTest("gid")
+    if _uidgidSkip is not None:
+        test_changeGID.skip = _uidgidSkip
+
+
+    def test_processExitedRaises(self):
+        """
+        If L{IProcessProtocol.processExited} raises an exception, it is logged.
+        """
+        # Ideally we wouldn't need to poke the process module; see
+        # https://twistedmatrix.com/trac/ticket/6889
+        reactor = self.buildReactor()
+
+        class TestException(Exception):
+            pass
+
+        class Protocol(ProcessProtocol):
+            def processExited(self, reason):
+                reactor.stop()
+                raise TestException("processedExited raised")
+
+        protocol = Protocol()
+        transport = reactor.spawnProcess(
+               protocol, pyExe, [pyExe, b"-c", b""],
+               usePTY=self.usePTY)
+        self.runReactor(reactor)
+
+        # Manually clean-up broken process handler.
+        # Only required if the test fails on systems that support
+        # the process module.
+        if process is not None:
+            for pid, handler in items(process.reapProcessHandlers):
+                if handler is not transport:
+                    continue
+                process.unregisterReapProcessHandler(pid, handler)
+                self.fail("After processExited raised, transport was left in"
+                          " reapProcessHandlers")
+
+        self.assertEqual(1, len(self.flushLoggedErrors(TestException)))
+
 
 
 class ProcessTestsBuilder(ProcessTestsBuilderBase):
@@ -305,12 +606,13 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
     """
     usePTY = False
 
-    keepStdioOpenProgram = FilePath(__file__).sibling('process_helper.py').path
+    keepStdioOpenProgram = b'twisted.internet.test.process_helper'
     if platform.isWindows():
-        keepStdioOpenArg = "windows"
+        keepStdioOpenArg = b"windows"
     else:
         # Just a value that doesn't equal "windows"
-        keepStdioOpenArg = ""
+        keepStdioOpenArg = b""
+
 
     # Define this test here because PTY-using processes only have stdin and
     # stdout and the test would need to be different for that to work.
@@ -329,31 +631,25 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
             def childConnectionLost(self, childFD):
                 lost[childFD].callback(None)
 
-        source = (
-            "import os, sys\n"
-            "while 1:\n"
-            "    line = sys.stdin.readline().strip()\n"
-            "    if not line:\n"
-            "        break\n"
-            "    os.close(int(line))\n")
+        target = b"twisted.internet.test.process_loseconnection"
 
         reactor = self.buildReactor()
         reactor.callWhenRunning(
-            reactor.spawnProcess, Closer(), sys.executable,
-            [sys.executable, "-c", source], usePTY=self.usePTY)
+            reactor.spawnProcess, Closer(), pyExe,
+            [pyExe, b"-m", target], env=properEnv, usePTY=self.usePTY)
 
         def cbConnected(transport):
-            transport.write('2\n')
+            transport.write(b'2\n')
             return lost[2].addCallback(lambda ign: transport)
         connected.addCallback(cbConnected)
 
         def lostSecond(transport):
-            transport.write('1\n')
+            transport.write(b'1\n')
             return lost[1].addCallback(lambda ign: transport)
         connected.addCallback(lostSecond)
 
         def lostFirst(transport):
-            transport.write('\n')
+            transport.write(b'\n')
         connected.addCallback(lostFirst)
         connected.addErrback(err)
 
@@ -392,12 +688,13 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
 
         reactor = self.buildReactor()
         reactor.callWhenRunning(
-            reactor.spawnProcess, Ender(), sys.executable,
-            [sys.executable, self.keepStdioOpenProgram, "child",
+            reactor.spawnProcess, Ender(), pyExe,
+            [pyExe, b"-m", self.keepStdioOpenProgram, b"child",
              self.keepStdioOpenArg],
-            usePTY=self.usePTY)
+            env=properEnv, usePTY=self.usePTY)
 
-        def cbEnded((failure,)):
+        def cbEnded(args):
+            failure, = args
             failure.trap(ProcessDone)
             self.assertEqual(set(lost), set([0, 1, 2]))
         ended.addCallback(cbEnded)
@@ -439,12 +736,13 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
 
         reactor = self.buildReactor()
         reactor.callWhenRunning(
-            reactor.spawnProcess, Waiter(), sys.executable,
-            [sys.executable, self.keepStdioOpenProgram, "child",
+            reactor.spawnProcess, Waiter(), pyExe,
+            [pyExe, b"-u", b"-m", self.keepStdioOpenProgram, b"child",
              self.keepStdioOpenArg],
-            usePTY=self.usePTY)
+            env=properEnv, usePTY=self.usePTY)
 
-        def cbExited((failure,)):
+        def cbExited(args):
+            failure, = args
             failure.trap(ProcessDone)
             msg('cbExited; lost = %s' % (lost,))
             self.assertEqual(lost, [])
@@ -466,10 +764,9 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
         Write the given list of lines to a text file and return the absolute
         path to it.
         """
-        script = self.mktemp()
-        scriptFile = file(script, 'wt')
-        scriptFile.write(os.linesep.join(sourceLines) + os.linesep)
-        scriptFile.close()
+        script = _asFilesystemBytes(self.mktemp())
+        with open(script, 'wt') as scriptFile:
+            scriptFile.write(os.linesep.join(sourceLines) + os.linesep)
         return os.path.abspath(script)
 
 
@@ -479,21 +776,22 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
         with an interpreter definition line (#!) uses that interpreter to
         evaluate the script.
         """
-        SHEBANG_OUTPUT = 'this is the shebang output'
+        shebangOutput = b'this is the shebang output'
 
         scriptFile = self.makeSourceFile([
-                "#!%s" % (sys.executable,),
+                "#!%s" % (pyExe.decode('ascii'),),
                 "import sys",
-                "sys.stdout.write('%s')" % (SHEBANG_OUTPUT,),
+                "sys.stdout.write('%s')" % (shebangOutput.decode('ascii'),),
                 "sys.stdout.flush()"])
-        os.chmod(scriptFile, 0700)
+        os.chmod(scriptFile, 0o700)
 
         reactor = self.buildReactor()
 
-        def cbProcessExited((out, err, code)):
+        def cbProcessExited(args):
+            out, err, code = args
             msg("cbProcessExited((%r, %r, %d))" % (out, err, code))
-            self.assertEqual(out, SHEBANG_OUTPUT)
-            self.assertEqual(err, "")
+            self.assertEqual(out, shebangOutput)
+            self.assertEqual(err, b"")
             self.assertEqual(code, 0)
 
         def shutdown(passthrough):
@@ -515,28 +813,19 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
         Arguments given to spawnProcess are passed to the child process as
         originally intended.
         """
-        source = (
-            # On Windows, stdout is not opened in binary mode by default,
-            # so newline characters are munged on writing, interfering with
-            # the tests.
-            'import sys, os\n'
-            'try:\n'
-            '  import msvcrt\n'
-            '  msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)\n'
-            'except ImportError:\n'
-            '  pass\n'
-            'for arg in sys.argv[1:]:\n'
-            '  sys.stdout.write(arg + chr(0))\n'
-            '  sys.stdout.flush()')
+        us = b"twisted.internet.test.process_cli"
 
-        args = ['hello', '"', ' \t|<>^&', r'"\\"hello\\"', r'"foo\ bar baz\""']
+        args = [b'hello', b'"', b' \t|<>^&', br'"\\"hello\\"', br'"foo\ bar baz\""']
         # Ensure that all non-NUL characters can be passed too.
-        args.append(''.join(map(chr, xrange(1, 256))))
+        allChars = "".join(map(chr, range(1, 255)))
+        if isinstance(allChars, unicode):
+            allChars.encode("utf-8")
 
         reactor = self.buildReactor()
 
-        def processFinished(output):
-            output = output.split('\0')
+        def processFinished(finishedArgs):
+            output, err, code = finishedArgs
+            output = output.split(b'\0')
             # Drop the trailing \0.
             output.pop()
             self.assertEqual(args, output)
@@ -547,8 +836,9 @@ class ProcessTestsBuilder(ProcessTestsBuilderBase):
 
         def spawnChild():
             d = succeed(None)
-            d.addCallback(lambda dummy: utils.getProcessOutput(
-                sys.executable, ['-c', source] + args, reactor=reactor))
+            d.addCallback(lambda dummy: utils.getProcessOutputAndValue(
+                pyExe, [b"-m", us] + args, env=properEnv,
+                reactor=reactor))
             d.addCallback(processFinished)
             d.addBoth(shutdown)
 
@@ -568,9 +858,11 @@ class PTYProcessTestsBuilder(ProcessTestsBuilderBase):
     if platform.isWindows():
         skip = "PTYs are not supported on Windows."
     elif platform.isMacOSX():
+        skip = "PTYs are flaky from a Darwin bug. See #8840."
+
         skippedReactors = {
             "twisted.internet.pollreactor.PollReactor":
-                "OS X's poll() does not support PTYs"}
+                "macOS's poll() does not support PTYs"}
 globals().update(PTYProcessTestsBuilder.makeTestCaseClasses())
 
 
@@ -599,256 +891,18 @@ class PotentialZombieWarningTests(TestCase):
 
 
 
-class FakeFile(object):
+class ProcessIsUnimportableOnUnsupportedPlatormsTests(TestCase):
     """
-    A fake file object which records when it is closed.
+    Tests to ensure that L{twisted.internet.process} is unimportable on
+    platforms where it does not work (namely Windows).
     """
-    def __init__(self, testcase):
-        self.testcase = testcase
-
-
-    def close(self):
-        self.testcase.closedFile = True
-
-
-
-class FakeResourceModule(object):
-    """
-    Fake version of L{resource} which hard-codes a particular rlimit for maximum
-    open files.
-    """
-    RLIMIT_NOFILE = 1
-    def getrlimit(self, no):
+    def test_unimportableOnWindows(self):
         """
-        Mocks just the getrlimit method of the resource module, simulating what
-        happens on OS-X when a ridiculous number is returned.
+        L{twisted.internet.process} is unimportable on Windows.
         """
-        return [0, 9223372036854775808]
+        with self.assertRaises(ImportError):
+            import twisted.internet.process
+            twisted.internet.process # shh pyflakes
 
-
-
-class FDDetectorTest(TestCase):
-    """
-    Tests for _FDDetector class in twisted.internet.process, which detects
-    which function to drop in place for the _listOpenFDs method.
-
-    @ivar devfs: A flag indicating whether the filesystem fake will indicate
-        that /dev/fd exists.
-
-    @ivar accurateDevFDResults: A flag indicating whether the /dev/fd fake
-        returns accurate open file information.
-
-    @ivar procfs: A flag indicating whether the filesystem fake will indicate
-        that /proc/<pid>/fd exists.
-
-    @ivar openedFile: A flag indicating whether to include an extra file
-        descriptor in the result of listing /dev/fd.
-    """
-    if runtime.platform.isWindows():
-        skip = (
-            "Process support does not need to detect open file descriptors on "
-            "Windows")
-
-    devfs = False
-    accurateDevFDResults = False
-
-    procfs = False
-    openedFile = False
-    closedFile = False
-
-    savedResourceModule = None
-
-    def getpid(self):
-        """
-        Fake os.getpid, always return the same thing
-        """
-        return 123
-
-
-    def listdir(self, arg):
-        """
-        Fake os.listdir, depending on what mode we're in to simulate
-        behaviour.
-
-        @param arg: the directory to list
-        """
-        if arg == '/proc/123/fd':
-            if self.procfs:
-                return ["0","1","2"]
-            else:
-                raise OSError
-
-        if arg == '/dev/fd':
-            if self.devfs:
-                if not self.accurateDevFDResults:
-                    # Always return the same thing
-                    return ["0","1","2"]
-                else:
-                    if self.openedFile:
-                        return ["0","1","2","3"]
-                    else:
-                        return ["0","1","2"]
-            else:
-                raise OSError()
-
-
-    def openfile(self, fname, mode):
-        """
-        This is a mock for L{open}.  It just keeps track of the fact that a file
-        has opened so an extra file descriptor is found in /dev/fd.
-
-        It also returns a L{FakeFile} which can be "closed". It would be more
-        realistic to make the FD list shrink when the file is "fake closed" but
-        it's not necessary for the detection algorithm we currently have in
-        process.py.
-        """
-        if self.openedFile:
-            self.fail("opening more than one file is not supported")
-        self.openedFile = True
-        return FakeFile(self)
-
-
-    def saveResourceModule(self):
-        """
-        Save the resource module so we can restore it later.
-        """
-        try:
-            import resource
-        except ImportError:
-            resource = None
-        self.savedResourceModule = resource
-
-
-    def hideResourceModule(self):
-        """
-        Make the L{resource} module unimportable for the remainder of the
-        current test method.
-        """
-        sys.modules['resource'] = None
-        self.addCleanup(self.replaceResourceModule)
-
-
-    def revealResourceModule(self):
-        """
-        Make a L{FakeResourceModule} instance importable at the L{resource}
-        name.
-        """
-        sys.modules['resource'] = FakeResourceModule()
-        self.addCleanup(self.replaceResourceModule)
-
-
-    def replaceResourceModule(self):
-        """
-        Restore the original resource module to L{sys.modules}.
-        """
-        sys.modules['resource'] = self.savedResourceModule
-
-
-    def setUp(self):
-        """
-        Set up the tests, giving ourselves a detector object to play with and
-        setting up its testable knobs to refer to our mocked versions.
-        """
-        self.detector = process._FDDetector()
-        self.detector.listdir = self.listdir
-        self.detector.getpid = self.getpid
-        self.detector.openfile = self.openfile
-
-
-    def test_identityOfListOpenFDsChanges(self):
-        """
-        Check that the identity of _listOpenFDs changes after running _listOpenFDs
-        the first time, but not after the second time it's run.
-
-        In other words, check that the monkey patching actually works.
-        """
-        # Create a new instance
-        detector = process._FDDetector()
-
-        first = detector._listOpenFDs.func_name
-        detector._listOpenFDs()
-        second = detector._listOpenFDs.func_name
-        detector._listOpenFDs()
-        third = detector._listOpenFDs.func_name
-
-        self.assertNotEquals(first, second)
-        self.assertEqual(second, third)
-
-
-    def test_accurateDevFDResults(self):
-        """
-        If there is no proc filesystem and /dev/fd returns accurate open file
-        descriptor information, L{process._devFDImplementation} is chosen.  This
-        is like FreeBSD with I{fdescfs} mounted.
-        """
-        self.procfs = False
-        self.devfs = True
-        self.accurateDevFDResults = True
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_devFDImplementation')
-
-
-    def test_inaccurateDevFDResults(self):
-        """
-        If there is no proc filesystem and /dev/fd returns inaccurate
-        information, L{_process._fallbackFDImplementation} is selected.  This is
-        like FreeBSD without I{fdescfs} mounted.
-        """
-        self.procfs = False
-        self.devfs = True
-        self.accurateDevFDResults = False
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_fallbackFDImplementation')
-
-
-    def test_procFilesystem(self):
-        """
-        If there is a proc filesystem, L{process._procFDImplementation} is
-        selected.  This is like Linux.
-        """
-        self.devfs = False
-        self.procfs = True
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_procFDImplementation')
-
-
-    def test_resourceModuleOnly(self):
-        """
-        If there is no proc filesystem and no /dev/fd but the L{resource} module
-        is available, L{process._resourceFDImplementation} is selected.  We
-        shall conjecture that this is like most proprietary UNIXes.
-        """
-        self.devfs = False
-        self.procfs = False
-        self.revealResourceModule()
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_resourceFDImplementation')
-
-
-    def test_withoutResourceModule(self):
-        """
-        If there is no proc filesystem, no /dev/fd, and no L{resource} module is
-        available, L{process._fallbackFDImplementation} is selected.  This maybe
-        be like certain proprietary UNIXes without a nicely compiled Python
-        runtime.
-        """
-        self.devfs = False
-        self.procfs = False
-        self.hideResourceModule()
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_fallbackFDImplementation')
-
-
-    def test_checkSanityClosesFile(self):
-        """
-        Checking the devfs implementation for sanity closes the file it opens
-        to check.
-        """
-        self.devfs = True
-        self.detector._checkDevFDSanity()
-        self.assertTrue(self.closedFile)
+    if not platform.isWindows():
+        test_unimportableOnWindows.skip = "Only relevant on Windows."

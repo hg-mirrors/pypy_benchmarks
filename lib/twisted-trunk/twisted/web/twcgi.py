@@ -8,24 +8,22 @@ I hold resource classes and helper classes that deal with CGI scripts.
 """
 
 # System Imports
-import string
 import os
 import urllib
 
 # Twisted Imports
-from twisted.web import http
-from twisted.internet import reactor, protocol
+from twisted.internet import protocol
+from twisted.logger import Logger
+from twisted.python import filepath
 from twisted.spread import pb
-from twisted.python import log, filepath
-from twisted.python.deprecate import deprecatedModuleAttribute
-from twisted.python.versions import Version
-from twisted.web import resource, server, static
+from twisted.web import http, resource, server, static
 
 
 class CGIDirectory(resource.Resource, filepath.FilePath):
     def __init__(self, pathname):
         resource.Resource.__init__(self)
         filepath.FilePath.__init__(self, pathname)
+
 
     def getChild(self, path, request):
         fnp = self.child(path)
@@ -37,10 +35,13 @@ class CGIDirectory(resource.Resource, filepath.FilePath):
             return CGIScript(fnp.path)
         return resource.NoResource()
 
+
     def render(self, request):
         notFound = resource.NoResource(
             "CGI directories do not support directory listing.")
         return notFound.render(request)
+
+
 
 class CGIScript(resource.Resource):
     """
@@ -51,11 +52,17 @@ class CGIScript(resource.Resource):
     IPC with an external process with an unpleasant protocol.
     """
     isLeaf = 1
-    def __init__(self, filename, registry=None):
+    def __init__(self, filename, registry=None, reactor=None):
         """
         Initialize, with the name of a CGI script file.
         """
         self.filename = filename
+        if reactor is None:
+            # This installs a default reactor, if None was installed before.
+            # We do a late import here, so that importing the current module
+            # won't directly trigger installing a default reactor.
+            from twisted.internet import reactor
+        self._reactor = reactor
 
 
     def render(self, request):
@@ -68,57 +75,54 @@ class CGIScript(resource.Resource):
         @type request: L{twisted.web.http.Request}
         @param request: An HTTP request.
         """
-        script_name = "/"+string.join(request.prepath, '/')
-        serverName = string.split(request.getRequestHostname(), ':')[0]
+        scriptName = b"/" + b"/".join(request.prepath)
+        serverName = request.getRequestHostname().split(b':')[0]
         env = {"SERVER_SOFTWARE":   server.version,
                "SERVER_NAME":       serverName,
                "GATEWAY_INTERFACE": "CGI/1.1",
                "SERVER_PROTOCOL":   request.clientproto,
                "SERVER_PORT":       str(request.getHost().port),
                "REQUEST_METHOD":    request.method,
-               "SCRIPT_NAME":       script_name, # XXX
+               "SCRIPT_NAME":       scriptName,
                "SCRIPT_FILENAME":   self.filename,
-               "REQUEST_URI":       request.uri,
-        }
+               "REQUEST_URI":       request.uri}
 
-        client = request.getClient()
-        if client is not None:
-            env['REMOTE_HOST'] = client
-        ip = request.getClientIP()
+        ip = request.getClientAddress().host
         if ip is not None:
             env['REMOTE_ADDR'] = ip
         pp = request.postpath
         if pp:
-            env["PATH_INFO"] = "/"+string.join(pp, '/')
+            env["PATH_INFO"] = "/" + "/".join(pp)
 
         if hasattr(request, "content"):
-            # request.content is either a StringIO or a TemporaryFile, and
+            # 'request.content' is either a StringIO or a TemporaryFile, and
             # the file pointer is sitting at the beginning (seek(0,0))
-            request.content.seek(0,2)
+            request.content.seek(0, 2)
             length = request.content.tell()
-            request.content.seek(0,0)
+            request.content.seek(0, 0)
             env['CONTENT_LENGTH'] = str(length)
 
-        qindex = string.find(request.uri, '?')
-        if qindex != -1:
+        try:
+            qindex = request.uri.index(b'?')
+        except ValueError:
+            env['QUERY_STRING'] = ''
+            qargs = []
+        else:
             qs = env['QUERY_STRING'] = request.uri[qindex+1:]
             if '=' in qs:
                 qargs = []
             else:
                 qargs = [urllib.unquote(x) for x in qs.split('+')]
-        else:
-            env['QUERY_STRING'] = ''
-            qargs = []
 
-        # Propogate HTTP headers
+        # Propagate HTTP headers
         for title, header in request.getAllHeaders().items():
-            envname = string.upper(string.replace(title, '-', '_'))
-            if title not in ('content-type', 'content-length'):
-                envname = "HTTP_" + envname
+            envname = title.replace(b'-', b'_').upper()
+            if title not in (b'content-type', b'content-length', b'proxy'):
+                envname = b"HTTP_" + envname
             env[envname] = header
-        # Propogate our environment
+        # Propagate our environment
         for key, value in os.environ.items():
-            if not env.has_key(key):
+            if key not in env:
                 env[key] = value
         # And they're off!
         self.runProcess(env, request, qargs)
@@ -129,22 +133,22 @@ class CGIScript(resource.Resource):
         """
         Run the cgi script.
 
-        @type env: A C{dict} of C{str}, or C{None}
-        @param env: The environment variables to pass to the processs that will
+        @type env: A L{dict} of L{str}, or L{None}
+        @param env: The environment variables to pass to the process that will
             get spawned. See
-            L{twisted.internet.interfaces.IReactorProcess.spawnProcess} for more
-            information about environments and process creation.
+            L{twisted.internet.interfaces.IReactorProcess.spawnProcess} for
+            more information about environments and process creation.
 
         @type request: L{twisted.web.http.Request}
         @param request: An HTTP request.
 
-        @type qargs: A C{list} of C{str}
+        @type qargs: A L{list} of L{str}
         @param qargs: The command line arguments to pass to the process that
             will get spawned.
         """
         p = CGIProcessProtocol(request)
-        reactor.spawnProcess(p, self.filename, [self.filename] + qargs, env,
-                             os.path.dirname(self.filename))
+        self._reactor.spawnProcess(p, self.filename, [self.filename] + qargs,
+                                   env, os.path.dirname(self.filename))
 
 
 
@@ -152,15 +156,15 @@ class FilteredScript(CGIScript):
     """
     I am a special version of a CGI script, that uses a specific executable.
 
-    This is useful for interfacing with other scripting languages that adhere to
-    the CGI standard. My C{filter} attribute specifies what executable to run,
-    and my C{filename} init parameter describes which script to pass to the
-    first argument of that script.
+    This is useful for interfacing with other scripting languages that adhere
+    to the CGI standard. My C{filter} attribute specifies what executable to
+    run, and my C{filename} init parameter describes which script to pass to
+    the first argument of that script.
 
     To customize me for a particular location of a CGI interpreter, override
     C{filter}.
 
-    @type filter: C{str}
+    @type filter: L{str}
     @ivar filter: The absolute path to the executable.
     """
 
@@ -171,89 +175,62 @@ class FilteredScript(CGIScript):
         """
         Run a script through the C{filter} executable.
 
-        @type env: A C{dict} of C{str}, or C{None}
-        @param env: The environment variables to pass to the processs that will
+        @type env: A L{dict} of L{str}, or L{None}
+        @param env: The environment variables to pass to the process that will
             get spawned. See
-            L{twisted.internet.interfaces.IReactorProcess.spawnProcess} for more
-            information about environments and process creation.
+            L{twisted.internet.interfaces.IReactorProcess.spawnProcess}
+            for more information about environments and process creation.
 
         @type request: L{twisted.web.http.Request}
         @param request: An HTTP request.
 
-        @type qargs: A C{list} of C{str}
+        @type qargs: A L{list} of L{str}
         @param qargs: The command line arguments to pass to the process that
             will get spawned.
         """
         p = CGIProcessProtocol(request)
-        reactor.spawnProcess(p, self.filter,
-                             [self.filter, self.filename] + qargs, env,
-                             os.path.dirname(self.filename))
-
-
-
-class PHP3Script(FilteredScript):
-    """
-    L{PHP3Script} is deprecated. See L{FilteredScript} for how to create a
-    platform-specific configuration for the location of a PHP CGI interpreter.
-
-    I am a L{FilteredScript} that uses the default PHP3 command on most systems.
-    """
-    deprecatedModuleAttribute(
-        Version("Twisted", 10, 1, 0),
-        "PHP3Script is deprecated. Use twisted.web.twcgi.FilteredScript "
-        "instead.",
-        __name__, "PHP3Script")
-
-    filter = '/usr/bin/php3'
-
-
-
-class PHPScript(FilteredScript):
-    """
-    L{PHPScript} is deprecated. See L{FilteredScript} for how to create a
-    platform-specific configuration for the location of a PHP CGI interpreter.
-
-    I am a L{FilteredScript} that uses the PHP command on most systems.
-    Sometimes, PHP wants the path to itself as C{argv[0]}. This is that time.
-    """
-    deprecatedModuleAttribute(
-        Version("Twisted", 10, 1, 0),
-        "PHPScript is deprecated. Use twisted.web.twcgi.FilteredScript "
-        "instead.",
-        __name__, "PHPScript")
-
-    filter = '/usr/bin/php4'
+        self._reactor.spawnProcess(p, self.filter,
+                                   [self.filter, self.filename] + qargs, env,
+                                   os.path.dirname(self.filename))
 
 
 
 class CGIProcessProtocol(protocol.ProcessProtocol, pb.Viewable):
     handling_headers = 1
     headers_written = 0
-    headertext = ''
-    errortext = ''
+    headertext = b''
+    errortext = b''
+    _log = Logger()
 
     # Remotely relay producer interface.
 
     def view_resumeProducing(self, issuer):
         self.resumeProducing()
 
+
     def view_pauseProducing(self, issuer):
         self.pauseProducing()
+
 
     def view_stopProducing(self, issuer):
         self.stopProducing()
 
+
     def resumeProducing(self):
         self.transport.resumeProducing()
+
 
     def pauseProducing(self):
         self.transport.pauseProducing()
 
+
     def stopProducing(self):
         self.transport.loseConnection()
 
+
     def __init__(self, request):
         self.request = request
+
 
     def connectionMade(self):
         self.request.registerProducer(self, 1)
@@ -263,8 +240,10 @@ class CGIProcessProtocol(protocol.ProcessProtocol, pb.Viewable):
             self.transport.write(content)
         self.transport.closeStdin()
 
+
     def errReceived(self, error):
         self.errortext = self.errortext + error
+
 
     def outReceived(self, output):
         """
@@ -275,41 +254,47 @@ class CGIProcessProtocol(protocol.ProcessProtocol, pb.Viewable):
         if self.handling_headers:
             text = self.headertext + output
             headerEnds = []
-            for delimiter in '\n\n','\r\n\r\n','\r\r', '\n\r\n':
-                headerend = string.find(text,delimiter)
+            for delimiter in b'\n\n', b'\r\n\r\n', b'\r\r', b'\n\r\n':
+                headerend = text.find(delimiter)
                 if headerend != -1:
                     headerEnds.append((headerend, delimiter))
             if headerEnds:
-                # twisted.web.server.Request.process always addes a content-type
-                # response header.  That's not appropriate for us.
-                self.request.responseHeaders.removeHeader('content-type')
+                # The script is entirely in control of response headers;
+                # disable the default Content-Type value normally provided by
+                # twisted.web.server.Request.
+                self.request.defaultContentType = None
 
                 headerEnds.sort()
                 headerend, delimiter = headerEnds[0]
                 self.headertext = text[:headerend]
                 # This is a final version of the header text.
-                linebreak = delimiter[:len(delimiter)/2]
-                headers = string.split(self.headertext, linebreak)
+                linebreak = delimiter[:len(delimiter)//2]
+                headers = self.headertext.split(linebreak)
                 for header in headers:
-                    br = string.find(header,': ')
+                    br = header.find(b': ')
                     if br == -1:
-                        log.msg( 'ignoring malformed CGI header: %s' % header )
+                        self._log.error(
+                            'ignoring malformed CGI header: {header!r}',
+                            header=header)
                     else:
-                        headerName = string.lower(header[:br])
+                        headerName = header[:br].lower()
                         headerText = header[br+2:]
-                        if headerName == 'location':
+                        if headerName == b'location':
                             self.request.setResponseCode(http.FOUND)
-                        if headerName == 'status':
+                        if headerName == b'status':
                             try:
-                                statusNum = int(headerText[:3]) #"XXX <description>" sometimes happens.
+                                # "XXX <description>" sometimes happens.
+                                statusNum = int(headerText[:3])
                             except:
-                                log.msg( "malformed status header" )
+                                self._log.error("malformed status header")
                             else:
                                 self.request.setResponseCode(statusNum)
                         else:
-                            # Don't allow the application to control these required headers.
-                            if headerName.lower() not in ('server', 'date'):
-                                self.request.responseHeaders.addRawHeader(headerName, headerText)
+                            # Don't allow the application to control
+                            # these required headers.
+                            if headerName.lower() not in (b'server', b'date'):
+                                self.request.responseHeaders.addRawHeader(
+                                    headerName, headerText)
                 output = text[headerend+len(delimiter):]
                 self.handling_headers = 0
             if self.handling_headers:
@@ -317,17 +302,20 @@ class CGIProcessProtocol(protocol.ProcessProtocol, pb.Viewable):
         if not self.handling_headers:
             self.request.write(output)
 
+
     def processEnded(self, reason):
         if reason.value.exitCode != 0:
-            log.msg("CGI %s exited with exit code %s" %
-                    (self.request.uri, reason.value.exitCode))
+            self._log.error("CGI {uri} exited with exit code {exitCode}",
+                    uri=self.request.uri, exitCode=reason.value.exitCode)
         if self.errortext:
-            log.msg("Errors from CGI %s: %s" % (self.request.uri, self.errortext))
+            self._log.error("Errors from CGI {uri}: {errorText}",
+                uri=self.request.uri, errorText=self.errortext)
         if self.handling_headers:
-            log.msg("Premature end of headers in %s: %s" % (self.request.uri, self.headertext))
+            self._log.error("Premature end of headers in {uri}: {headerText}",
+                uri=self.request.uri, headerText=self.headertext)
             self.request.write(
                 resource.ErrorPage(http.INTERNAL_SERVER_ERROR,
-                                   "CGI Script Error",
-                                   "Premature end of script headers.").render(self.request))
+                    "CGI Script Error",
+                    "Premature end of script headers.").render(self.request))
         self.request.unregisterProducer()
         self.request.finish()

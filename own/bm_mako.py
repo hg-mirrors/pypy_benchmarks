@@ -17,6 +17,12 @@ import sys
 import optparse
 import time
 
+if sys.version_info[0] < 3:
+    rangestr = 'xrange'
+else:
+    xrange = range
+    rangestr = 'range'
+
 # Local imports
 import util
 
@@ -64,25 +70,25 @@ BASE_TEMPLATE = """
 """
 
 PAGE_TEMPLATE = """
-<%inherit file="base.mako"/>
+<%%inherit file="base.mako"/>
 <table>
-    % for row in table:
+    %% for row in table:
         <tr>
-            % for col in row:
+            %% for col in row:
                 <td>${col}</td>
-            % endfor
+            %% endfor
         </tr>
-    % endfor
+    %% endfor
 </table>
-% for nr in xrange(img_count):
+%% for nr in %s(img_count):
     ${parent.img('/foo/bar/baz.png', 'no image :o')}
-% endfor
+%% endfor
 ${next.body()}
-% for nr in paragraphs:
+%% for nr in paragraphs:
     <p>${lorem|x}</p>
-% endfor
+%% endfor
 ${parent.render_table(table)}
-"""
+""" % rangestr
 
 CONTENT_TEMPLATE = """
 <%inherit file="page.mako"/>

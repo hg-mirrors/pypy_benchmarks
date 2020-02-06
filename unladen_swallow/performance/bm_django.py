@@ -15,13 +15,19 @@ __author__ = "collinwinter@google.com (Collin Winter)"
 # Python imports
 import optparse
 import time
+import sys
+if sys.version_info[0] > 2:
+    xrange = range
 
 # Local imports
 import util
 
 # Django imports
-from django.conf import settings
-settings.configure()
+import django, django.conf
+django.conf.settings.configure(TEMPLATES=[{
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+    }])
+django.setup()
 from django.template import Context, Template
 
 

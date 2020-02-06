@@ -1,3 +1,4 @@
+from __future__ import division, print_function
 import random, math, sys, time
 
 SIZE = 9
@@ -23,10 +24,10 @@ class Square:
         self.pos = pos
         self.timestamp = TIMESTAMP
         self.removestamp = TIMESTAMP
-        self.zobrist_strings = [random.randrange(sys.maxint) for i in range(3)]
+        self.zobrist_strings = [random.randrange(sys.maxsize) for i in range(3)]
 
     def set_neighbours(self): 
-        x, y = self.pos % SIZE, self.pos / SIZE;
+        x, y = self.pos % SIZE, self.pos // SIZE;
         self.neighbours = []
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
             newx, newy = x + dx, y + dy
@@ -92,8 +93,8 @@ class Square:
 class EmptySet:
     def __init__(self, board):
         self.board = board
-        self.empties = range(SIZE*SIZE)
-        self.empty_pos = range(SIZE*SIZE)
+        self.empties = list(range(SIZE*SIZE))
+        self.empty_pos = list(range(SIZE*SIZE))
 
     def random_choice(self):
         choices = len(self.empties)

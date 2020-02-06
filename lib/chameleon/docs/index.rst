@@ -10,7 +10,7 @@ typically HTML markup or XML.
 The language used is *page templates*, originally a `Zope
 <http://www.zope.org>`_ invention [1]_, but available here as a
 :ref:`standalone library <no-dependencies>` that you can use in any
-script or application running Python 2.5 and up (including 3.x and
+script or application running Python 2.7 and up, including 3.4+ and
 `pypy <http://pypy.org>`_). It comes with a set of :ref:`new features
 <new-features>`, too.
 
@@ -35,10 +35,7 @@ using setuptools or the newer `distribute
 .. _no-dependencies:
 
 There are no required library dependencies on Python 2.7 and up
-[2]_. On 2.5 and 2.6, the `ordereddict
-<http://pypi.python.org/pypi/ordereddict>`_ and `unittest2
-<http://pypi.python.org/pypi/unittest2>`_ packages are set as
-dependencies.
+[2]_.
 
 The project is hosted in a `GitHub repository
 <http://github.com/malthe/chameleon>`_. Code contributions are
@@ -89,7 +86,7 @@ treated as "structure". An example of such an object is the
 ``Markup`` class that's included as a utility::
 
   from chameleon.utils import Markup
-  username = "<tt>%s</tt>" % username
+  username = Markup("<tt>%s</tt>" % username)
 
 The macro language (known as the *macro expansion language* or METAL)
 provides a means of filling in portions of a generic template.
@@ -145,9 +142,8 @@ the markup::
 
   "You have ${amount} dollars in your account."
 
-If you use a web framework such as `Pyramid
-<https://docs.pylonsproject.org/docs/pyramid.html>`_, the translation
-system is set up automatically and will negotiate on a *target
+If you use a web framework such as `Pyramid <https://trypyramid.com/>`_, the
+translation system is set up automatically and will negotiate on a *target
 language* based on the HTTP request or other parameter. If not, then
 you need to configure this manually.
 
@@ -198,7 +194,7 @@ Notes
        <http://pypi.python.org/pypi/zope.pagetemplate>`_). However,
        the Chameleon compiler and Page Templates engine is an entirely
        new codebase, packaged as a standalone distribution. It does
-       require a Zope software environment.
+       not require a Zope software environment.
 
 .. [2] The translation system in Chameleon is pluggable and based on
        `gettext <http://www.gnu.org/s/gettext/>`_.

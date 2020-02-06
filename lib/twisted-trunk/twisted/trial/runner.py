@@ -8,33 +8,40 @@ A miscellany of code used to run Trial tests.
 Maintainer: Jonathan Lange
 """
 
-__all__ = [
-    'suiteVisit', 'TestSuite',
+from __future__ import absolute_import, division
 
-    'DestructiveTestSuite', 'DocTestCase', 'DryRunVisitor',
-    'ErrorHolder', 'LoggedSuite', 'PyUnitTestCase',
+__all__ = [
+    'TestSuite',
+
+    'DestructiveTestSuite', 'ErrorHolder', 'LoggedSuite',
     'TestHolder', 'TestLoader', 'TrialRunner', 'TrialSuite',
 
     'filenameToModule', 'isPackage', 'isPackageDirectory', 'isTestCase',
     'name', 'samefile', 'NOT_IN_TEST',
     ]
 
-import pdb
-import os, types, warnings, sys, inspect, imp
-import doctest, time
+import doctest
+import inspect
+import os
+import sys
+import time
+import types
+import warnings
 
 from twisted.python import reflect, log, failure, modules, filepath
-from twisted.python.compat import set
+from twisted.python.compat import _PY3, _PY35PLUS
 
 from twisted.internet import defer
 from twisted.trial import util, unittest
 from twisted.trial.itrial import ITestCase
-from twisted.trial.reporter import UncleanWarningsReporterWrapper
+from twisted.trial.reporter import _ExitWrapper, UncleanWarningsReporterWrapper
+from twisted.trial._asyncrunner import _ForceGarbageCollectionDecorator, _iterateTests
+from twisted.trial._synctest import _logObserver
 
 # These are imported so that they remain in the public API for t.trial.runner
-from twisted.trial.unittest import suiteVisit, TestSuite
+from twisted.trial.unittest import TestSuite
 
-from zope.interface import implements
+from zope.interface import implementer
 
 pyunit = __import__('unittest')
 
@@ -49,10 +56,21 @@ def isPackage(module):
 
 
 def isPackageDirectory(dirname):
-    """Is the directory at path 'dirname' a Python package directory?
+    """
+    Is the directory at path 'dirname' a Python package directory?
     Returns the name of the __init__ file (it may have a weird extension)
-    if dirname is a package directory.  Otherwise, returns False"""
-    for ext in zip(*imp.get_suffixes())[0]:
+    if dirname is a package directory.  Otherwise, returns False
+    """
+    def _getSuffixes():
+        if _PY3:
+            import importlib
+            return importlib.machinery.all_suffixes()
+        else:
+            import imp
+            return list(zip(*imp.get_suffixes()))[0]
+
+
+    for ext in _getSuffixes():
         initFile = '__init__' + ext
         if os.path.exists(os.path.join(dirname, initFile)):
             return initFile
@@ -86,6 +104,12 @@ def filenameToModule(fn):
     except (ValueError, AttributeError):
         # Couldn't find module.  The file 'fn' is not in PYTHONPATH
         return _importFromFile(fn)
+
+    # >=3.7 has __file__ attribute as None, previously __file__ was not present
+    if getattr(ret, "__file__", None) is None:
+        # This isn't a Python module in a package, so import it from a file
+        return _importFromFile(fn)
+
     # ensure that the loaded module matches the file
     retFile = os.path.splitext(ret.__file__)[0] + '.py'
     # not all platforms (e.g. win32) have os.path.samefile
@@ -102,11 +126,20 @@ def _importFromFile(fn, moduleName=None):
         moduleName = os.path.splitext(os.path.split(fn)[-1])[0]
     if moduleName in sys.modules:
         return sys.modules[moduleName]
-    fd = open(fn, 'r')
-    try:
-        module = imp.load_source(moduleName, fn, fd)
-    finally:
-        fd.close()
+    if _PY35PLUS:
+        import importlib
+
+        spec = importlib.util.spec_from_file_location(moduleName, fn)
+        if not spec:
+            raise SyntaxError(fn)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[moduleName] = module
+    else:
+        import imp
+
+        with open(fn, 'r') as fd:
+            module = imp.load_source(moduleName, fn, fd)
     return module
 
 
@@ -174,7 +207,7 @@ class LoggedSuite(TestSuite):
 
         @param result: A L{TestResult} object.
         """
-        observer = unittest._logObserver
+        observer = _logObserver
         observer._add()
         super(LoggedSuite, self).run(result)
         observer._remove()
@@ -184,77 +217,6 @@ class LoggedSuite(TestSuite):
 
 
 
-class PyUnitTestCase(object):
-    """
-    DEPRECATED in Twisted 8.0.
-
-    This class decorates the pyunit.TestCase class, mainly to work around the
-    differences between unittest in Python 2.3, 2.4, and 2.5. These
-    differences are::
-
-        - The way doctest unittests describe themselves
-        - Where the implementation of TestCase.run is (used to be in __call__)
-        - Where the test method name is kept (mangled-private or non-mangled
-          private variable)
-
-    It also implements visit, which we like.
-    """
-
-    def __init__(self, test):
-        warnings.warn("Deprecated in Twisted 8.0.",
-                      category=DeprecationWarning)
-        self._test = test
-        test.id = self.id
-
-    def id(self):
-        cls = self._test.__class__
-        tmn = getattr(self._test, '_TestCase__testMethodName', None)
-        if tmn is None:
-            # python2.5's 'unittest' module is more sensible; but different.
-            tmn = self._test._testMethodName
-        return (cls.__module__ + '.' + cls.__name__ + '.' +
-                tmn)
-
-    def __repr__(self):
-        return 'PyUnitTestCase<%r>'%(self.id(),)
-
-    def __call__(self, results):
-        return self._test(results)
-
-
-    def visit(self, visitor):
-        """
-        Call the given visitor with the original, standard library, test case
-        that C{self} wraps. See L{unittest.TestCase.visit}.
-
-        Deprecated in Twisted 8.0.
-        """
-        warnings.warn("Test visitors deprecated in Twisted 8.0",
-                      category=DeprecationWarning)
-        visitor(self._test)
-
-
-    def __getattr__(self, name):
-        return getattr(self._test, name)
-
-
-
-class DocTestCase(PyUnitTestCase):
-    """
-    DEPRECATED in Twisted 8.0.
-    """
-
-    def id(self):
-        """
-        In Python 2.4, doctests have correct id() behaviour. In Python 2.3,
-        id() returns 'runit'.
-
-        Here we override id() so that at least it will always contain the
-        fully qualified Python name of the doctest.
-        """
-        return self._test.shortDescription()
-
-
 class TrialSuite(TestSuite):
     """
     Suite to wrap around every single test in a C{trial} run. Used internally
@@ -262,7 +224,14 @@ class TrialSuite(TestSuite):
     what context they are run in.
     """
 
-    def __init__(self, tests=()):
+    def __init__(self, tests=(), forceGarbageCollection=False):
+        if forceGarbageCollection:
+            newTests = []
+            for test in tests:
+                test = unittest.decorate(
+                    test, _ForceGarbageCollectionDecorator)
+                newTests.append(test)
+            tests = newTests
         suite = LoggedSuite(tests)
         super(TrialSuite, self).__init__([suite])
 
@@ -317,13 +286,12 @@ def isTestCase(obj):
 
 
 
+@implementer(ITestCase)
 class TestHolder(object):
     """
     Placeholder for a L{TestCase} inside a reporter. As far as a L{TestResult}
     is concerned, this looks exactly like a unit test.
     """
-
-    implements(ITestCase)
 
     failureException = None
 
@@ -351,7 +319,7 @@ class TestHolder(object):
         This test is just a placeholder. Run the test successfully.
 
         @param result: The C{TestResult} to store the results in.
-        @type result: L{twisted.trial.itrial.ITestResult}.
+        @type result: L{twisted.trial.itrial.IReporter}.
         """
         result.startTest(self)
         result.addSuccess(self)
@@ -380,12 +348,12 @@ class ErrorHolder(TestHolder):
         tuple or a L{twisted.python.failure.Failure}.
         """
         super(ErrorHolder, self).__init__(description)
-        self.error = error
+        self.error = util.excInfoOrFailureToExcInfo(error)
 
 
     def __repr__(self):
-        return "<ErrorHolder description=%r error=%r>" % (self.description,
-                                                          self.error)
+        return "<ErrorHolder description=%r error=%r>" % (
+            self.description, self.error[1])
 
 
     def run(self, result):
@@ -393,18 +361,11 @@ class ErrorHolder(TestHolder):
         Run the test, reporting the error.
 
         @param result: The C{TestResult} to store the results in.
-        @type result: L{twisted.trial.itrial.ITestResult}.
+        @type result: L{twisted.trial.itrial.IReporter}.
         """
         result.startTest(self)
-        result.addError(self, util.excInfoOrFailureToExcInfo(self.error))
+        result.addError(self, self.error)
         result.stopTest(self)
-
-
-    def visit(self, visitor):
-        """
-        See L{unittest.TestCase.visit}.
-        """
-        visitor(self)
 
 
 
@@ -494,8 +455,8 @@ class TestLoader(object):
         if not hasattr(module, '__doctests__'):
             return suite
         docSuite = self.suiteFactory()
-        for doctest in module.__doctests__:
-            docSuite.addTest(self.loadDoctests(doctest))
+        for docTest in module.__doctests__:
+            docSuite.addTest(self.loadDoctests(docTest))
         return self.suiteFactory([suite, docSuite])
     loadTestsFromModule = loadModule
 
@@ -541,7 +502,7 @@ class TestLoader(object):
         Tests are only loaded from modules whose name begins with 'test_'
         (or whatever C{modulePrefix} is set to).
 
-        @param package: a types.ModuleType object (or reasonable facsimilie
+        @param package: a types.ModuleType object (or reasonable facsimile
         obtained by importing) which may contain tests.
 
         @param recurse: A boolean.  If True, inspect modules within packages
@@ -590,20 +551,20 @@ class TestLoader(object):
             warnings.warn("trial only supports doctesting modules")
             return
         extraArgs = {}
-        if sys.version_info > (2, 4):
-            # Work around Python issue2604: DocTestCase.tearDown clobbers globs
-            def saveGlobals(test):
-                """
-                Save C{test.globs} and replace it with a copy so that if
-                necessary, the original will be available for the next test
-                run.
-                """
-                test._savedGlobals = getattr(test, '_savedGlobals', test.globs)
-                test.globs = test._savedGlobals.copy()
-            extraArgs['setUp'] = saveGlobals
+
+        # Work around Python issue2604: DocTestCase.tearDown clobbers globs
+        def saveGlobals(test):
+            """
+            Save C{test.globs} and replace it with a copy so that if
+            necessary, the original will be available for the next test
+            run.
+            """
+            test._savedGlobals = getattr(test, '_savedGlobals', test.globs)
+            test.globs = test._savedGlobals.copy()
+        extraArgs['setUp'] = saveGlobals
         return doctest.DocTestSuite(module, **extraArgs)
 
-    def loadAnything(self, thing, recurse=False):
+    def loadAnything(self, thing, recurse=False, parent=None, qualName=None):
         """
         Given a Python object, return whatever tests that are in it. Whatever
         'in' might mean.
@@ -611,6 +572,11 @@ class TestLoader(object):
         @param thing: A Python object. A module, method, class or package.
         @param recurse: Whether or not to look in subpackages of packages.
         Defaults to False.
+
+        @param parent: For compatibility with the Python 3 loader, does
+            nothing.
+        @param qualname: For compatibility with the Python 3 loader, does
+            nothing.
 
         @return: A C{TestCase} or C{TestSuite}.
         """
@@ -642,6 +608,7 @@ class TestLoader(object):
         except:
             return ErrorHolder(name, failure.Failure())
         return self.loadAnything(thing, recurse)
+
     loadTestsFromName = loadByName
 
     def loadByNames(self, names, recurse=False):
@@ -671,36 +638,275 @@ class TestLoader(object):
         to same value and collapse to one test unexpectedly if using simpler
         means: e.g. set().
         """
-        entries = []
+        seen = set()
         for thing in things:
             if isinstance(thing, types.MethodType):
-                entries.append((thing, thing.im_class))
+                thing = (thing, thing.im_class)
             else:
-                entries.append((thing,))
-        return [entry[0] for entry in set(entries)]
+                thing = (thing,)
+
+            if thing not in seen:
+                yield thing[0]
+                seen.add(thing)
 
 
 
-class DryRunVisitor(object):
+class Py3TestLoader(TestLoader):
     """
-    A visitor that makes a reporter think that every test visited has run
-    successfully.
+    A test loader finds tests from the functions, modules, and files that is
+    asked to and loads them into a L{TestSuite} or L{TestCase}.
+
+    See L{TestLoader} for further details.
     """
 
-    def __init__(self, reporter):
+    def loadFile(self, fileName, recurse=False):
         """
-        @param reporter: A C{TestResult} object.
+        Load a file, and then the tests in that file.
+
+        @param fileName: The file name to load.
+        @param recurse: A boolean. If True, inspect modules within packages
+            within the given package (and so on), otherwise, only inspect
+            modules in the package itself.
         """
-        self.reporter = reporter
+        from importlib.machinery import SourceFileLoader
+
+        name = reflect.filenameToModuleName(fileName)
+        try:
+            module = SourceFileLoader(name, fileName).load_module()
+            return self.loadAnything(module, recurse=recurse)
+        except OSError:
+            raise ValueError("{} is not a Python file.".format(fileName))
 
 
-    def markSuccessful(self, testCase):
+    def findByName(self, _name, recurse=False):
         """
-        Convince the reporter that this test has been run successfully.
+        Find and load tests, given C{name}.
+
+        This partially duplicates the logic in C{unittest.loader.TestLoader}.
+
+        @param name: The qualified name of the thing to load.
+        @param recurse: A boolean. If True, inspect modules within packages
+            within the given package (and so on), otherwise, only inspect
+            modules in the package itself.
         """
-        self.reporter.startTest(testCase)
-        self.reporter.addSuccess(testCase)
-        self.reporter.stopTest(testCase)
+        if os.sep in _name:
+            # It's a file, try and get the module name for this file.
+            name = reflect.filenameToModuleName(_name)
+
+            try:
+                # Try and import it, if it's on the path.
+                # CAVEAT: If you have two twisteds, and you try and import the
+                # one NOT on your path, it'll load the one on your path. But
+                # that's silly, nobody should do that, and existing Trial does
+                # that anyway.
+                __import__(name)
+            except ImportError:
+                # If we can't import it, look for one NOT on the path.
+                return self.loadFile(_name, recurse=recurse)
+
+        else:
+            name = _name
+
+        obj = parent = remaining = None
+
+        for searchName, remainingName in _qualNameWalker(name):
+            # Walk down the qualified name, trying to import a module. For
+            # example, `twisted.test.test_paths.FilePathTests` would try
+            # the full qualified name, then just up to test_paths, and then
+            # just up to test, and so forth.
+            # This gets us the highest level thing which is a module.
+            try:
+                obj = reflect.namedModule(searchName)
+                # If we reach here, we have successfully found a module.
+                # obj will be the module, and remaining will be the remaining
+                # part of the qualified name.
+                remaining = remainingName
+                break
+
+            except ImportError:
+                # Check to see where the ImportError happened. If it happened
+                # in this file, ignore it.
+                tb = sys.exc_info()[2]
+
+                # Walk down to the deepest frame, where it actually happened.
+                while tb.tb_next is not None:
+                    tb = tb.tb_next
+
+                # Get the filename that the ImportError originated in.
+                filenameWhereHappened = tb.tb_frame.f_code.co_filename
+
+                # If it originated in the reflect file, then it's because it
+                # doesn't exist. If it originates elsewhere, it's because an
+                # ImportError happened in a module that does exist.
+                if filenameWhereHappened != reflect.__file__:
+                    raise
+
+                if remaining == "":
+                    raise reflect.ModuleNotFound(
+                        "The module {} does not exist.".format(name)
+                    )
+
+        if obj is None:
+            # If it's none here, we didn't get to import anything.
+            # Try something drastic.
+            obj = reflect.namedAny(name)
+            remaining = name.split(".")[len(".".split(obj.__name__))+1:]
+
+        try:
+            for part in remaining:
+                # Walk down the remaining modules. Hold on to the parent for
+                # methods, as on Python 3, you can no longer get the parent
+                # class from just holding onto the method.
+                parent, obj = obj, getattr(obj, part)
+        except AttributeError:
+            raise AttributeError("{} does not exist.".format(name))
+
+        return self.loadAnything(obj, parent=parent, qualName=remaining,
+                                 recurse=recurse)
+
+
+    def loadAnything(self, obj, recurse=False, parent=None, qualName=None):
+        """
+        Load absolutely anything (as long as that anything is a module,
+        package, class, or method (with associated parent class and qualname).
+
+        @param obj: The object to load.
+        @param recurse: A boolean. If True, inspect modules within packages
+            within the given package (and so on), otherwise, only inspect
+            modules in the package itself.
+        @param parent: If C{obj} is a method, this is the parent class of the
+            method. C{qualName} is also required.
+        @param qualName: If C{obj} is a method, this a list containing is the
+            qualified name of the method. C{parent} is also required.
+        """
+        if isinstance(obj, types.ModuleType):
+            # It looks like a module
+            if isPackage(obj):
+                # It's a package, so recurse down it.
+                return self.loadPackage(obj, recurse=recurse)
+            # Otherwise get all the tests in the module.
+            return self.loadTestsFromModule(obj)
+        elif isinstance(obj, type) and issubclass(obj, pyunit.TestCase):
+            # We've found a raw test case, get the tests from it.
+            return self.loadTestsFromTestCase(obj)
+        elif (isinstance(obj, types.FunctionType) and
+              isinstance(parent, type) and
+              issubclass(parent, pyunit.TestCase)):
+            # We've found a method, and its parent is a TestCase. Instantiate
+            # it with the name of the method we want.
+            name = qualName[-1]
+            inst = parent(name)
+
+            # Sanity check to make sure that the method we have got from the
+            # test case is the same one as was passed in. This doesn't actually
+            # use the function we passed in, because reasons.
+            assert getattr(inst, inst._testMethodName).__func__ == obj
+
+            return inst
+        elif isinstance(obj, TestSuite):
+            # We've found a test suite.
+            return obj
+        else:
+            raise TypeError("don't know how to make test from: %s" % (obj,))
+
+
+    def loadByName(self, name, recurse=False):
+        """
+        Load some tests by name.
+
+        @param name: The qualified name for the test to load.
+        @param recurse: A boolean. If True, inspect modules within packages
+            within the given package (and so on), otherwise, only inspect
+            modules in the package itself.
+        """
+        try:
+            return self.suiteFactory([self.findByName(name, recurse=recurse)])
+        except:
+            return self.suiteFactory([ErrorHolder(name, failure.Failure())])
+
+
+    def loadByNames(self, names, recurse=False):
+        """
+        Load some tests by a list of names.
+
+        @param names: A L{list} of qualified names.
+        @param recurse: A boolean. If True, inspect modules within packages
+            within the given package (and so on), otherwise, only inspect
+            modules in the package itself.
+        """
+        things = []
+        errors = []
+        for name in names:
+            try:
+                things.append(self.loadByName(name, recurse=recurse))
+            except:
+                errors.append(ErrorHolder(name, failure.Failure()))
+        things.extend(errors)
+        return self.suiteFactory(self._uniqueTests(things))
+
+
+    def loadClass(self, klass):
+        """
+        Given a class which contains test cases, return a list of L{TestCase}s.
+
+        @param klass: The class to load tests from.
+        """
+        if not isinstance(klass, type):
+            raise TypeError("%r is not a class" % (klass,))
+        if not isTestCase(klass):
+            raise ValueError("%r is not a test case" % (klass,))
+        names = self.getTestCaseNames(klass)
+        tests = self.sort([self._makeCase(klass, self.methodPrefix+name)
+                           for name in names])
+        return self.suiteFactory(tests)
+
+
+    def loadMethod(self, method):
+        raise NotImplementedError("Can't happen on Py3")
+
+
+    def _uniqueTests(self, things):
+        """
+        Gather unique suite objects from loaded things. This will guarantee
+        uniqueness of inherited methods on TestCases which would otherwise hash
+        to same value and collapse to one test unexpectedly if using simpler
+        means: e.g. set().
+        """
+        seen = set()
+        for testthing in things:
+            testthings = testthing._tests
+            for thing in testthings:
+                # This is horrible.
+                if str(thing) not in seen:
+                    yield thing
+                    seen.add(str(thing))
+
+
+def _qualNameWalker(qualName):
+    """
+    Given a Python qualified name, this function yields a 2-tuple of the most
+    specific qualified name first, followed by the next-most-specific qualified
+    name, and so on, paired with the remainder of the qualified name.
+
+    @param qualName: A Python qualified name.
+    @type qualName: L{str}
+    """
+    # Yield what we were just given
+    yield (qualName, [])
+
+    # If they want more, split the qualified name up
+    qualParts = qualName.split(".")
+
+    for index in range(1, len(qualParts)):
+        # This code here will produce, from the example walker.texas.ranger:
+        # (walker.texas, ["ranger"])
+        # (walker, ["texas", "ranger"])
+        yield (".".join(qualParts[:-index]), qualParts[-index:])
+
+
+if _PY3:
+    del TestLoader
+    TestLoader = Py3TestLoader
 
 
 
@@ -711,24 +917,6 @@ class TrialRunner(object):
 
     DEBUG = 'debug'
     DRY_RUN = 'dry-run'
-
-    def _getDebugger(self):
-        dbg = pdb.Pdb()
-        try:
-            import readline
-        except ImportError:
-            print "readline module not available"
-            sys.exc_clear()
-        for path in ('.pdbrc', 'pdbrc'):
-            if os.path.exists(path):
-                try:
-                    rcFile = file(path, 'r')
-                except IOError:
-                    sys.exc_clear()
-                else:
-                    dbg.rcLines.extend(rcFile.readlines())
-        return dbg
-
 
     def _setUpTestdir(self):
         self._tearDownLogFile()
@@ -748,6 +936,8 @@ class TrialRunner(object):
     def _makeResult(self):
         reporter = self.reporterFactory(self.stream, self.tbformat,
                                         self.rterrors, self._log)
+        if self._exitFirst:
+            reporter = _ExitWrapper(reporter)
         if self.uncleanWarnings:
             reporter = UncleanWarningsReporterWrapper(reporter)
         return reporter
@@ -761,7 +951,9 @@ class TrialRunner(object):
                  realTimeErrors=False,
                  uncleanWarnings=False,
                  workingDirectory=None,
-                 forceGarbageCollection=False):
+                 forceGarbageCollection=False,
+                 debugger=None,
+                 exitFirst=False):
         self.reporterFactory = reporterFactory
         self.logfile = logfile
         self.mode = mode
@@ -774,6 +966,8 @@ class TrialRunner(object):
         self._logFileObserver = None
         self._logFileObject = None
         self._forceGarbageCollection = forceGarbageCollection
+        self.debugger = debugger
+        self._exitFirst = exitFirst
         if profile:
             self.run = util.profiled(self.run, 'profile.data')
 
@@ -790,7 +984,7 @@ class TrialRunner(object):
         if self.logfile == '-':
             logFile = sys.stdout
         else:
-            logFile = file(self.logfile, 'a')
+            logFile = open(self.logfile, 'a')
         self._logFileObject = logFile
         self._logFileObserver = log.FileLogObserver(logFile)
         log.startLoggingWithObserver(self._logFileObserver.emit, 0)
@@ -801,13 +995,10 @@ class TrialRunner(object):
         Run the test or suite and return a result object.
         """
         test = unittest.decorate(test, ITestCase)
-        if self._forceGarbageCollection:
-            test = unittest.decorate(
-                test, unittest._ForceGarbageCollectionDecorator)
-        return self._runWithoutDecoration(test)
+        return self._runWithoutDecoration(test, self._forceGarbageCollection)
 
 
-    def _runWithoutDecoration(self, test):
+    def _runWithoutDecoration(self, test, forceGarbageCollection=False):
         """
         Private helper that runs the given test but doesn't decorate it.
         """
@@ -815,18 +1006,16 @@ class TrialRunner(object):
         # decorate the suite with reactor cleanup and log starting
         # This should move out of the runner and be presumed to be
         # present
-        suite = TrialSuite([test])
+        suite = TrialSuite([test], forceGarbageCollection)
         startTime = time.time()
         if self.mode == self.DRY_RUN:
-            for single in unittest._iterateTests(suite):
+            for single in _iterateTests(suite):
                 result.startTest(single)
                 result.addSuccess(single)
                 result.stopTest(single)
         else:
             if self.mode == self.DEBUG:
-                # open question - should this be self.debug() instead.
-                debugger = self._getDebugger()
-                run = lambda: debugger.runcall(suite.run, result)
+                run = lambda: self.debugger.runcall(suite.run, result)
             else:
                 run = lambda: suite.run(result)
 

@@ -12,6 +12,9 @@ class Sequence(Node):
 
     _fields = "items",
 
+    def __nonzero__(self):
+        return bool(self.items)
+
 
 class Content(Node):
     """Content substitution."""
@@ -23,6 +26,10 @@ class Default(Node):
     """Represents a default value."""
 
     _fields = "marker",
+
+
+class CodeBlock(Node):
+    _fields = "source",
 
 
 class Value(Node):
@@ -65,10 +72,16 @@ class Element(Node):
     _fields = "start", "end", "content"
 
 
+class DictAttributes(Node):
+    """Element attributes from one or more Python dicts."""
+
+    _fields = "expression", "char_escape", "quote", "exclude"
+
+
 class Attribute(Node):
     """Element attribute."""
 
-    _fields = "name", "expression", "quote", "eq", "space"
+    _fields = "name", "expression", "quote", "eq", "space", "filters"
 
 
 class Start(Node):
@@ -107,6 +120,14 @@ class Cache(Node):
     """
 
     _fields = "expressions", "node"
+
+
+class Cancel(Cache):
+    pass
+
+
+class Copy(Node):
+    _fields = "expression",
 
 
 class Assignment(Node):
@@ -160,10 +181,10 @@ class Text(Node):
     _fields = "value",
 
 
-class Interpolation(Text):
+class Interpolation(Node):
     """String interpolation output."""
 
-    _fields = "value", "braces_required"
+    _fields = "value", "braces_required", "translation"
 
 
 class Translate(Node):
@@ -180,6 +201,12 @@ class Name(Node):
 
 class Domain(Node):
     """Update translation domain."""
+
+    _fields = "name", "node"
+
+
+class TxContext(Node):
+    """Update translation context."""
 
     _fields = "name", "node"
 

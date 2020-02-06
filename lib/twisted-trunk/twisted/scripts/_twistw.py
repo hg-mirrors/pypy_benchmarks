@@ -2,6 +2,8 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
+from __future__ import print_function
+
 from twisted.python import log
 from twisted.application import app, service, internet
 from twisted import copyright
@@ -12,14 +14,16 @@ import sys, os
 class ServerOptions(app.ServerOptions):
     synopsis = "Usage: twistd [options]"
 
-    optFlags = [['nodaemon','n',  "(for backwards compatability)."],
+    optFlags = [['nodaemon','n',  "(for backwards compatibility)."],
                 ]
 
     def opt_version(self):
-        """Print version information and exit.
         """
-        print 'twistd (the Twisted Windows runner) %s' % copyright.version
-        print copyright.copyright
+        Print version information and exit.
+        """
+        print('twistd (the Twisted Windows runner) {}'.format(copyright.version),
+              file=self.stdout)
+        print(copyright.copyright, file=self.stdout)
         sys.exit()
 
 

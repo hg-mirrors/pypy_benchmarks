@@ -5,11 +5,11 @@ Chameleon is an HTML/XML template engine for `Python
 <http://www.python.org>`_. It uses the *page templates* language.
 
 You can use it in any Python web application with just about any
-version of Python (2.5 and up, including 3.x and `pypy
+version of Python (2.7 and up, including 3.4+ and `pypy
 <http://pypy.org>`_).
 
-Visit the `website <http://pagetemplates.org>`_ for more information
-or the `documentation <http://pagetemplates.org/docs/latest/>`_.
+Visit the `documentation <https://chameleon.readthedocs.io/en/latest/>`_
+for more information.
 
 License and Copyright
 ---------------------

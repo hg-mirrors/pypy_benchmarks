@@ -5,12 +5,14 @@
 Tests for L{twisted.words.xish.xmlstream}.
 """
 
+from __future__ import absolute_import, division
+
 from twisted.internet import protocol
 from twisted.python import failure
 from twisted.trial import unittest
 from twisted.words.xish import domish, utility, xmlstream
 
-class XmlStreamTest(unittest.TestCase):
+class XmlStreamTests(unittest.TestCase):
     def setUp(self):
         self.connectionLostMsg = "no reason"
         self.outlist = []
@@ -33,8 +35,8 @@ class XmlStreamTest(unittest.TestCase):
         to the transport.
         """
         self.xmlstream.connectionMade()
-        self.xmlstream.send("<root>")
-        self.assertEqual(self.outlist[0], "<root>")
+        self.xmlstream.send(b"<root>")
+        self.assertEqual(self.outlist[0], b"<root>")
 
 
     def test_receiveRoot(self):
@@ -119,7 +121,7 @@ class DummyProtocol(protocol.Protocol, utility.EventDispatcher):
 
 
 
-class BootstrapMixinTest(unittest.TestCase):
+class BootstrapMixinTests(unittest.TestCase):
     """
     Tests for L{xmlstream.BootstrapMixin}.
 
@@ -168,7 +170,7 @@ class BootstrapMixinTest(unittest.TestCase):
 
 
 
-class GenericXmlStreamFactoryTestsMixin(BootstrapMixinTest):
+class GenericXmlStreamFactoryTestsMixin(BootstrapMixinTests):
     """
     Generic tests for L{XmlStream} factories.
     """
@@ -203,7 +205,7 @@ class GenericXmlStreamFactoryTestsMixin(BootstrapMixinTest):
 
 
 
-class XmlStreamFactoryMixinTest(GenericXmlStreamFactoryTestsMixin):
+class XmlStreamFactoryMixinTests(GenericXmlStreamFactoryTestsMixin):
     """
     Tests for L{xmlstream.XmlStreamFactoryMixin}.
     """

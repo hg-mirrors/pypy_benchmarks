@@ -14,9 +14,27 @@ The most prominent use of XML Streams is Jabber, but this module is generically
 usable. See Twisted Words for Jabber specific protocol support.
 
 Maintainer: Ralph Meijer
+
+@var STREAM_CONNECTED_EVENT: This event signals that the connection has been
+    established.
+@type STREAM_CONNECTED_EVENT: L{str}.
+
+@var STREAM_END_EVENT: This event signals that the connection has been closed.
+@type STREAM_END_EVENT: L{str}.
+
+@var STREAM_ERROR_EVENT: This event signals that a parse error occurred.
+@type STREAM_ERROR_EVENT: L{str}.
+
+@var STREAM_START_EVENT: This event signals that the root element of the XML
+    Stream has been received.
+    For XMPP, this would be the C{<stream:stream ...>} opening tag.
+@type STREAM_START_EVENT: L{str}.
 """
 
+from __future__ import absolute_import, division
+
 from twisted.python import failure
+from twisted.python.compat import intern, unicode
 from twisted.internet import protocol
 from twisted.words.xish import domish, utility
 
@@ -125,16 +143,16 @@ class XmlStream(protocol.Protocol, utility.EventDispatcher):
         """ Send data over the stream.
 
         Sends the given C{obj} over the connection. C{obj} may be instances of
-        L{domish.Element}, L{unicode} and L{str}. The first two will be
-        properly serialized and/or encoded. L{str} objects must be in UTF-8
+        L{domish.Element}, C{unicode} and C{str}. The first two will be
+        properly serialized and/or encoded. C{str} objects must be in UTF-8
         encoding.
 
         Note: because it is easy to make mistakes in maintaining a properly
-        encoded L{str} object, it is advised to use L{unicode} objects
+        encoded C{str} object, it is advised to use C{unicode} objects
         everywhere when dealing with XML Streams.
 
         @param obj: Object to be sent over the stream.
-        @type obj: L{domish.Element}, L{domish} or L{str}
+        @type obj: L{domish.Element}, L{domish} or C{str}
 
         """
         if domish.IElement.providedBy(obj):

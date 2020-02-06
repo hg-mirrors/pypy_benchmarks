@@ -3,318 +3,396 @@ Oracle database backend for Django.
 
 Requires cx_Oracle: http://cx-oracle.sourceforge.net/
 """
+from __future__ import unicode_literals
 
-import os
 import datetime
-import time
+import decimal
+import os
+import platform
+import sys
+import warnings
 
-# Oracle takes client-side character set encoding from the environment.
-os.environ['NLS_LANG'] = '.UTF8'
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from django.db import utils
+from django.db.backends.base.base import BaseDatabaseWrapper
+from django.utils import six, timezone
+from django.utils.deprecation import RemovedInDjango20Warning
+from django.utils.encoding import force_bytes, force_text
+from django.utils.functional import cached_property
+
+
+def _setup_environment(environ):
+    # Cygwin requires some special voodoo to set the environment variables
+    # properly so that Oracle will see them.
+    if platform.system().upper().startswith('CYGWIN'):
+        try:
+            import ctypes
+        except ImportError as e:
+            raise ImproperlyConfigured("Error loading ctypes: %s; "
+                                       "the Oracle backend requires ctypes to "
+                                       "operate correctly under Cygwin." % e)
+        kernel32 = ctypes.CDLL('kernel32')
+        for name, value in environ:
+            kernel32.SetEnvironmentVariableA(name, value)
+    else:
+        os.environ.update(environ)
+
+
+_setup_environment([
+    # Oracle takes client-side character set encoding from the environment.
+    ('NLS_LANG', '.AL32UTF8'),
+    # This prevents unicode from getting mangled by getting encoded into the
+    # potentially non-unicode database character set.
+    ('ORA_NCHAR_LITERAL_REPLACE', 'TRUE'),
+])
+
+
 try:
     import cx_Oracle as Database
-except ImportError, e:
-    from django.core.exceptions import ImproperlyConfigured
+except ImportError as e:
     raise ImproperlyConfigured("Error loading cx_Oracle module: %s" % e)
 
-from django.db.backends import *
-from django.db.backends.oracle import query
-from django.db.backends.oracle.client import DatabaseClient
-from django.db.backends.oracle.creation import DatabaseCreation
-from django.db.backends.oracle.introspection import DatabaseIntrospection
-from django.utils.encoding import smart_str, force_unicode
-
-DatabaseError = Database.DatabaseError
-IntegrityError = Database.IntegrityError
-
-
-class DatabaseFeatures(BaseDatabaseFeatures):
-    empty_fetchmany_value = ()
-    needs_datetime_string_cast = False
-    uses_custom_query_class = True
-    interprets_empty_strings_as_nulls = True
+# Some of these import cx_Oracle, so import them after checking if it's installed.
+from .client import DatabaseClient                          # NOQA isort:skip
+from .creation import DatabaseCreation                      # NOQA isort:skip
+from .features import DatabaseFeatures                      # NOQA isort:skip
+from .introspection import DatabaseIntrospection            # NOQA isort:skip
+from .operations import DatabaseOperations                  # NOQA isort:skip
+from .schema import DatabaseSchemaEditor                    # NOQA isort:skip
+from .utils import Oracle_datetime                          # NOQA isort:skip
 
 
-class DatabaseOperations(BaseDatabaseOperations):
+class _UninitializedOperatorsDescriptor(object):
 
-    def autoinc_sql(self, table, column):
-        # To simulate auto-incrementing primary keys in Oracle, we have to
-        # create a sequence and a trigger.
-        sq_name = get_sequence_name(table)
-        tr_name = get_trigger_name(table)
-        tbl_name = self.quote_name(table)
-        col_name = self.quote_name(column)
-        sequence_sql = """
-DECLARE
-    i INTEGER;
-BEGIN
-    SELECT COUNT(*) INTO i FROM USER_CATALOG
-        WHERE TABLE_NAME = '%(sq_name)s' AND TABLE_TYPE = 'SEQUENCE';
-    IF i = 0 THEN
-        EXECUTE IMMEDIATE 'CREATE SEQUENCE "%(sq_name)s"';
-    END IF;
-END;
-/""" % locals()
-        trigger_sql = """
-CREATE OR REPLACE TRIGGER "%(tr_name)s"
-BEFORE INSERT ON %(tbl_name)s
-FOR EACH ROW
-WHEN (new.%(col_name)s IS NULL)
-    BEGIN
-        SELECT "%(sq_name)s".nextval
-        INTO :new.%(col_name)s FROM dual;
-    END;
-/""" % locals()
-        return sequence_sql, trigger_sql
-
-    def date_extract_sql(self, lookup_type, field_name):
-        # http://download-east.oracle.com/docs/cd/B10501_01/server.920/a96540/functions42a.htm#1017163
-        return "EXTRACT(%s FROM %s)" % (lookup_type, field_name)
-
-    def date_trunc_sql(self, lookup_type, field_name):
-        # Oracle uses TRUNC() for both dates and numbers.
-        # http://download-east.oracle.com/docs/cd/B10501_01/server.920/a96540/functions155a.htm#SQLRF06151
-        if lookup_type == 'day':
-            sql = 'TRUNC(%s)' % field_name
-        else:
-            sql = "TRUNC(%s, '%s')" % (field_name, lookup_type)
-        return sql
-
-    def datetime_cast_sql(self):
-        return "TO_TIMESTAMP(%s, 'YYYY-MM-DD HH24:MI:SS.FF')"
-
-    def deferrable_sql(self):
-        return " DEFERRABLE INITIALLY DEFERRED"
-
-    def drop_sequence_sql(self, table):
-        return "DROP SEQUENCE %s;" % self.quote_name(get_sequence_name(table))
-
-    def field_cast_sql(self, db_type):
-        if db_type and db_type.endswith('LOB'):
-            return "DBMS_LOB.SUBSTR(%s)"
-        else:
-            return "%s"
-
-    def last_insert_id(self, cursor, table_name, pk_name):
-        sq_name = get_sequence_name(table_name)
-        cursor.execute('SELECT "%s".currval FROM dual' % sq_name)
-        return cursor.fetchone()[0]
-
-    def lookup_cast(self, lookup_type):
-        if lookup_type in ('iexact', 'icontains', 'istartswith', 'iendswith'):
-            return "UPPER(%s)"
-        return "%s"
-
-    def max_name_length(self):
-        return 30
-
-    def prep_for_iexact_query(self, x):
-        return x
-
-    def query_class(self, DefaultQueryClass):
-        return query.query_class(DefaultQueryClass, Database)
-
-    def quote_name(self, name):
-        # SQL92 requires delimited (quoted) names to be case-sensitive.  When
-        # not quoted, Oracle has case-insensitive behavior for identifiers, but
-        # always defaults to uppercase.
-        # We simplify things by making Oracle identifiers always uppercase.
-        if not name.startswith('"') and not name.endswith('"'):
-            name = '"%s"' % util.truncate_name(name.upper(),
-                                               self.max_name_length())
-        return name.upper()
-
-    def random_function_sql(self):
-        return "DBMS_RANDOM.RANDOM"
-
-    def regex_lookup_9(self, lookup_type):
-        raise NotImplementedError("Regexes are not supported in Oracle before version 10g.")
-
-    def regex_lookup_10(self, lookup_type):
-        if lookup_type == 'regex':
-            match_option = "'c'"
-        else:
-            match_option = "'i'"
-        return 'REGEXP_LIKE(%%s, %%s, %s)' % match_option
-
-    def regex_lookup(self, lookup_type):
-        # If regex_lookup is called before it's been initialized, then create
-        # a cursor to initialize it and recur.
-        from django.db import connection
-        connection.cursor()
-        return connection.ops.regex_lookup(lookup_type)
-
-    def sql_flush(self, style, tables, sequences):
-        # Return a list of 'TRUNCATE x;', 'TRUNCATE y;',
-        # 'TRUNCATE z;'... style SQL statements
-        if tables:
-            # Oracle does support TRUNCATE, but it seems to get us into
-            # FK referential trouble, whereas DELETE FROM table works.
-            sql = ['%s %s %s;' % \
-                    (style.SQL_KEYWORD('DELETE'),
-                     style.SQL_KEYWORD('FROM'),
-                     style.SQL_FIELD(self.quote_name(table)))
-                    for table in tables]
-            # Since we've just deleted all the rows, running our sequence
-            # ALTER code will reset the sequence to 0.
-            for sequence_info in sequences:
-                sequence_name = get_sequence_name(sequence_info['table'])
-                table_name = self.quote_name(sequence_info['table'])
-                column_name = self.quote_name(sequence_info['column'] or 'id')
-                query = _get_sequence_reset_sql() % {'sequence': sequence_name,
-                                                     'table': table_name,
-                                                     'column': column_name}
-                sql.append(query)
-            return sql
-        else:
-            return []
-
-    def sequence_reset_sql(self, style, model_list):
-        from django.db import models
-        output = []
-        query = _get_sequence_reset_sql()
-        for model in model_list:
-            for f in model._meta.local_fields:
-                if isinstance(f, models.AutoField):
-                    table_name = self.quote_name(model._meta.db_table)
-                    sequence_name = get_sequence_name(model._meta.db_table)
-                    column_name = self.quote_name(f.column)
-                    output.append(query % {'sequence': sequence_name,
-                                           'table': table_name,
-                                           'column': column_name})
-                    # Only one AutoField is allowed per model, so don't
-                    # continue to loop
-                    break
-            for f in model._meta.many_to_many:
-                table_name = self.quote_name(f.m2m_db_table())
-                sequence_name = get_sequence_name(f.m2m_db_table())
-                column_name = self.quote_name('id')
-                output.append(query % {'sequence': sequence_name,
-                                       'table': table_name,
-                                       'column': column_name})
-        return output
-
-    def start_transaction_sql(self):
-        return ''
-
-    def tablespace_sql(self, tablespace, inline=False):
-        return "%sTABLESPACE %s" % ((inline and "USING INDEX " or ""),
-            self.quote_name(tablespace))
-
-    def value_to_db_time(self, value):
-        if value is None:
-            return None
-        if isinstance(value, basestring):
-            return datetime.datetime(*(time.strptime(value, '%H:%M:%S')[:6]))
-        return datetime.datetime(1900, 1, 1, value.hour, value.minute,
-                                 value.second, value.microsecond)
-
-    def year_lookup_bounds_for_date_field(self, value):
-        first = '%s-01-01'
-        second = '%s-12-31'
-        return [first % value, second % value]
+    def __get__(self, instance, cls=None):
+        # If connection.operators is looked up before a connection has been
+        # created, transparently initialize connection.operators to avert an
+        # AttributeError.
+        if instance is None:
+            raise AttributeError("operators not available as class attribute")
+        # Creating a cursor will initialize the operators.
+        instance.cursor().close()
+        return instance.__dict__['operators']
 
 
 class DatabaseWrapper(BaseDatabaseWrapper):
+    vendor = 'oracle'
+    # This dictionary maps Field objects to their associated Oracle column
+    # types, as strings. Column-type strings can contain format strings; they'll
+    # be interpolated against the values of Field.__dict__ before being output.
+    # If a column type is set to None, it won't be included in the output.
+    #
+    # Any format strings starting with "qn_" are quoted before being used in the
+    # output (the "qn_" prefix is stripped before the lookup is performed.
+    data_types = {
+        'AutoField': 'NUMBER(11)',
+        'BigAutoField': 'NUMBER(19)',
+        'BinaryField': 'BLOB',
+        'BooleanField': 'NUMBER(1)',
+        'CharField': 'NVARCHAR2(%(max_length)s)',
+        'CommaSeparatedIntegerField': 'VARCHAR2(%(max_length)s)',
+        'DateField': 'DATE',
+        'DateTimeField': 'TIMESTAMP',
+        'DecimalField': 'NUMBER(%(max_digits)s, %(decimal_places)s)',
+        'DurationField': 'INTERVAL DAY(9) TO SECOND(6)',
+        'FileField': 'NVARCHAR2(%(max_length)s)',
+        'FilePathField': 'NVARCHAR2(%(max_length)s)',
+        'FloatField': 'DOUBLE PRECISION',
+        'IntegerField': 'NUMBER(11)',
+        'BigIntegerField': 'NUMBER(19)',
+        'IPAddressField': 'VARCHAR2(15)',
+        'GenericIPAddressField': 'VARCHAR2(39)',
+        'NullBooleanField': 'NUMBER(1)',
+        'OneToOneField': 'NUMBER(11)',
+        'PositiveIntegerField': 'NUMBER(11)',
+        'PositiveSmallIntegerField': 'NUMBER(11)',
+        'SlugField': 'NVARCHAR2(%(max_length)s)',
+        'SmallIntegerField': 'NUMBER(11)',
+        'TextField': 'NCLOB',
+        'TimeField': 'TIMESTAMP',
+        'URLField': 'VARCHAR2(%(max_length)s)',
+        'UUIDField': 'VARCHAR2(32)',
+    }
+    data_type_check_constraints = {
+        'BooleanField': '%(qn_column)s IN (0,1)',
+        'NullBooleanField': '(%(qn_column)s IN (0,1)) OR (%(qn_column)s IS NULL)',
+        'PositiveIntegerField': '%(qn_column)s >= 0',
+        'PositiveSmallIntegerField': '%(qn_column)s >= 0',
+    }
 
-    operators = {
+    operators = _UninitializedOperatorsDescriptor()
+
+    _standard_operators = {
         'exact': '= %s',
         'iexact': '= UPPER(%s)',
-        'contains': "LIKEC %s ESCAPE '\\'",
-        'icontains': "LIKEC UPPER(%s) ESCAPE '\\'",
+        'contains': "LIKE TRANSLATE(%s USING NCHAR_CS) ESCAPE TRANSLATE('\\' USING NCHAR_CS)",
+        'icontains': "LIKE UPPER(TRANSLATE(%s USING NCHAR_CS)) ESCAPE TRANSLATE('\\' USING NCHAR_CS)",
         'gt': '> %s',
         'gte': '>= %s',
         'lt': '< %s',
         'lte': '<= %s',
+        'startswith': "LIKE TRANSLATE(%s USING NCHAR_CS) ESCAPE TRANSLATE('\\' USING NCHAR_CS)",
+        'endswith': "LIKE TRANSLATE(%s USING NCHAR_CS) ESCAPE TRANSLATE('\\' USING NCHAR_CS)",
+        'istartswith': "LIKE UPPER(TRANSLATE(%s USING NCHAR_CS)) ESCAPE TRANSLATE('\\' USING NCHAR_CS)",
+        'iendswith': "LIKE UPPER(TRANSLATE(%s USING NCHAR_CS)) ESCAPE TRANSLATE('\\' USING NCHAR_CS)",
+    }
+
+    _likec_operators = _standard_operators.copy()
+    _likec_operators.update({
+        'contains': "LIKEC %s ESCAPE '\\'",
+        'icontains': "LIKEC UPPER(%s) ESCAPE '\\'",
         'startswith': "LIKEC %s ESCAPE '\\'",
         'endswith': "LIKEC %s ESCAPE '\\'",
         'istartswith': "LIKEC UPPER(%s) ESCAPE '\\'",
         'iendswith': "LIKEC UPPER(%s) ESCAPE '\\'",
+    })
+
+    # The patterns below are used to generate SQL pattern lookup clauses when
+    # the right-hand side of the lookup isn't a raw string (it might be an expression
+    # or the result of a bilateral transformation).
+    # In those cases, special characters for LIKE operators (e.g. \, *, _) should be
+    # escaped on database side.
+    #
+    # Note: we use str.format() here for readability as '%' is used as a wildcard for
+    # the LIKE operator.
+    pattern_esc = r"REPLACE(REPLACE(REPLACE({}, '\', '\\'), '%%', '\%%'), '_', '\_')"
+    _pattern_ops = {
+        'contains': "'%%' || {} || '%%'",
+        'icontains': "'%%' || UPPER({}) || '%%'",
+        'startswith': "{} || '%%'",
+        'istartswith': "UPPER({}) || '%%'",
+        'endswith': "'%%' || {}",
+        'iendswith': "'%%' || UPPER({})",
     }
-    oracle_version = None
+
+    _standard_pattern_ops = {k: "LIKE TRANSLATE( " + v + " USING NCHAR_CS)"
+                                " ESCAPE TRANSLATE('\\' USING NCHAR_CS)"
+                             for k, v in _pattern_ops.items()}
+    _likec_pattern_ops = {k: "LIKEC " + v + " ESCAPE '\\'"
+                          for k, v in _pattern_ops.items()}
+
+    Database = Database
+    SchemaEditorClass = DatabaseSchemaEditor
+    # Classes instantiated in __init__().
+    client_class = DatabaseClient
+    creation_class = DatabaseCreation
+    features_class = DatabaseFeatures
+    introspection_class = DatabaseIntrospection
+    ops_class = DatabaseOperations
 
     def __init__(self, *args, **kwargs):
         super(DatabaseWrapper, self).__init__(*args, **kwargs)
+        use_returning_into = self.settings_dict["OPTIONS"].get('use_returning_into', True)
+        self.features.can_return_id_from_insert = use_returning_into
 
-        self.features = DatabaseFeatures()
-        self.ops = DatabaseOperations()
-        self.client = DatabaseClient()
-        self.creation = DatabaseCreation(self)
-        self.introspection = DatabaseIntrospection(self)
-        self.validation = BaseDatabaseValidation()
+    def _connect_string(self):
+        settings_dict = self.settings_dict
+        if not settings_dict['HOST'].strip():
+            settings_dict['HOST'] = 'localhost'
+        if settings_dict['PORT']:
+            dsn = Database.makedsn(settings_dict['HOST'],
+                                   int(settings_dict['PORT']),
+                                   settings_dict['NAME'])
+        else:
+            dsn = settings_dict['NAME']
+        return "%s/%s@%s" % (settings_dict['USER'],
+                             settings_dict['PASSWORD'], dsn)
 
-    def _valid_connection(self):
-        return self.connection is not None
+    def get_connection_params(self):
+        # Specify encoding to support unicode in DSN.
+        conn_params = {'encoding': 'UTF-8', 'nencoding': 'UTF-8'}
+        user_params = self.settings_dict['OPTIONS'].copy()
+        if 'use_returning_into' in user_params:
+            del user_params['use_returning_into']
+        conn_params.update(user_params)
+        return conn_params
 
-    def _cursor(self, settings):
-        cursor = None
-        if not self._valid_connection():
-            if len(settings.DATABASE_HOST.strip()) == 0:
-                settings.DATABASE_HOST = 'localhost'
-            if len(settings.DATABASE_PORT.strip()) != 0:
-                dsn = Database.makedsn(settings.DATABASE_HOST,
-                                       int(settings.DATABASE_PORT),
-                                       settings.DATABASE_NAME)
-                self.connection = Database.connect(settings.DATABASE_USER,
-                                                   settings.DATABASE_PASSWORD,
-                                                   dsn, **self.options)
+    def get_new_connection(self, conn_params):
+        return Database.connect(self._connect_string(), **conn_params)
+
+    def init_connection_state(self):
+        cursor = self.create_cursor()
+        # Set the territory first. The territory overrides NLS_DATE_FORMAT
+        # and NLS_TIMESTAMP_FORMAT to the territory default. When all of
+        # these are set in single statement it isn't clear what is supposed
+        # to happen.
+        cursor.execute("ALTER SESSION SET NLS_TERRITORY = 'AMERICA'")
+        # Set Oracle date to ANSI date format.  This only needs to execute
+        # once when we create a new connection. We also set the Territory
+        # to 'AMERICA' which forces Sunday to evaluate to a '1' in
+        # TO_CHAR().
+        cursor.execute(
+            "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS'"
+            " NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'" +
+            (" TIME_ZONE = 'UTC'" if settings.USE_TZ else '')
+        )
+        cursor.close()
+        if 'operators' not in self.__dict__:
+            # Ticket #14149: Check whether our LIKE implementation will
+            # work for this connection or we need to fall back on LIKEC.
+            # This check is performed only once per DatabaseWrapper
+            # instance per thread, since subsequent connections will use
+            # the same settings.
+            cursor = self.create_cursor()
+            try:
+                cursor.execute("SELECT 1 FROM DUAL WHERE DUMMY %s"
+                               % self._standard_operators['contains'],
+                               ['X'])
+            except Database.DatabaseError:
+                self.operators = self._likec_operators
+                self.pattern_ops = self._likec_pattern_ops
             else:
-                conn_string = "%s/%s@%s" % (settings.DATABASE_USER,
-                                            settings.DATABASE_PASSWORD,
-                                            settings.DATABASE_NAME)
-                self.connection = Database.connect(conn_string, **self.options)
-            cursor = FormatStylePlaceholderCursor(self.connection)
-            # Set oracle date to ansi date format.  This only needs to execute
-            # once when we create a new connection.
-            cursor.execute("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD' "
-                           "NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'")
+                self.operators = self._standard_operators
+                self.pattern_ops = self._standard_pattern_ops
+            cursor.close()
+        self.connection.stmtcachesize = 20
+        # Ensure all changes are preserved even when AUTOCOMMIT is False.
+        if not self.get_autocommit():
+            self.commit()
+
+    def create_cursor(self, name=None):
+        return FormatStylePlaceholderCursor(self.connection)
+
+    def _commit(self):
+        if self.connection is not None:
             try:
-                self.oracle_version = int(self.connection.version.split('.')[0])
-                # There's no way for the DatabaseOperations class to know the
-                # currently active Oracle version, so we do some setups here.
-                # TODO: Multi-db support will need a better solution (a way to
-                # communicate the current version).
-                if self.oracle_version <= 9:
-                    self.ops.regex_lookup = self.ops.regex_lookup_9
-                else:
-                    self.ops.regex_lookup = self.ops.regex_lookup_10
-            except ValueError:
-                pass
-            try:
-                self.connection.stmtcachesize = 20
-            except:
-                # Django docs specify cx_Oracle version 4.3.1 or higher, but
-                # stmtcachesize is available only in 4.3.2 and up.
-                pass
-        if not cursor:
-            cursor = FormatStylePlaceholderCursor(self.connection)
-        # Default arraysize of 1 is highly sub-optimal.
-        cursor.arraysize = 100
-        return cursor
+                return self.connection.commit()
+            except Database.DatabaseError as e:
+                # cx_Oracle raises a cx_Oracle.DatabaseError exception
+                # with the following attributes and values:
+                #  code = 2091
+                #  message = 'ORA-02091: transaction rolled back
+                #            'ORA-02291: integrity constraint (TEST_DJANGOTEST.SYS
+                #               _C00102056) violated - parent key not found'
+                # We convert that particular case to our IntegrityError exception
+                x = e.args[0]
+                if hasattr(x, 'code') and hasattr(x, 'message') \
+                   and x.code == 2091 and 'ORA-02291' in x.message:
+                    six.reraise(utils.IntegrityError, utils.IntegrityError(*tuple(e.args)), sys.exc_info()[2])
+                raise
+
+    # Oracle doesn't support releasing savepoints. But we fake them when query
+    # logging is enabled to keep query counts consistent with other backends.
+    def _savepoint_commit(self, sid):
+        if self.queries_logged:
+            self.queries_log.append({
+                'sql': '-- RELEASE SAVEPOINT %s (faked)' % self.ops.quote_name(sid),
+                'time': '0.000',
+            })
+
+    def _set_autocommit(self, autocommit):
+        with self.wrap_database_errors:
+            self.connection.autocommit = autocommit
+
+    def check_constraints(self, table_names=None):
+        """
+        To check constraints, we set constraints to immediate. Then, when, we're done we must ensure they
+        are returned to deferred.
+        """
+        self.cursor().execute('SET CONSTRAINTS ALL IMMEDIATE')
+        self.cursor().execute('SET CONSTRAINTS ALL DEFERRED')
+
+    def is_usable(self):
+        try:
+            self.connection.ping()
+        except Database.Error:
+            return False
+        else:
+            return True
+
+    @cached_property
+    def oracle_full_version(self):
+        with self.temporary_connection():
+            return self.connection.version
+
+    @cached_property
+    def oracle_version(self):
+        try:
+            return int(self.oracle_full_version.split('.')[0])
+        except ValueError:
+            return None
 
 
 class OracleParam(object):
     """
     Wrapper object for formatting parameters for Oracle. If the string
     representation of the value is large enough (greater than 4000 characters)
-    the input size needs to be set as NCLOB. Alternatively, if the parameter
+    the input size needs to be set as CLOB. Alternatively, if the parameter
     has an `input_size` attribute, then the value of the `input_size` attribute
     will be used instead. Otherwise, no input size will be set for the
     parameter when executing the query.
     """
 
-    def __init__(self, param, charset, strings_only=False):
-        self.smart_str = smart_str(param, charset, strings_only)
+    def __init__(self, param, cursor, strings_only=False):
+        # With raw SQL queries, datetimes can reach this function
+        # without being converted by DateTimeField.get_db_prep_value.
+        if settings.USE_TZ and (isinstance(param, datetime.datetime) and
+                                not isinstance(param, Oracle_datetime)):
+            if timezone.is_aware(param):
+                warnings.warn(
+                    "The Oracle database adapter received an aware datetime (%s), "
+                    "probably from cursor.execute(). Update your code to pass a "
+                    "naive datetime in the database connection's time zone (UTC by "
+                    "default).", RemovedInDjango20Warning)
+                param = param.astimezone(timezone.utc).replace(tzinfo=None)
+            param = Oracle_datetime.from_datetime(param)
+
+        string_size = 0
+        # Oracle doesn't recognize True and False correctly in Python 3.
+        # The conversion done below works both in 2 and 3.
+        if param is True:
+            param = 1
+        elif param is False:
+            param = 0
+        if hasattr(param, 'bind_parameter'):
+            self.force_bytes = param.bind_parameter(cursor)
+        elif isinstance(param, (Database.Binary, datetime.timedelta)):
+            self.force_bytes = param
+        else:
+            # To transmit to the database, we need Unicode if supported
+            # To get size right, we must consider bytes.
+            self.force_bytes = force_text(param, cursor.charset, strings_only)
+            if isinstance(self.force_bytes, six.string_types):
+                # We could optimize by only converting up to 4000 bytes here
+                string_size = len(force_bytes(param, cursor.charset, strings_only))
         if hasattr(param, 'input_size'):
             # If parameter has `input_size` attribute, use that.
             self.input_size = param.input_size
-        elif isinstance(param, basestring) and len(param) > 4000:
-            # Mark any string param greater than 4000 characters as an NCLOB.
-            self.input_size = Database.NCLOB
+        elif string_size > 4000:
+            # Mark any string param greater than 4000 characters as a CLOB.
+            self.input_size = Database.CLOB
+        elif isinstance(param, decimal.Decimal):
+            self.input_size = Database.NUMBER
         else:
             self.input_size = None
 
 
-class FormatStylePlaceholderCursor(Database.Cursor):
+class VariableWrapper(object):
+    """
+    An adapter class for cursor variables that prevents the wrapped object
+    from being converted into a string when used to instantiate an OracleParam.
+    This can be used generally for any other object that should be passed into
+    Cursor.execute as-is.
+    """
+
+    def __init__(self, var):
+        self.var = var
+
+    def bind_parameter(self, cursor):
+        return self.var
+
+    def __getattr__(self, key):
+        return getattr(self.var, key)
+
+    def __setattr__(self, key, value):
+        if key == 'var':
+            self.__dict__[key] = value
+        else:
+            setattr(self.var, key, value)
+
+
+class FormatStylePlaceholderCursor(object):
     """
     Django uses "format" (e.g. '%s') style placeholders, but Oracle uses ":var"
     style. This fixes it -- but note that if you want to use a literal "%s" in
@@ -325,82 +403,205 @@ class FormatStylePlaceholderCursor(Database.Cursor):
     """
     charset = 'utf-8'
 
+    def __init__(self, connection):
+        self.cursor = connection.cursor()
+        self.cursor.outputtypehandler = self._output_type_handler
+        # Default arraysize of 1 is highly sub-optimal.
+        self.cursor.arraysize = 100
+
+    @staticmethod
+    def _output_type_handler(cursor, name, defaultType, length, precision, scale):
+        """
+        Called for each db column fetched from cursors. Return numbers as
+        strings so that decimal values don't have rounding error.
+        """
+        if defaultType == Database.NUMBER:
+            return cursor.var(
+                Database.STRING,
+                size=255,
+                arraysize=cursor.arraysize,
+                outconverter=str,
+            )
+
     def _format_params(self, params):
-        return tuple([OracleParam(p, self.charset, True) for p in params])
+        try:
+            return {k: OracleParam(v, self, True) for k, v in params.items()}
+        except AttributeError:
+            return tuple(OracleParam(p, self, True) for p in params)
 
     def _guess_input_sizes(self, params_list):
-        sizes = [None] * len(params_list[0])
-        for params in params_list:
-            for i, value in enumerate(params):
-                if value.input_size:
-                    sizes[i] = value.input_size
-        self.setinputsizes(*sizes)
+        # Try dict handling; if that fails, treat as sequence
+        if hasattr(params_list[0], 'keys'):
+            sizes = {}
+            for params in params_list:
+                for k, value in params.items():
+                    if value.input_size:
+                        sizes[k] = value.input_size
+            self.setinputsizes(**sizes)
+        else:
+            # It's not a list of dicts; it's a list of sequences
+            sizes = [None] * len(params_list[0])
+            for params in params_list:
+                for i, value in enumerate(params):
+                    if value.input_size:
+                        sizes[i] = value.input_size
+            self.setinputsizes(*sizes)
 
     def _param_generator(self, params):
-        return [p.smart_str for p in params]
+        # Try dict handling; if that fails, treat as sequence
+        if hasattr(params, 'items'):
+            return {k: v.force_bytes for k, v in params.items()}
+        else:
+            return [p.force_bytes for p in params]
 
-    def execute(self, query, params=None):
+    def _fix_for_params(self, query, params, unify_by_values=False):
+        # cx_Oracle wants no trailing ';' for SQL statements.  For PL/SQL, it
+        # it does want a trailing ';' but not a trailing '/'.  However, these
+        # characters must be included in the original query in case the query
+        # is being passed to SQL*Plus.
+        if query.endswith(';') or query.endswith('/'):
+            query = query[:-1]
         if params is None:
             params = []
+            query = query
+        elif hasattr(params, 'keys'):
+            # Handle params as dict
+            args = {k: ":%s" % k for k in params.keys()}
+            query = query % args
+        elif unify_by_values and len(params) > 0:
+            # Handle params as a dict with unified query parameters by their
+            # values. It can be used only in single query execute() because
+            # executemany() shares the formatted query with each of the params
+            # list. e.g. for input params = [0.75, 2, 0.75, 'sth', 0.75]
+            # params_dict = {
+            #   (2, <type 'int'>): ':arg2',
+            #   (0.75, <type 'float'>): ':arg1',
+            #   ('sth', <type 'str'>): ':arg0',
+            # }
+            # args = [':arg0', ':arg1', ':arg0', ':arg2', ':arg0']
+            # params = {':arg0': 0.75, ':arg1': 2, ':arg2': 'sth'}
+            params = [(param, type(param)) for param in params]
+            params_dict = {param: ':arg%d' % i for i, param in enumerate(set(params))}
+            args = [params_dict[param] for param in params]
+            params = {value: key[0] for key, value in params_dict.items()}
+            query = query % tuple(args)
         else:
-            params = self._format_params(params)
-        args = [(':arg%d' % i) for i in range(len(params))]
-        # cx_Oracle wants no trailing ';' for SQL statements.  For PL/SQL, it
-        # it does want a trailing ';' but not a trailing '/'.  However, these
-        # characters must be included in the original query in case the query
-        # is being passed to SQL*Plus.
-        if query.endswith(';') or query.endswith('/'):
-            query = query[:-1]
-        query = smart_str(query, self.charset) % tuple(args)
+            # Handle params as sequence
+            args = [(':arg%d' % i) for i in range(len(params))]
+            query = query % tuple(args)
+        return force_text(query, self.charset), self._format_params(params)
+
+    def execute(self, query, params=None):
+        query, params = self._fix_for_params(query, params, unify_by_values=True)
         self._guess_input_sizes([params])
-        try:
-            return Database.Cursor.execute(self, query,
-                                           self._param_generator(params))
-        except DatabaseError, e:
-            # cx_Oracle <= 4.4.0 wrongly raises a DatabaseError for ORA-01400.
-            if e.args[0].code == 1400 and not isinstance(e, IntegrityError):
-                e = IntegrityError(e.args[0])
-            raise e
+        return self.cursor.execute(query, self._param_generator(params))
 
     def executemany(self, query, params=None):
-        try:
-            args = [(':arg%d' % i) for i in range(len(params[0]))]
-        except (IndexError, TypeError):
+        if not params:
             # No params given, nothing to do
             return None
-        # cx_Oracle wants no trailing ';' for SQL statements.  For PL/SQL, it
-        # it does want a trailing ';' but not a trailing '/'.  However, these
-        # characters must be included in the original query in case the query
-        # is being passed to SQL*Plus.
-        if query.endswith(';') or query.endswith('/'):
-            query = query[:-1]
-        query = smart_str(query, self.charset) % tuple(args)
-        formatted = [self._format_params(i) for i in params]
+        # uniform treatment for sequences and iterables
+        params_iter = iter(params)
+        query, firstparams = self._fix_for_params(query, next(params_iter))
+        # we build a list of formatted params; as we're going to traverse it
+        # more than once, we can't make it lazy by using a generator
+        formatted = [firstparams] + [self._format_params(p) for p in params_iter]
         self._guess_input_sizes(formatted)
-        try:
-            return Database.Cursor.executemany(self, query,
-                                [self._param_generator(p) for p in formatted])
-        except DatabaseError, e:
-            # cx_Oracle <= 4.4.0 wrongly raises a DatabaseError for ORA-01400.
-            if e.args[0].code == 1400 and not isinstance(e, IntegrityError):
-                e = IntegrityError(e.args[0])
-            raise e
+        return self.cursor.executemany(query, [self._param_generator(p) for p in formatted])
 
     def fetchone(self):
-        row = Database.Cursor.fetchone(self)
+        row = self.cursor.fetchone()
         if row is None:
             return row
-        return tuple([to_unicode(e) for e in row])
+        return _rowfactory(row, self.cursor)
 
     def fetchmany(self, size=None):
         if size is None:
             size = self.arraysize
-        return tuple([tuple([to_unicode(e) for e in r])
-                      for r in Database.Cursor.fetchmany(self, size)])
+        return tuple(_rowfactory(r, self.cursor) for r in self.cursor.fetchmany(size))
 
     def fetchall(self):
-        return tuple([tuple([to_unicode(e) for e in r])
-                      for r in Database.Cursor.fetchall(self)])
+        return tuple(_rowfactory(r, self.cursor) for r in self.cursor.fetchall())
+
+    def close(self):
+        try:
+            self.cursor.close()
+        except Database.InterfaceError:
+            # already closed
+            pass
+
+    def var(self, *args):
+        return VariableWrapper(self.cursor.var(*args))
+
+    def arrayvar(self, *args):
+        return VariableWrapper(self.cursor.arrayvar(*args))
+
+    def __getattr__(self, attr):
+        if attr in self.__dict__:
+            return self.__dict__[attr]
+        else:
+            return getattr(self.cursor, attr)
+
+    def __iter__(self):
+        return CursorIterator(self.cursor)
+
+
+class CursorIterator(six.Iterator):
+    """
+    Cursor iterator wrapper that invokes our custom row factory.
+    """
+
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.iter = iter(cursor)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return _rowfactory(next(self.iter), self.cursor)
+
+
+def _rowfactory(row, cursor):
+    # Cast numeric values as the appropriate Python type based upon the
+    # cursor description, and convert strings to unicode.
+    casted = []
+    for value, desc in zip(row, cursor.description):
+        if value is not None and desc[1] is Database.NUMBER:
+            precision = desc[4] or 0
+            scale = desc[5] or 0
+            if scale == -127:
+                if precision == 0:
+                    # NUMBER column: decimal-precision floating point
+                    # This will normally be an integer from a sequence,
+                    # but it could be a decimal value.
+                    if '.' in value:
+                        value = decimal.Decimal(value)
+                    else:
+                        value = int(value)
+                else:
+                    # FLOAT column: binary-precision floating point.
+                    # This comes from FloatField columns.
+                    value = float(value)
+            elif precision > 0:
+                # NUMBER(p,s) column: decimal-precision fixed point.
+                # This comes from IntField and DecimalField columns.
+                if scale == 0:
+                    value = int(value)
+                else:
+                    value = decimal.Decimal(value)
+            elif '.' in value:
+                # No type information. This normally comes from a
+                # mathematical expression in the SELECT list. Guess int
+                # or Decimal based on whether it has a decimal point.
+                value = decimal.Decimal(value)
+            else:
+                value = int(value)
+        elif desc[1] in (Database.STRING, Database.FIXED_CHAR,
+                         Database.LONG_STRING):
+            value = to_unicode(value)
+        casted.append(value)
+    return tuple(casted)
 
 
 def to_unicode(s):
@@ -408,37 +609,6 @@ def to_unicode(s):
     Convert strings to Unicode objects (and return all other data types
     unchanged).
     """
-    if isinstance(s, basestring):
-        return force_unicode(s)
+    if isinstance(s, six.string_types):
+        return force_text(s)
     return s
-
-
-def _get_sequence_reset_sql():
-    # TODO: colorize this SQL code with style.SQL_KEYWORD(), etc.
-    return """
-DECLARE
-    startvalue integer;
-    cval integer;
-BEGIN
-    LOCK TABLE %(table)s IN SHARE MODE;
-    SELECT NVL(MAX(%(column)s), 0) INTO startvalue FROM %(table)s;
-    SELECT "%(sequence)s".nextval INTO cval FROM dual;
-    cval := startvalue - cval;
-    IF cval != 0 THEN
-        EXECUTE IMMEDIATE 'ALTER SEQUENCE "%(sequence)s" MINVALUE 0 INCREMENT BY '||cval;
-        SELECT "%(sequence)s".nextval INTO cval FROM dual;
-        EXECUTE IMMEDIATE 'ALTER SEQUENCE "%(sequence)s" INCREMENT BY 1';
-    END IF;
-    COMMIT;
-END;
-/"""
-
-
-def get_sequence_name(table):
-    name_length = DatabaseOperations().max_name_length() - 3
-    return '%s_SQ' % util.truncate_name(table, name_length).upper()
-
-
-def get_trigger_name(table):
-    name_length = DatabaseOperations().max_name_length() - 3
-    return '%s_TR' % util.truncate_name(table, name_length).upper()

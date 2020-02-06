@@ -7,37 +7,41 @@
 # Dirtily sped up by Simon Descarpentries
 # Concurrency by Jason Stitt
 
-from math            import sqrt
-from itertools       import izip
 import time
 import util
-import itertools
 import optparse
+import sys
+if sys.version_info[0] < 3:
+    from itertools import izip
+else:
+    xrange = range
+    izip = zip
 
-def eval_A (i, j):
-    return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
+def eval_A(i, j):
+    return 1.0 / ((i + j) * (i + j + 1) // 2 + i + 1)
 
-def eval_A_times_u (u):
-    args = ((i,u) for i in xrange(len(u)))
-    return map(part_A_times_u, args)
 
-def eval_At_times_u (u):
-    args = ((i,u) for i in xrange(len(u)))
-    return map(part_At_times_u, args)
+def eval_times_u(func, u):
+    return [func((i, u)) for i in xrange(len(list(u)))]
 
-def eval_AtA_times_u (u):
-    return eval_At_times_u (eval_A_times_u (u))
 
-def part_A_times_u((i,u)):
+def eval_AtA_times_u(u):
+    return eval_times_u(part_At_times_u, eval_times_u(part_A_times_u, u))
+
+
+def part_A_times_u(i_u):
+    i, u = i_u
     partial_sum = 0
     for j, u_j in enumerate(u):
-        partial_sum += eval_A (i, j) * u_j
+        partial_sum += eval_A(i, j) * u_j
     return partial_sum
 
-def part_At_times_u((i,u)):
+
+def part_At_times_u(i_u):
+    i, u = i_u
     partial_sum = 0
     for j, u_j in enumerate(u):
-        partial_sum += eval_A (j, i) * u_j
+        partial_sum += eval_A(j, i) * u_j
     return partial_sum
 
 DEFAULT_N = 130

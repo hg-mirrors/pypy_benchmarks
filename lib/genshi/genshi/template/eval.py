@@ -13,10 +13,21 @@
 
 """Support for "safe" evaluation of Python expressions."""
 
-import __builtin__
 
 from textwrap import dedent
 from types import CodeType
+import sys
+import platform
+if sys.version_info[0] > 2:
+    basestring = str
+    unicode = str
+
+if platform.python_implementation() == 'PyPy':
+    def get_builtin(name, val):
+        return getattr(__builtins__, name, val)
+else:
+    def get_builtin(name, val):
+        return __builtins__.get(name, val)
 
 from genshi.core import Markup
 from genshi.template.astutil import ASTTransformer, ASTCodeGenerator, \
@@ -36,7 +47,7 @@ has_star_import_bug = False
 try:
     class _FakeMapping(object):
         __getitem__ = __setitem__ = lambda *a: None
-    exec 'from sys import *' in {}, _FakeMapping()
+    exec('from sys import *', {}, _FakeMapping())
 except SystemError:
     has_star_import_bug = True
 del _FakeMapping
@@ -195,7 +206,7 @@ class Suite(Code):
         """
         __traceback_hide__ = 'before_and_this'
         _globals = self._globals(data)
-        exec self.code in _globals, data
+        exec(self.code, _globals, data)
 
 
 UNDEFINED = object()
@@ -305,7 +316,7 @@ class LookupBase(object):
         __traceback_hide__ = True
         val = data.get(name, UNDEFINED)
         if val is UNDEFINED:
-            val = BUILTINS.get(name, val)
+            val = get_builtin(name, val)
             if val is UNDEFINED:
                 val = cls.undefined(name)
         return val
@@ -332,7 +343,7 @@ class LookupBase(object):
             key = key[0]
         try:
             return obj[key]
-        except (AttributeError, KeyError, IndexError, TypeError), e:
+        except (AttributeError, KeyError, IndexError, TypeError) as e:
             if isinstance(key, basestring):
                 val = getattr(obj, key, UNDEFINED)
                 if val is UNDEFINED:
@@ -482,8 +493,6 @@ def _new(class_, *args, **kwargs):
     return ret
 
 
-BUILTINS = __builtin__.__dict__.copy()
-BUILTINS.update({'Markup': Markup, 'Undefined': Undefined})
 CONSTANTS = frozenset(['False', 'True', 'None', 'NotImplemented', 'Ellipsis'])
 
 

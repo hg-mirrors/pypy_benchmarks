@@ -2,13 +2,34 @@ import os
 import re
 import sys
 import codecs
+import logging
+
+from copy import copy
 
 version = sys.version_info[:3]
 
 try:
-    import ast
+    import ast as _ast
 except ImportError:
-    from chameleon import ast24 as ast
+    from chameleon import ast25 as _ast
+
+
+class ASTProxy(object):
+    aliases = {
+        # Python 3.3
+        'TryExcept': 'Try',
+        'TryFinally': 'Try',
+        }
+
+    def __getattr__(self, name):
+        if name.startswith('__'):
+            raise AttributeError(name)
+        return _ast.__dict__.get(name) or getattr(_ast, self.aliases[name])
+
+
+ast = ASTProxy()
+
+log = logging.getLogger('chameleon.utils')
 
 # Python 2
 if version < (3, 0, 0):
@@ -53,6 +74,12 @@ else:
         exc.__traceback__ = tb
         raise exc
 
+def text_(s, encoding='latin-1', errors='strict'):
+    """ If ``s`` is an instance of ``byte_string``, return
+    ``s.decode(encoding, errors)``, otherwise return ``s``"""
+    if isinstance(s, byte_string):
+        return s.decode(encoding, errors)
+    return s
 
 entity_re = re.compile(r'&(#?)(x?)(\d{1,5}|\w{1,8});')
 
@@ -110,7 +137,7 @@ def read_bytes(body, default_encoding):
             return document, encoding, \
                    "text/xml" if document.startswith("<?xml") else None
 
-        if prefix != '<?xml' and body.startswith(prefix):
+        if prefix != encode_string('<?xml') and body.startswith(prefix):
             return body.decode(encoding), encoding, "text/xml"
 
     if body.startswith(_xml_decl):
@@ -182,18 +209,31 @@ def substitute_entity(match, n2cp=htmlentitydefs.name2codepoint):
             return match.group()
 
 
-def derive_formatted_exception(exc, cls, formatter):
+def create_formatted_exception(exc, cls, formatter, base=Exception):
     try:
-        new = type(cls.__name__, (cls, Exception), {
-            '__str__': formatter,
-            })
-        exc.__class__ = new
-    except TypeError:
-        d = exc.__dict__
-        exc = cls.__new__(new)
-        exc.__dict__ = d
+        try:
+            new = type(cls.__name__, (cls, base), {
+                '__str__': formatter,
+                '_original__str__': exc.__str__,
+                '__new__': BaseException.__new__,
+                '__module__': cls.__module__,
+                })
+        except TypeError:
+            new = cls
 
-    return exc
+        try:
+            inst = BaseException.__new__(new)
+        except TypeError:
+            inst = cls.__new__(new)
+
+        BaseException.__init__(inst, *exc.args)
+        inst.__dict__ = exc.__dict__
+
+        return inst
+    except ValueError:
+        name = type(exc).__name__
+        log.warn("Unable to copy exception of type '%s'." % name)
+        raise TypeError(exc)
 
 
 def unescape(string):
@@ -204,19 +244,19 @@ def unescape(string):
     return string
 
 
-_concat = "".join
+_concat = unicode_string("").join
 
 
 def join(stream):
     """Concatenate stream.
 
-    >>> join(('Hello', ' ', 'world'))
-    'Hello world'
+    >>> print(join(('Hello', ' ', 'world')))
+    Hello world
 
     >>> join(('Hello', 0))
     Traceback (most recent call last):
      ...
-    TypeError: ... int ...
+    TypeError: ... expected ...
 
     """
 
@@ -384,14 +424,15 @@ class ListDictProxy(object):
         return self._l[-1].get(key)
 
 
-class Markup(object):
-    __slots__ = "s",
+class Markup(unicode_string):
+    """Wraps a string to always render as structure.
 
-    def __init__(self, s):
-        self.s = s
+    >>> Markup('<br />')
+    s'<br />'
+    """
 
     def __html__(self):
-        return self.s
+        return unicode_string(self)
 
     def __repr__(self):
-        return "s'%s'" % self.s
+        return "s'%s'" % self

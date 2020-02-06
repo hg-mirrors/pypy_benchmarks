@@ -10,13 +10,13 @@ import time
 import util
 
 def fannkuch(n):
-    count = range(1, n+1)
+    count = list(range(1, n+1))
     max_flips = 0
     m = n-1
     r = n
     check = 0
-    perm1 = range(n)
-    perm = range(n)
+    perm1 = list(range(n))
+    perm = list(range(n))
     perm1_ins = perm1.insert
     perm1_pop = perm1.pop
 

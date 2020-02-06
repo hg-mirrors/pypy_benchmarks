@@ -14,8 +14,14 @@ from twisted.python.win32 import _ErrorFormatter, formatError
 from twisted.python.runtime import platform
 
 
+class _MyWindowsException(OSError):
+    """
+    An exception type like L{ctypes.WinError}, but available on all platforms.
+    """
 
-class ErrorFormatingTestCase(TestCase):
+
+
+class ErrorFormatingTests(TestCase):
     """
     Tests for C{_ErrorFormatter.formatError}.
     """
@@ -81,7 +87,7 @@ class ErrorFormatingTestCase(TestCase):
         winCalls = []
         def winError(errorCode):
             winCalls.append(errorCode)
-            return (errorCode, self.probeMessage)
+            return _MyWindowsException(errorCode, self.probeMessage)
         formatter = _ErrorFormatter(
             winError,
             lambda error: 'formatMessage: wrong message',
@@ -101,7 +107,7 @@ class ErrorFormatingTestCase(TestCase):
             from ctypes import WinError
             self.assertEqual(
                 formatter.formatError(self.probeErrorCode),
-                WinError(self.probeErrorCode)[1])
+                WinError(self.probeErrorCode).strerror)
             formatter.winError = None
 
         if formatter.formatMessage is not None:
@@ -118,19 +124,19 @@ class ErrorFormatingTestCase(TestCase):
                 errorTab[self.probeErrorCode])
 
     if platform.getType() != "win32":
-        test_fromEnvironment.skip = "This error lookup only works on Windows"
+        test_fromEnvironment.skip = "Test will run only on Windows."
 
 
     def test_correctLookups(self):
         """
-        Given an known-good errno, make sure that formatMessage gives results
+        Given a known-good errno, make sure that formatMessage gives results
         matching either C{socket.errorTab}, C{ctypes.WinError}, or
         C{win32api.FormatMessage}.
         """
         acceptable = [socket.errorTab[ECONNABORTED]]
         try:
             from ctypes import WinError
-            acceptable.append(WinError(ECONNABORTED)[1])
+            acceptable.append(WinError(ECONNABORTED).strerror)
         except ImportError:
             pass
         try:
@@ -142,4 +148,4 @@ class ErrorFormatingTestCase(TestCase):
         self.assertIn(formatError(ECONNABORTED), acceptable)
 
     if platform.getType() != "win32":
-        test_correctLookups.skip = "This error lookup only works on Windows"
+        test_correctLookups.skip = "Test will run only on Windows."

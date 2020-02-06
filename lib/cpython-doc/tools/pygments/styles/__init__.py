@@ -5,7 +5,7 @@
 
     Contains built-in styles.
 
-    :copyright: Copyright 2006-2010 by the Pygments team, see AUTHORS.
+    :copyright: Copyright 2006-2019 by the Pygments team, see AUTHORS.
     :license: BSD, see LICENSE for details.
 """
 
@@ -30,8 +30,26 @@ STYLE_MAP = {
     'native':   'native::NativeStyle',
     'fruity':   'fruity::FruityStyle',
     'bw':       'bw::BlackWhiteStyle',
+    'vim':      'vim::VimStyle',
     'vs':       'vs::VisualStudioStyle',
     'tango':    'tango::TangoStyle',
+    'rrt':      'rrt::RrtStyle',
+    'xcode':    'xcode::XcodeStyle',
+    'igor':     'igor::IgorStyle',
+    'paraiso-light': 'paraiso_light::ParaisoLightStyle',
+    'paraiso-dark': 'paraiso_dark::ParaisoDarkStyle',
+    'lovelace': 'lovelace::LovelaceStyle',
+    'algol':    'algol::AlgolStyle',
+    'algol_nu': 'algol_nu::Algol_NuStyle',
+    'arduino':  'arduino::ArduinoStyle',
+    'rainbow_dash': 'rainbow_dash::RainbowDashStyle',
+    'abap':     'abap::AbapStyle',
+    'solarized-dark': 'solarized::SolarizedDarkStyle',
+    'solarized-light': 'solarized::SolarizedLightStyle',
+    'sas':         'sas::SasStyle',
+    'stata':       'stata_light::StataLightStyle',
+    'stata-light': 'stata_light::StataLightStyle',
+    'stata-dark':  'stata_dark::StataDarkStyle',
 }
 
 

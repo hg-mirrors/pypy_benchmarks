@@ -3,15 +3,19 @@
 import util
 import optparse
 import time
+import sys
+import codecs
+if sys.version_info[0] > 2:
+    xrange = range
 
 import pyaes
 
-cleartext = "This is a test. What could possibly go wrong? " * 2000 # 92000 bytes
+cleartext = b"This is a test. What could possibly go wrong? " * 2000 # 92000 bytes
 
 def benchmark():
     # 128-bit key
-    key = 'a1f6258c877d5fcd8964484538bfc92c'.decode('hex')
-    iv  = 'ed62e16363638360fdd6ad62112794f0'.decode('hex')
+    key = codecs.decode(b'a1f6258c877d5fcd8964484538bfc92c', 'hex')
+    iv  = codecs.decode(b'ed62e16363638360fdd6ad62112794f0', 'hex')
 
     aes = pyaes.new(key, pyaes.MODE_CBC, iv)
     ciphertext = aes.encrypt(cleartext)

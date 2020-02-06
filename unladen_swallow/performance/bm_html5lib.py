@@ -11,10 +11,16 @@ from __future__ import with_statement
 __author__ = "collinwinter@google.com (Collin Winter)"
 
 # Python imports
-import StringIO
+import sys
 import optparse
 import os.path
 import time
+if sys.version_info[0] > 2:
+    import io
+    xrange = range
+else:
+    import StringIO as io
+
 
 # Local imports
 import util
@@ -48,6 +54,6 @@ if __name__ == "__main__":
     data_dir = os.path.join(os.path.dirname(__file__), "data")
     spec_filename = os.path.join(data_dir, "html5lib_spec.html")
     with open(spec_filename) as spec_fh:
-        spec_data = StringIO.StringIO(spec_fh.read())
+        spec_data = io.StringIO(spec_fh.read())
 
     util.run_benchmark(options, options.num_runs, test_html5lib, spec_data)

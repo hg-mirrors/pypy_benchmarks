@@ -1,0 +1,4 @@
+Possible benchmarks to explore:
+- Web-site frameworks https://github.com/klen/py-frameworks-bench
+- Exploration of django https://lincolnloop.com/blog/faster-django-sites-pypy/
+- black

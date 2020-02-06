@@ -1,12 +1,10 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-import sys, types
 from pprint import pformat
 
 from twisted.trial import unittest
 from twisted.news import database
-from twisted.internet import reactor
 
 MESSAGE_ID = "f83ba57450ed0fd8ac9a472b847e830e"
 
@@ -31,7 +29,7 @@ moo
  10:56pm up 4 days, 4:42, 1 user, load average: 0.08, 0.08, 0.12
 """ % (MESSAGE_ID)
 
-class NewsTestCase(unittest.TestCase):
+class NewsTests(unittest.TestCase):
     def setUp(self):
         self.backend = database.NewsShelf(None, 'news2.db')
         self.backend.addGroup('alt.test.nntp', 'y')
@@ -40,7 +38,7 @@ class NewsTestCase(unittest.TestCase):
 
     def testArticleExists(self):
         d = self.backend.articleExistsRequest(MESSAGE_ID)
-        d.addCallback(self.failUnless)
+        d.addCallback(self.assertTrue)
         return d
 
 
@@ -48,7 +46,7 @@ class NewsTestCase(unittest.TestCase):
         d = self.backend.articleRequest(None, None, MESSAGE_ID)
 
         def cbArticle(result):
-            self.failUnless(isinstance(result, tuple),
+            self.assertTrue(isinstance(result, tuple),
                             'callback result is wrong type: ' + str(result))
             self.assertEqual(len(result), 3,
                               'callback result list should have three entries: ' +
@@ -57,7 +55,7 @@ class NewsTestCase(unittest.TestCase):
                               "callback result Message-Id doesn't match: %s vs %s" %
                               (MESSAGE_ID, result[1]))
             body = result[2].read()
-            self.failIfEqual(body.find('\r\n\r\n'), -1,
+            self.assertNotEqual(body.find('\r\n\r\n'), -1,
                              "Can't find \\r\\n\\r\\n between header and body")
             return result
 

@@ -9,14 +9,29 @@ XMPP XML Streams
 Building blocks for setting up XML Streams, including helping classes for
 doing authentication on either client or server side, and working with XML
 Stanzas.
+
+@var STREAM_AUTHD_EVENT: Token dispatched by L{Authenticator} when the
+    stream has been completely initialized
+@type STREAM_AUTHD_EVENT: L{str}.
+
+@var INIT_FAILED_EVENT: Token dispatched by L{Authenticator} when the
+    stream has failed to be initialized
+@type INIT_FAILED_EVENT: L{str}.
+
+@var Reset: Token to signal that the XML stream has been reset.
+@type Reset: Basic object.
 """
 
-from zope.interface import directlyProvides, implements
+from __future__ import absolute_import, division
+
+from binascii import hexlify
+from hashlib import sha1
+from zope.interface import directlyProvides, implementer
 
 from twisted.internet import defer, protocol
 from twisted.internet.error import ConnectionLost
 from twisted.python import failure, log, randbytes
-from twisted.python.hashlib import sha1
+from twisted.python.compat import intern, iteritems, itervalues, unicode
 from twisted.words.protocols.jabber import error, ijabber, jid
 from twisted.words.xish import domish, xmlstream
 from twisted.words.xish.xmlstream import STREAM_CONNECTED_EVENT
@@ -105,10 +120,10 @@ class Authenticator:
         A stream is considered to have started when the start tag of the root
         element has been received.
 
-        This examines L{rootElement} to see if there is a version attribute.
+        This examines C{rootElement} to see if there is a version attribute.
         If absent, C{0.0} is assumed per RFC 3920. Subsequently, the
         minimum of the version from the received stream header and the
-        value stored in L{xmlstream} is taken and put back in {xmlstream}.
+        value stored in L{xmlstream} is taken and put back in L{xmlstream}.
 
         Extensions of this method can extract more information from the
         stream header and perform checks on them, optionally sending
@@ -167,7 +182,7 @@ class ConnectAuthenticator(Authenticator):
 
         An L{XmlStream} holds a list of initializer objects in its
         C{initializers} attribute. This method calls these initializers in
-        order and dispatches the C{STREAM_AUTHD_EVENT} event when the list has
+        order and dispatches the L{STREAM_AUTHD_EVENT} event when the list has
         been successfully processed. Otherwise it dispatches the
         C{INIT_FAILED_EVENT} event with the failure.
 
@@ -214,7 +229,7 @@ class ConnectAuthenticator(Authenticator):
         Called by the XmlStream when the stream has started.
 
         This extends L{Authenticator.streamStarted} to extract further stream
-        headers from L{rootElement}, optionally wait for stream features being
+        headers from C{rootElement}, optionally wait for stream features being
         received and then call C{initializeStream}.
         """
 
@@ -266,7 +281,7 @@ class ListenAuthenticator(Authenticator):
         Called by the XmlStream when the stream has started.
 
         This extends L{Authenticator.streamStarted} to extract further
-        information from the stream headers from L{rootElement}.
+        information from the stream headers from C{rootElement}.
         """
         Authenticator.streamStarted(self, rootElement)
 
@@ -276,10 +291,10 @@ class ListenAuthenticator(Authenticator):
             self.xmlstream.thisEntity = jid.internJID(rootElement["to"])
 
         self.xmlstream.prefixes = {}
-        for prefix, uri in rootElement.localPrefixes.iteritems():
+        for prefix, uri in iteritems(rootElement.localPrefixes):
             self.xmlstream.prefixes[uri] = prefix
 
-        self.xmlstream.sid = unicode(randbytes.secureRandom(8).encode('hex'))
+        self.xmlstream.sid = hexlify(randbytes.secureRandom(8)).decode('ascii')
 
 
 
@@ -291,6 +306,7 @@ class FeatureNotAdvertized(Exception):
 
 
 
+@implementer(ijabber.IInitiatingInitializer)
 class BaseFeatureInitiatingInitializer(object):
     """
     Base class for initializers with a stream feature.
@@ -299,19 +315,18 @@ class BaseFeatureInitiatingInitializer(object):
     of the connection.
 
     @cvar feature: tuple of (uri, name) of the stream feature root element.
-    @type feature: tuple of (L{str}, L{str})
+    @type feature: tuple of (C{str}, C{str})
+
     @ivar required: whether the stream feature is required to be advertized
                     by the receiving entity.
-    @type required: L{bool}
+    @type required: C{bool}
     """
 
-    implements(ijabber.IInitiatingInitializer)
-
     feature = None
-    required = False
 
-    def __init__(self, xs):
+    def __init__(self, xs, required=False):
         self.xmlstream = xs
+        self.required = required
 
 
     def initialize(self):
@@ -320,7 +335,7 @@ class BaseFeatureInitiatingInitializer(object):
 
         Checks if the receiving entity advertizes the stream feature. If it
         does, the initialization is started. If it is not advertized, and the
-        C{required} instance variable is L{True}, it raises
+        C{required} instance variable is C{True}, it raises
         L{FeatureNotAdvertized}. Otherwise, the initialization silently
         succeeds.
         """
@@ -386,13 +401,31 @@ class TLSInitiatingInitializer(BaseFeatureInitiatingInitializer):
     set the C{wanted} attribute to False instead of removing it from the list
     of initializers, so a proper exception L{TLSRequired} can be raised.
 
-    @cvar wanted: indicates if TLS negotiation is wanted.
-    @type wanted: L{bool}
+    @ivar wanted: indicates if TLS negotiation is wanted.
+    @type wanted: C{bool}
     """
 
     feature = (NS_XMPP_TLS, 'starttls')
     wanted = True
     _deferred = None
+    _configurationForTLS = None
+
+    def __init__(self, xs, required=True, configurationForTLS=None):
+        """
+        @param configurationForTLS: An object which creates appropriately
+            configured TLS connections. This is passed to C{startTLS} on the
+            transport and is preferably created using
+            L{twisted.internet.ssl.optionsForClientTLS}.  If C{None}, the
+            default is to verify the server certificate against the trust roots
+            as provided by the platform. See
+            L{twisted.internet._sslverify.platformTrust}.
+        @type configurationForTLS: L{IOpenSSLClientConnectionCreator} or
+            C{None}
+        """
+        super(TLSInitiatingInitializer, self).__init__(
+                xs, required=required)
+        self._configurationForTLS = configurationForTLS
+
 
     def onProceed(self, obj):
         """
@@ -400,7 +433,10 @@ class TLSInitiatingInitializer(BaseFeatureInitiatingInitializer):
         """
 
         self.xmlstream.removeObserver('/failure', self.onFailure)
-        ctx = ssl.CertificateOptions()
+        if self._configurationForTLS:
+            ctx = self._configurationForTLS
+        else:
+            ctx = ssl.optionsForClientTLS(self.xmlstream.otherEntity.host)
         self.xmlstream.transport.startTLS(ctx)
         self.xmlstream.reset()
         self.xmlstream.sendHeader()
@@ -537,7 +573,7 @@ class XmlStream(xmlstream.XmlStream):
         """
         # set up optional extra namespaces
         localPrefixes = {}
-        for uri, prefix in self.prefixes.iteritems():
+        for uri, prefix in iteritems(self.prefixes):
             if uri != NS_STREAMS:
                 localPrefixes[prefix] = uri
 
@@ -594,7 +630,7 @@ class XmlStream(xmlstream.XmlStream):
         """
         Send data over the stream.
 
-        This overrides L{xmlstream.Xmlstream.send} to use the default namespace
+        This overrides L{xmlstream.XmlStream.send} to use the default namespace
         of the stream header when serializing L{domish.IElement}s. It is
         assumed that if you pass an object that provides L{domish.IElement},
         it represents a direct child of the stream's root element.
@@ -602,7 +638,7 @@ class XmlStream(xmlstream.XmlStream):
         if domish.IElement.providedBy(obj):
             obj = obj.toXml(prefixes=self.prefixes,
                             defaultUri=self.namespace,
-                            prefixesInScope=self.prefixes.values())
+                            prefixesInScope=list(self.prefixes.values()))
 
         xmlstream.XmlStream.send(self, obj)
 
@@ -712,7 +748,7 @@ def upgradeWithIQResponseTracker(xs):
 
     This makes an L{XmlStream} object provide L{IIQResponseTracker}. When a
     response is an error iq stanza, the deferred has its errback invoked with a
-    failure that holds a L{StanzaException<error.StanzaException>} that is
+    failure that holds a L{StanzaError<error.StanzaError>} that is
     easier to examine.
     """
     def callback(iq):
@@ -745,7 +781,7 @@ def upgradeWithIQResponseTracker(xs):
         """
         iqDeferreds = xs.iqDeferreds
         xs.iqDeferreds = {}
-        for d in iqDeferreds.itervalues():
+        for d in itervalues(iqDeferreds):
             d.errback(ConnectionLost())
 
     xs.iqDeferreds = {}
@@ -778,7 +814,7 @@ class IQ(domish.Element):
         @type xmlstream: L{xmlstream.XmlStream}
         @param xmlstream: XmlStream to use for transmission of this IQ
 
-        @type stanzaType: L{str}
+        @type stanzaType: C{str}
         @param stanzaType: IQ type identifier ('get' or 'set')
         """
         domish.Element.__init__(self, (None, "iq"))
@@ -863,6 +899,7 @@ def toResponse(stanza, stanzaType=None):
 
 
 
+@implementer(ijabber.IXMPPHandler)
 class XMPPHandler(object):
     """
     XMPP protocol handler.
@@ -870,8 +907,6 @@ class XMPPHandler(object):
     Classes derived from this class implement (part of) one or more XMPP
     extension protocols, and are referred to as a subprotocol implementation.
     """
-
-    implements(ijabber.IXMPPHandler)
 
     def __init__(self):
         self.parent = None
@@ -939,6 +974,7 @@ class XMPPHandler(object):
 
 
 
+@implementer(ijabber.IXMPPHandlerCollection)
 class XMPPHandlerCollection(object):
     """
     Collection of XMPP subprotocol handlers.
@@ -947,11 +983,9 @@ class XMPPHandlerCollection(object):
     L{XMPPHandler} itself, so this is not recursive.
 
     @ivar handlers: List of protocol handlers.
-    @type handlers: L{list} of objects providing
+    @type handlers: C{list} of objects providing
                       L{IXMPPHandler}
     """
-
-    implements(ijabber.IXMPPHandlerCollection)
 
     def __init__(self):
         self.handlers = []
@@ -993,13 +1027,13 @@ class StreamManager(XMPPHandlerCollection):
     @ivar xmlstream: currently managed XML stream
     @type xmlstream: L{XmlStream}
     @ivar logTraffic: if true, log all traffic.
-    @type logTraffic: L{bool}
+    @type logTraffic: C{bool}
     @ivar _initialized: Whether the stream represented by L{xmlstream} has
                         been initialized. This is used when caching outgoing
                         stanzas.
     @type _initialized: C{bool}
     @ivar _packetQueue: internal buffer of unsent data. See L{send} for details.
-    @type _packetQueue: L{list}
+    @type _packetQueue: C{list}
     """
 
     logTraffic = False

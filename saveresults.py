@@ -20,13 +20,19 @@ Example usage:
   $ ./saveresults.py result.json -r '45757:fabe4fc0dc08' -n pypy-c-jit-64 \
     -H tannit
 """
+from __future__ import division, print_function
 
 from datetime import datetime
 import optparse
 import sys
 import time
 import urllib
-import urllib2
+try:
+    import urllib2
+except ImportError:
+    import urllib.request as urllib2
+import json
+import pprint
 
 
 def save(project, revision, results, executeable, host, url, testing=False,
@@ -53,7 +59,7 @@ def save(project, revision, results, executeable, host, url, testing=False,
         else:
             print("ERROR: result type unknown " + b[1])
             return 1
-        data = {
+        data = [{
             'commitid': revision,
             'project': project,
             'executable': executeable,
@@ -61,9 +67,9 @@ def save(project, revision, results, executeable, host, url, testing=False,
             'environment': host,
             'result_value': value,
             'branch': branch,
-        }
-        if value is None:
-            print "Ignoring skipped result", data
+        }]
+        if not value:
+            print("Ignoring skipped result", data)
             continue
         if testing:
             testparams.append(data)
@@ -80,7 +86,7 @@ def save(project, revision, results, executeable, host, url, testing=False,
 
 def send(data, url):
     #save results
-    params = urllib.urlencode(data)
+    params = urllib.urlencode({'json': json.dumps(data)})
     f = None
     response = "None"
     info = ("%s: Saving result for %s revision %s, benchmark %s" %
@@ -91,17 +97,20 @@ def send(data, url):
         retries = [1, 2, 3, 6]
         while True:
             try:
-                f = urllib2.urlopen(url + 'result/add/', params)
+                print('result/add')
+                f = urllib2.urlopen(url + 'result/add/json/', params)
+                print('urlopen')
                 response = f.read()
+                print('response')
                 f.close()
                 break
             except urllib2.URLError:
                 if not retries:
                     raise
                 d = retries.pop(0)
-                print "retrying in %d seconds..." % d
+                print("retrying in %d seconds..." % d)
                 time.sleep(d)
-    except urllib2.URLError, e:
+    except urllib2.URLError as e:
         if hasattr(e, 'reason'):
             response = '\n  We failed to reach a server\n'
             response += '  Reason: ' + str(e.reason)
@@ -109,13 +118,15 @@ def send(data, url):
             response = '\n  The server couldn\'t fulfill the request'
         if hasattr(e, 'readlines'):
             response = "".join([response] + e.readlines())
-        print response
+        print(response)
+        print('when sending')
+        pprint.pprint(data)
         with open('error.html', 'w') as error_file:
             error_file.write(response)
         print("Server (%s) response written to error.html" % (url,))
         print('  Error code: %s\n' % (e,))
         return 1
-    print "saved correctly!\n"
+    print("saved correctly!", end='\n\n')
     return 0
 
 
@@ -124,10 +135,10 @@ def main(jsonfile, options):
     with open(jsonfile) as f:
         data = simplejson.load(f)
     results = data['results']
-    print 'uploading results...',
+    print('uploading results...', end='')
     save(options.project, options.revision, results, options.executable,
                 options.host, options.url, changed=options.changed)
-    print 'done'
+    print('done')
 
 
 if __name__ == '__main__':
@@ -147,9 +158,9 @@ if __name__ == '__main__':
                       help='upload the results as baseline instead of changed')
     parser.add_option('-P', '--project', dest='project', default='PyPy')
     parser.add_option('-u', '--url', dest='url',
-                      default="http://speed.pypy.org/",
+                      default="https://speed.pypy.org/",
                       help=('Url of the codespeed instance '
-                            '(default: http://speed.pypy.org)'))
+                            '(default: https://speed.pypy.org/)'))
     parser.format_description = lambda fmt: __doc__
     parser.description = __doc__
     options, args = parser.parse_args()

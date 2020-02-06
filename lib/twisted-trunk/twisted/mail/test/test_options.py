@@ -10,20 +10,23 @@ from twisted.trial.unittest import TestCase
 from twisted.python.usage import UsageError
 from twisted.mail import protocols
 from twisted.mail.tap import Options, makeService
-from twisted.python import deprecate, versions
-from twisted.python.filepath import FilePath
+from twisted.python.reflect import requireModule
 from twisted.internet import endpoints, defer
 
+if requireModule('OpenSSL') is None:
+    sslSkip = 'Missing OpenSSL package.'
+else:
+    sslSkip = None
 
-class OptionsTestCase(TestCase):
+
+class OptionsTests(TestCase):
     """
     Tests for the command line option parser used for I{twistd mail}.
     """
     def setUp(self):
         self.aliasFilename = self.mktemp()
-        aliasFile = file(self.aliasFilename, 'w')
-        aliasFile.write('someuser:\tdifferentuser\n')
-        aliasFile.close()
+        with open(self.aliasFilename, 'w') as aliasFile:
+            aliasFile.write('someuser:\tdifferentuser\n')
 
 
     def testAliasesWithoutDomain(self):
@@ -45,41 +48,6 @@ class OptionsTestCase(TestCase):
         Options().parseOptions([
             '--maildirdbmdomain', 'example.com=example.com',
             '--aliases', self.aliasFilename])
-
-
-    def testPasswordfileDeprecation(self):
-        """
-        Test that the --passwordfile option will emit a correct warning.
-        """
-        passwd = FilePath(self.mktemp())
-        passwd.setContent("")
-        options = Options()
-        options.opt_passwordfile(passwd.path)
-        warnings = self.flushWarnings([self.testPasswordfileDeprecation])
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertEqual(len(warnings), 1)
-        msg = deprecate.getDeprecationWarningString(options.opt_passwordfile,
-                             versions.Version('twisted.mail', 11, 0, 0))
-        self.assertEqual(warnings[0]['message'], msg)
-
-
-    def test_barePort(self):
-        """
-        A bare port passed to I{--pop3} results in deprecation warning in
-        addition to a TCP4ServerEndpoint.
-        """
-        options = Options()
-        options.parseOptions(['--pop3', '8110'])
-        self.assertEqual(len(options['pop3']), 1)
-        self.assertIsInstance(
-            options['pop3'][0], endpoints.TCP4ServerEndpoint)
-        warnings = self.flushWarnings([options.opt_pop3])
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertEqual(
-            warnings[0]['message'],
-            "Specifying plain ports and/or a certificate is deprecated since "
-            "Twisted 11.0; use endpoint descriptions instead.")
 
 
     def _endpointTest(self, service):
@@ -135,11 +103,11 @@ class OptionsTestCase(TestCase):
         options = Options()
         options.parseOptions(['--no-pop3'])
         self.assertEqual(options._getEndpoints(None, 'pop3'), [])
-        self.assertNotEquals(options._getEndpoints(None, 'smtp'), [])
+        self.assertNotEqual(options._getEndpoints(None, 'smtp'), [])
 
         options = Options()
         options.parseOptions(['--no-smtp'])
-        self.assertNotEquals(options._getEndpoints(None, 'pop3'), [])
+        self.assertNotEqual(options._getEndpoints(None, 'pop3'), [])
         self.assertEqual(options._getEndpoints(None, 'smtp'), [])
 
 
@@ -152,29 +120,28 @@ class OptionsTestCase(TestCase):
             UsageError, options.parseOptions, (['--no-pop3', '--no-smtp']))
 
 
-    def test_pop3sBackwardCompatibility(self):
+    def test_esmtpWithoutHostname(self):
         """
-        The deprecated I{--pop3s} and I{--certificate} options set up a POP3 SSL
-        server.
+        If I{--esmtp} is given without I{--hostname}, L{Options.parseOptions}
+        raises L{UsageError}.
         """
-        cert = FilePath(self.mktemp())
-        cert.setContent("")
         options = Options()
-        options.parseOptions(['--pop3s', '8995',
-                              '--certificate', cert.path])
-        self.assertEqual(len(options['pop3']), 2)
-        self.assertIsInstance(
-            options['pop3'][0], endpoints.SSL4ServerEndpoint)
-        self.assertIsInstance(
-            options['pop3'][1], endpoints.TCP4ServerEndpoint)
+        exc = self.assertRaises(UsageError, options.parseOptions, ['--esmtp'])
+        self.assertEqual("--esmtp requires --hostname", str(exc))
 
-        warnings = self.flushWarnings([options.postOptions])
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertEqual(
-            warnings[0]['message'],
-            "Specifying plain ports and/or a certificate is deprecated since "
-            "Twisted 11.0; use endpoint descriptions instead.")
+
+    def test_auth(self):
+        """
+        Tests that the --auth option registers a checker.
+        """
+        options = Options()
+        options.parseOptions(['--auth', 'memory:admin:admin:bob:password'])
+        self.assertEqual(len(options['credCheckers']), 1)
+        checker = options['credCheckers'][0]
+        interfaces = checker.credentialInterfaces
+        registered_checkers = options.service.smtpPortal.checkers
+        for iface in interfaces:
+            self.assertEqual(checker, registered_checkers[iface])
 
 
 

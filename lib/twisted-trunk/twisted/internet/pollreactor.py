@@ -11,12 +11,14 @@ listeners or connectors are added)::
     pollreactor.install()
 """
 
+from __future__ import division, absolute_import
+
 # System imports
 import errno
 from select import error as SelectError, poll
 from select import POLLIN, POLLOUT, POLLHUP, POLLERR, POLLNVAL
 
-from zope.interface import implements
+from zope.interface import implementer
 
 # Twisted imports
 from twisted.python import log
@@ -25,16 +27,17 @@ from twisted.internet.interfaces import IReactorFDSet
 
 
 
+@implementer(IReactorFDSet)
 class PollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
     """
     A reactor that uses poll(2).
 
-    @ivar _poller: A L{poll} which will be used to check for I/O
+    @ivar _poller: A L{select.poll} which will be used to check for I/O
         readiness.
 
     @ivar _selectables: A dictionary mapping integer file descriptors to
         instances of L{FileDescriptor} which have been registered with the
-        reactor.  All L{FileDescriptors} which are currently receiving read or
+        reactor.  All L{FileDescriptor}s which are currently receiving read or
         write readiness notifications will be present as values in this
         dictionary.
 
@@ -50,7 +53,6 @@ class PollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
         be dispatched to the corresponding L{FileDescriptor} instances in
         C{_selectables}.
     """
-    implements(IReactorFDSet)
 
     _POLL_DISCONNECTED = (POLLHUP | POLLERR | POLLNVAL)
     _POLL_IN = POLLIN
@@ -151,8 +153,8 @@ class PollReactor(posixbase.PosixReactorBase, posixbase._PollLikeMixin):
 
         try:
             l = self._poller.poll(timeout)
-        except SelectError, e:
-            if e[0] == errno.EINTR:
+        except SelectError as e:
+            if e.args[0] == errno.EINTR:
                 return
             else:
                 raise

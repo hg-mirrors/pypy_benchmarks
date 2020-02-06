@@ -5,6 +5,8 @@ from sqlalchemy import Column, ForeignKey, Integer, String, Table, MetaData
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from sqlalchemy import create_engine
+if sys.version_info[0] > 2:
+    xrange = range
 
 metadata = MetaData()
 

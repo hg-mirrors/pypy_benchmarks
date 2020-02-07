@@ -219,7 +219,10 @@ def BM_sphinx(python, options, bench_data):
     htmldir = os.path.join(builddir, 'html')
     os.mkdir(htmldir)
     env = os.environ.copy()
-    env['PYTHONPATH'] = os.pathsep.join([relative('lib'), relative('lib/jinja2')])
+    major = sys.version_info.major
+    env['PYTHONPATH'] = os.pathsep.join([relative('lib'),
+                             relative('lib/jinja2'),
+                             relative('lib/cpython-doc/tools/docutils%d' % major)])
     args = python + [build, '-b', 'html', '-d', docdir, maindir, htmldir]
     proc = subprocess.Popen(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
                             env=env)

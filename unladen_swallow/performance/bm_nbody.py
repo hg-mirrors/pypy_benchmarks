@@ -116,10 +116,6 @@ def offset_momentum(ref, bodies=SYSTEM, px=0.0, py=0.0, pz=0.0):
 
 
 def test_nbody(iterations):
-    # Warm-up runs.
-    report_energy()
-    advance(0.01, 20000)
-    report_energy()
 
     times = []
     for _ in xrange(iterations):

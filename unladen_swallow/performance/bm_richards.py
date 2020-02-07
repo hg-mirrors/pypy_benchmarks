@@ -24,7 +24,6 @@ import util
 def test_richards(iterations):
     # Warm-up
     r = richards.Richards()
-    r.run(iterations=2)
 
     times = []
     for _ in xrange(iterations):

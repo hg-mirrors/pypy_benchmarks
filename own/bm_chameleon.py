@@ -26,7 +26,8 @@ def main(n):
     l = []
     for k in range(n):
         t0 = time.time()
-        tmpl(options=options)
+        for j in range(20):
+            tmpl(options=options)
         l.append(time.time() - t0)
     return l
 

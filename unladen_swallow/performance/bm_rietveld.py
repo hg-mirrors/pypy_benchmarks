@@ -95,42 +95,10 @@ def get_benchmark_data():
 
 def test_rietveld(count, tmpl, context):
     # Warm up Django.
-    tmpl.render(context)
-    tmpl.render(context)
-
     times = []
     for _ in xrange(count):
         t0 = time.time()
         # 30 calls to render, so that we don't measure loop overhead.
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
-        tmpl.render(context)
         tmpl.render(context)
         t1 = time.time()
         times.append(t1 - t0)

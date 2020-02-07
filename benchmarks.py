@@ -4,16 +4,16 @@ import os
 import sys
 import logging
 from unladen_swallow.perf import SimpleBenchmark, MeasureGeneric
-from unladen_swallow.perf import RawResult, SimpleComparisonResult, avg, ResultError
+from unladen_swallow.perf import RawResult, ResultError, _FindAllBenchmarks
 import subprocess
 
 def relative(*args):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), *args)
 
 def _register_new_bm(name, bm_name, d, **opts):
-    def Measure(python, options):
+    def Measure(python, options, bench_data):
         bm_path = relative('own', name + '.py')
-        return MeasureGeneric(python, options, bm_path, **opts)
+        return MeasureGeneric(python, options, bench_data, bm_path, **opts)
     Measure.func_name = 'Measure' + name.capitalize()
 
     def BM(*args, **kwds):
@@ -23,7 +23,7 @@ def _register_new_bm(name, bm_name, d, **opts):
     d[BM.func_name] = BM
 
 def _register_new_bm_twisted(name, bm_name, d, **opts):
-    def Measure(python, options):
+    def Measure(python, options, bench_data):
         def parser(line):
             number = float(line.split(b" ")[0])
             if name == 'tcp':
@@ -33,7 +33,8 @@ def _register_new_bm_twisted(name, bm_name, d, **opts):
             else:
                 return 100/number
         bm_path = relative('own', 'twisted', name + '.py')
-        return MeasureGeneric(python, options, bm_path, parser=parser, **opts)
+        return MeasureGeneric(python, options, bench_data, bm_path,
+                              parser=parser, **opts)
     Measure.func_name = 'Measure' + name.capitalize()
 
     def BM(*args, **kwds):
@@ -43,17 +44,17 @@ def _register_new_bm_twisted(name, bm_name, d, **opts):
     d[BM.func_name] = BM
 
 def _register_new_bm_base_only(name, bm_name, d, **opts):
-    def benchmark_function(python, options):
+    def benchmark_function(python, options, bench_data):
         bm_path = relative('own', name + '.py')
-        return MeasureGeneric(python, options, bm_path, **opts)
+        return MeasureGeneric(python, options, bench_data, bm_path, **opts)
 
-    def BM(base_python, changed_python, options, *args, **kwargs):
+    def BM(python, options, *args, **kwargs):
         try:
-            base_data = benchmark_function(base_python, options,
-                                           *args, **kwargs)
+            data = benchmark_function(python, options,
+                                      *args, **kwargs)
         except subprocess.CalledProcessError as e:
             return ResultError(e)
-        return SimpleComparisonResult(avg(base_data[0]), -1, -1)
+        return RawResult(data[0], None)
     BM.func_name = 'BM_' + bm_name
 
     d[BM.func_name] = BM
@@ -82,20 +83,19 @@ opts = {
 for name in ['expand', 'integrate', 'sum', 'str']:
     _register_new_bm('bm_sympy', 'sympy_' + name,
                      globals(), bm_env={'PYTHONPATH': relative('lib/sympy')},
-                     extra_args=['--benchmark=' + name],
-                     iteration_scaling=.1)
+                     extra_args=['--benchmark=' + name])
 
 for name in ['xml', 'text']:
     _register_new_bm('bm_genshi', 'genshi_' + name,
                      globals(), bm_env={'PYTHONPATH': relative('lib/genshi')},
                      extra_args=['--benchmark=' + name])
 
-for name in ['float', 'nbody_modified', 'meteor-contest', 'fannkuch',
+for name in ['nbody_modified', 'meteor-contest', 'fannkuch',
              'spectral-norm', 'chaos', 'telco', 'go', 'pyflate-fast',
              'raytrace-simple', 'crypto_pyaes', 'bm_mako', 'bm_chameleon',
-             'json_bench', 'pidigits', 'hexiom2', 'eparse', 'deltablue',
+             'json_bench', 'pidigits', 'hexiom2', 'eparse',
              'bm_dulwich_log', 'bm_mdp', 
-             'sqlitesynth', 'pyxl_bench', 'nqueens', 'sqlalchemy_declarative',
+             'sqlitesynth', 'pyxl_bench', 'sqlalchemy_declarative',
              'sqlalchemy_imperative']:
     _register_new_bm(name, name, globals(), **opts.get(name, {}))
 
@@ -105,13 +105,8 @@ if sys.version_info[0] < 3:
         _register_new_bm(name, name, globals(), **opts.get(name, {}))
 
 for name in ['names', 'iteration', 'tcp', 'pb', ]:#'web']:#, 'accepts']:
-    if name == 'web':
-        iteration_scaling = 0.2
-    else:
-        iteration_scaling = 1.0
     _register_new_bm_twisted(name, 'twisted_' + name,
-                     globals(), bm_env={'PYTHONPATH': os.pathsep.join(TWISTED)},
-                                 iteration_scaling=iteration_scaling)
+                     globals(), bm_env={'PYTHONPATH': os.pathsep.join(TWISTED)})
 
 _register_new_bm('spitfire', 'spitfire2', globals(),
     extra_args=['--benchmark=spitfire_o3'])
@@ -163,7 +158,7 @@ def test_parse_timer():
         ]
 
 if sys.version_info[0] < 3:
-    def BM_translate(base_python, changed_python, options):
+    def BM_translate(base_python, options, *args):
         """
         Run translate.py and returns a benchmark result for each of the phases.
         Note that we run it only with ``base_python`` (which corresponds to
@@ -201,44 +196,40 @@ if sys.version_info[0] < 3:
 
         result = []
         for name, time in timings:
-            data = RawResult([time], None)
+            data = RawResult([time])
             result.append((name, data))
         return result
     BM_translate.benchmark_name = 'trans2'
 
-def BM_cpython_doc(base_python, changed_python, options):
+def BM_sphinx(python, options, bench_data):
     from unladen_swallow.perf import RawResult
     import subprocess, shutil
     t = []
 
-    for python in [base_python, changed_python]:
-        maindir = relative('lib/cpython-doc')
-        builddir = os.path.join(os.path.join(maindir, 'tools'), 'build')
-        try:
-            shutil.rmtree(builddir)
-        except OSError:
-            pass
-        build = relative('lib/cpython-doc/tools/sphinx-build.py')
-        os.mkdir(builddir)
-        docdir = os.path.join(builddir, 'doctrees')
-        os.mkdir(docdir)
-        htmldir = os.path.join(builddir, 'html')
-        os.mkdir(htmldir)
-        env = os.environ.copy()
-        env['PYTHONPATH'] = os.pathsep.join([relative('lib'), relative('lib/jinja2')])
-        args = python + [build, '-b', 'html', '-d', docdir, maindir, htmldir]
-        proc = subprocess.Popen(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
-                                env=env)
-        out, err = proc.communicate()
-        retcode = proc.poll()
-        if retcode != 0:
-            print(out)
-            print(err)
-            raise Exception("sphinx-build.py failed")
-        t.append(float(out.splitlines()[-1]))
-    return RawResult([t[0]], [t[1]])
+    maindir = relative('lib/cpython-doc')
+    builddir = os.path.join(os.path.join(maindir, 'tools'), 'build')
+    try:
+        shutil.rmtree(builddir)
+    except OSError:
+        pass
+    build = relative('lib/cpython-doc/tools/sphinx-build.py')
+    os.mkdir(builddir)
+    docdir = os.path.join(builddir, 'doctrees')
+    os.mkdir(docdir)
+    htmldir = os.path.join(builddir, 'html')
+    os.mkdir(htmldir)
+    args = python + [build, '-b', 'html', '-d', docdir, maindir, htmldir]
+    proc = subprocess.Popen(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    out, err = proc.communicate()
+    retcode = proc.poll()
+    if retcode != 0:
+        print(out)
+        print(err)
+        raise Exception("sphinx-build.py failed")
+    res = float(out.splitlines()[-1])
+    return RawResult([res], None)
 
-BM_cpython_doc.benchmark_name = 'sphinx'
+BM_sphinx.benchmark_name = 'sphinx'
 
 # Scimark
 _register_new_bm_base_only('scimark', 'scimark_SOR', globals(),
@@ -251,3 +242,6 @@ _register_new_bm_base_only('scimark', 'scimark_LU', globals(),
                  extra_args=['--benchmark=LU', '100', '200'])
 _register_new_bm_base_only('scimark', 'scimark_FFT', globals(),
                  extra_args=['--benchmark=FFT', '1024', '1000'])
+
+if __name__ == '__main__':
+    print(sorted(_FindAllBenchmarks(globals()).keys()))

@@ -7,6 +7,8 @@ import json
 import socket
 import sys
 import os
+import time
+import subprocess
 
 import benchmarks
 from saveresults import save
@@ -20,19 +22,27 @@ if sys.version_info[0] < 3:
                 ]
 BENCHMARK_SET += perf._FindAllBenchmarks(benchmarks.__dict__).keys()
 
-CHANGED = 'changed'
-BASELINE = 'baseline'
-
-
 class WrongBenchmark(Exception):
     pass
 
+def convert_results(result_list):
+    r = []
+    for bench, cls, dct, t0 in result_list:
+        runs = []
+        for t in dct['times']:
+            runs.append(t)
+        r.append({"name": bench, "runs": runs, "jit-summary": dct.get('jit_summary', '')})
+    return r
 
-def run_and_store(benchmark_set, result_filename, changed_path, revision=0,
+def run_and_store(benchmark_set, result_filename, path, revision=0,
                   options='', branch='default', args='', upload=False,
-                  fast=False, baseline_path=sys.executable, full_store=False):
-    funcs = perf.BENCH_FUNCS.copy()
-    funcs.update(perf._FindAllBenchmarks(benchmarks.__dict__))
+                  fast=False, full_store=False, parser_options=None):
+    _funcs = perf.BENCH_FUNCS.copy()
+    _funcs.update(perf._FindAllBenchmarks(benchmarks.__dict__))
+    bench_data = json.load(open('bench-data.json'))
+    funcs = {}
+    for key, value in _funcs.items():
+        funcs[key] = (value, bench_data.get(key, {}))
     opts = ['-b', ','.join(benchmark_set),
             '--inherit_env=PATH',
             '--no_charts']
@@ -42,86 +52,27 @@ def run_and_store(benchmark_set, result_filename, changed_path, revision=0,
         opts += ['--args', args]
     if full_store:
         opts += ['--no_statistics']
-    opts += [baseline_path, changed_path]
+    opts += [path]
+    start_time = time.time()
     results = perf.main(opts, funcs)
+    end_time = time.time()
     f = open(str(result_filename), "w")
-    results = [(name, result.__class__.__name__, result.__dict__)
-           for name, result in results]
+    results = [(name, result.__class__.__name__, result.__dict__, t0)
+           for name, result, t0 in results]
+    force_host = parser_options.force_host
     f.write(json.dumps({
         'revision': revision,
-        'results': results,
+        'benchmarks': convert_results(results),
+        "interpreter": parser_options.interpreter_name or parser_options.python,
+        "machine": force_host if force_host else socket.gethostname(),
+        "protocol_version_no": "2",
+        "start_timestamp": start_time,
+        "end_timestamp": end_time,
         'options': options,
         'branch': branch,
-        }, indent=2))
+        }, indent=4))
     f.close()
     return results
-
-
-def get_upload_options(options):
-    """
-    returns a dict with 2 keys: CHANGED, BASELINE. The values are
-    dicts with the keys
-    * 'upload' (boolean)
-    * 'project' (string)
-    * 'executable' (string)
-    * 'urls (list of strings).
-    * 'branch' (string)
-    * 'revision' (string)
-
-    This correspondents to the the --upload* and --upload-baseline*
-    options.
-
-    raises: AssertionError if upload is specified, but not the
-    corresponding executable or revision.
-    """
-
-    if options.upload_baseline_revision is None:
-        options.upload_baseline_revision = options.upload_revision
-
-    upload_options = {}
-
-    for run in [CHANGED, BASELINE]:
-
-        def get_upload_option(name):
-            attr_name = 'upload'
-            if run == BASELINE:
-                attr_name = '%s_baseline' % attr_name
-            if name:
-                attr_name = '%s_%s' % (attr_name, name)
-            return getattr(options, attr_name)
-
-        urls = get_upload_option('urls')
-        urls = [url.strip() for url in urls.split(',') if url.strip()]
-        upload = get_upload_option(None)
-        project = get_upload_option('project')
-        executable = get_upload_option('executable')
-        branch = get_upload_option('branch')
-        revision = get_upload_option('revision')
-        if upload:
-            if executable is None:
-                raise AssertionError('If you want to --upload[-baseline] you '
-                                     'have to specify the corresponding '
-                                     '--upload[-baseline]-executable')
-            if revision is None:
-                raise AssertionError('If you want to upload the result you '
-                                     'have to specify a --revision (or '
-                                     '--upload-baseline-revision if you '
-                                     'want to upload the baseline result')
-            if ((run == BASELINE and 'nullpython.py' in options.baseline) or
-                (run == CHANGED and 'nullpython.py' in options.changed)):
-                raise AssertionError("Don't upload data from the nullpython "
-                                     "dummy interpreter. It won't run any "
-                                     "real benchmarks.")
-
-        upload_options[run] = {
-            'upload': upload,
-            'project': project,
-            'executable': executable,
-            'urls': urls,
-            'branch': branch,
-            'revision': revision}
-    return upload_options
-
 
 def main(argv):
     import optparse
@@ -141,18 +92,13 @@ def main(argv):
               ". (default: Run all listed benchmarks)"
               ) % ", ".join(sorted(BENCHMARK_SET)))
     benchmark_group.add_option(
+        '-p', '--python', default=sys.executable, action='store',
+        help=('Interpreter. (default: the python used to '
+              'run this script)'))
+    benchmark_group.add_option(
         "-f", "--benchmarks-file", metavar="BM_FILE",
         help=("Read the list of benchmarks to run from this file (one "
               "benchmark name per line).  Do not specify both this and -b."))
-    benchmark_group.add_option(
-        '-c', '--changed', default=sys.executable,
-        help=('pypy-c or another modified python interpreter to run against. '
-              'Also named the "changed" interpreter. (default: the python '
-              'used to run this script)'))
-    benchmark_group.add_option(
-        '--baseline', default=sys.executable, action='store',
-        help=('Baseline interpreter. (default: the python used to '
-              'run this script)'))
     benchmark_group.add_option(
         '-o', '--output-filename', default="result.json",
         action="store",
@@ -167,6 +113,11 @@ def main(argv):
         help=("The branch the 'changed' interpreter was compiled from. This "
               'will be store in the result json and used for the upload. '
               "(default: 'default')"))
+    benchmark_group.add_option(
+        '--force-interpreter-name', default=None, action='store',
+        dest='interpreter_name',
+        help="Force the interpreter name present"
+    )
     benchmark_group.add_option(
         '-r', '--revision', action="store",
         dest='upload_revision',
@@ -190,82 +141,22 @@ def main(argv):
         help="Run the benchmarks with the --no-statistics flag.")
     parser.add_option_group(benchmark_group)
 
-    # upload changed options
-    upload_group = optparse.OptionGroup(
-        parser, 'Upload Options',
-        ('Options for uploading the result of the "changed" python to '
-         'codespeed. The information about revision and branch will '
-         'be taken from the options --revision and --branch.'))
-    upload_group.add_option(
-        "--upload", default=None, action="store_true",
-        help=("Upload results to speed.pypy.org (unless "
-              "--upload-url is given)."))
-    upload_group.add_option(
-        "--upload-urls", default="https://speed.pypy.org/",
-        help=("Comma seperated urls of the codespeed instances "
-              "to upload to. (default: https://speed.pypy.org/)"))
-    upload_group.add_option(
-        "--upload-project", default="PyPy",
-        help="The project name in codespeed. (default: PyPy)")
-    upload_group.add_option(
-        "--upload-executable", default=None,
-        help=("The executable name in codespeed. (required if --upload "
-              "is given)"))
-    parser.add_option_group(upload_group)
+    parser.add_option("--upload-url", action="store", default=None,
+                      help="Upload to url or None")
+    parser.add_option("--upload-revision", action="store", default=None,
+                      help="Upload revision")
+    parser.add_option("--upload-branch", action="store", default=None,
+                      help="Upload branch")
+    parser.add_option("--upload-project", action="store", default="PyPy")
+    parser.add_option("--upload-executable", action="store", default="pypy-c")
     parser.add_option(
         "--force-host", default=None, action="store",
-        help=("Force the hostname. This option will also be used when "
-              "uploading the baseline result."))
+        help=("Force the hostname."))
     parser.add_option("--niceness", default=None, type="int",
                       help="Set absolute niceness for process")
 
-    # upload baseline group
-    upload_baseline_group = optparse.OptionGroup(
-        parser, 'Upload Baseline Options',
-        ('Options for uploading the result of the "baseline" python to '
-         'codespeed. The hostname of the --force-host option will be used '
-         'in the baseline upload too.'))
-    upload_baseline_group.add_option(
-        "--upload-baseline", default=None, action="store_true",
-        help=("Also upload results or the baseline benchmark "
-              "to speed.pypy.org (unless "
-              "--upload-baseline-url is given)."))
-    upload_baseline_group.add_option(
-        "--upload-baseline-urls",
-        default="https://speed.pypy.org/",
-        help=("Comma seperated urls of the codespeed instances "
-              "to upload to. (default: https://speed.pypy.org/)"))
-    upload_baseline_group.add_option(
-        "--upload-baseline-project", default="PyPy",
-        help="The project name in codespeed (default: PyPy).")
-    upload_baseline_group.add_option(
-        "--upload-baseline-executable", default=None,
-        help=("The executable name in codespeed. (required if "
-              "--upload-baseline is given)"))
-    upload_baseline_group.add_option(
-        '--upload-baseline-branch', default='default',
-        action='store',
-        help=("The name of the branch used for the baseline "
-              "run. (default: 'default'"))
-    upload_baseline_group.add_option(
-        '--upload-baseline-revision', action='store',
-        default=None,
-        help=("The revision of the baseline. (required if --upload-baseline "
-              "is given)"))
-    parser.add_option_group(upload_baseline_group)
-
-    # Backward compoatibility options
-    deprecated_group = optparse.OptionGroup(
-        parser, 'Deprecated Options',
-        'Still here for backward compatibility.')
-    deprecated_group.add_option(
-        '-p', '--pypy-c', default=sys.executable,
-        dest='changed', help='Deprecated alias for -c/--changed')
-    parser.add_option_group(deprecated_group)
-
     options, args = parser.parse_args(argv)
 
-    upload_options = get_upload_options(options)
     if options.benchmarks is not None:
         if options.benchmarks_file is not None:
             parser.error(
@@ -287,11 +178,10 @@ def main(argv):
             benchmarks = list(BENCHMARK_SET)
 
     for benchmark in benchmarks:
-        if benchmark not in BENCHMARK_SET:
+        if benchmark not in BENCHMARK_SET and not benchmark.startswith('-'):
             raise WrongBenchmark(benchmark)
 
-    changed_path = options.changed
-    baseline_path = options.baseline
+    path = options.python
     fast = options.fast
     args = options.args
     full_store = options.full_store
@@ -304,31 +194,21 @@ def main(argv):
     if options.niceness is not None:
         os.nice(options.niceness - os.nice(0))
 
-    results = run_and_store(benchmarks, output_filename, changed_path,
+    results = run_and_store(benchmarks, output_filename, path,
                             revision, args=args, fast=fast,
-                            baseline_path=baseline_path,
-                            full_store=full_store, branch=branch)
+                            full_store=full_store, branch=branch,
+                            parser_options=options)
 
-    errors = []
-    for run in [CHANGED, BASELINE]:
-        upload = upload_options[run]['upload']
-        urls = upload_options[run]['urls']
-        project = upload_options[run]['project']
-        executable = upload_options[run]['executable']
-        branch = upload_options[run]['branch'] or 'default'
-        revision = upload_options[run]['revision']
+    if options.upload_url:
+        branch = options.upload_branch or 'default'
+        revision = options.upload_revision
 
-        if upload:
-            # prevent to upload results from the nullpython dummy
-            host = force_host if force_host else socket.gethostname()
-            for url in urls:
-                try:
-                    print(save(project, revision, results, executable, host, url,
-                           changed=(run == CHANGED), branch=branch))
-                except IOErrr as e:
-                    errors.append(e)
-    if len(errors) > 0:
-        raise errors[0]
+        # prevent to upload results from the nullpython dummy
+        host = force_host if force_host else socket.gethostname()
+        print(save(options.upload_project,
+                   revision, results, options.upload_executable, host,
+                   options.upload_url,
+                   branch=branch))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,228 @@
+{
+ "ai": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Brute force n-queens solver."
+ },
+ "bm_chameleon": {
+   "total_runs": 10,
+   "warmup": 2,
+   "description": "Chameleon templating library benchmark",
+   "comment": "needs reupdating chameleon"
+ },
+ "bm_mako": {
+   "description": "Mako templating library benchmark",
+   "comment": "needs updating",
+   "total_runs": 20,
+   "warmup": 2
+ },
+ "bm_dulwich_log": {
+   "description": "Pure python git implementation",
+   "comment": "needs updating",
+   "warmup": 3
+ },
+ "bm_icbd": {
+   "comment": "enable this benchmark"
+ },
+ "bm_krakatau": {
+   "description": "Java decompiler benchmark",
+   "total_runs": 60,
+   "comment": "look into updating & warmup",
+   "warmup": 40
+ },
+ "bm_mdp": {
+   "description": "Some AI that uses a lot of fractions",
+   "total_runs": 2,
+   "warmup": 1
+ },
+ "pypy_interp": {
+   "description": "interpreting py.py",
+   "comment": " # XXX UPDATE"
+ },
+ "call_simple": {
+ },
+ "chaos": {
+   "description": "Creates chaosgame-like fractals"
+ },
+ "shpinx": {
+   "description": "Run sphinx over cpython documentation",
+   "total_runs": 1,
+   "process_runs": 1
+ },
+ "crypto_pyaes": {
+   "description": "A pure python implementation of AES"
+ },
+ "django": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Uses the Django template system to build a 150x150-cell HTML table."
+ },
+ "eparse": {
+ },
+ "fannkuch": {
+   "description": "Indexed-access to tiny integer-sequence. The fannkuch benchmark is defined by programs in Performing Lisp Analysis of the FANNKUCH Benchmark, Kenneth R. Anderson and Duane Rettig."
+ },
+ "gcbench": {
+   "total_runs": 5,
+   "description": "Classic gcbench"
+ },
+ "genshi_text": {
+   "description": "Genshi template rendering using text, generator heavy"
+ },
+ "genshi_xml": {
+   "description": "Genshi template rendering using XML, generator heavy"
+ },
+ "go": {
+   "description": "A go game computer player AI."
+ },
+ "hexiom2": {
+ },
+ "html5lib": {
+   "warmup": 0,
+   "total_runs": 5,
+   "description": "Parses the HTML 5 spec using html5lib."
+ },
+ "json_bench": {
+   "description": "Tests the speed of json encoding"
+ },
+ "meteor-contest": {
+   "description": "Searchs for solutions to shape packing puzzle."
+ },
+ "nbody_modified": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Double-precision N-body simulation. It models the orbits of Jovian planets, using a simple symplectic-integrator."
+ },
+ "pidigits": {
+   "description": "Computes the digits of PI. Long heavy",
+   "total_runs": 5
+ },
+ "pyflate-fast": {
+   "description": "Stand-alone pure-Python DEFLATE (gzip) and bzip2 decoder/decompressor."
+ },
+ "raytrace-simple": {
+   "description": "A raytracer renderer"
+ },
+ "richards": {
+   "warmup": 2,
+   "total_runs": 52,
+   "description": "Medium-sized language benchmark that simulates the task dispatcher in the kernel of an operating system."
+ },
+ "rietveld": {
+   "warmup": 2,
+   "total_runs": 1500,
+   "description": "A Django application benchmark."
+ },
+ "scimark_fft": {
+ },
+ "scimark_lu": {
+ },
+ "scimark_montecarlo": {
+ },
+ "scimark_sor": {
+ },
+ "scimark_sparsematmult": {
+ },
+ "slowspitfire": {
+   "description": "Uses the Spitfire template system to build a 1000x1000-cell HTML table; it differs from spitfire in that it uses .join(list) instead of cStringIO."
+ },
+ "spambayes": {
+   "description": "Spambayes spam classification filter",
+   "warmup": 1,
+   "total_runs": 51
+ },
+ "spectral-norm": {
+ },
+ "spitfire": {
+   "description": "Uses the Spitfire template system to build a 100x100-cell HTML table; it differs from spitfire in that it uses .join(list) instead of cStringIO.",
+   "warmup": 2,
+   "total_runs": 52
+ },
+ "spitfire_cstringio": {
+   "description": "ses the Spitfire template system to build a 1000x1000-cell HTML table, using the cStringIO module."
+ },
+ "sympy_expand": {
+   "total_runs": 5,
+   "description": "Use sympy (pure python symbolic math lib) do to expansion"
+ },
+ "sympy_integrate": {
+   "total_runs": 5,
+   "description": "Use sympy (pure python symbolic math lib) do to integration"
+ },
+ "sympy_str": {
+   "total_runs": 5,
+   "description": "Use sympy (pure python symbolic math lib) do to str() operation"
+ },
+ "sympy_sum": {
+   "total_runs": 5,
+   "description": "Use sympy (pure python symbolic math lib) do to summation"
+ },
+ "telco": {
+   "description": "A small program which is intended to capture the essence of a telephone company billing application, with a realistic balance between Input/Output activity and application calculations."
+ },
+ "translate": {
+   "description": "Translation benchmarks"
+ }, 
+ "trans2_annotate": {
+   "description": "PyPy translation -O2 - annotation"
+ },
+ "trans2_backendopt": {
+   "description": "PyPy translation -O2 - backendopt"
+ },
+ "trans2_database": {
+   "description": "PyPy translation -O2 - C database"
+ },
+ "trans2_rtype": {
+   "description": "PyPy translation -O2 - rtype"
+ },
+ "trans2_source": {
+   "description": "PyPy translation -O2 - C source"
+ },
+ "twisted_iteration" : {
+   "description": "Iterates a Twisted reactor as quickly as possible without doing any work.",
+   "total_runs": 65,
+   "warmup": 15
+ },
+ "twisted_names": {
+   "description": "Runs a DNS server with Twisted Names and then issues requests to it over loopback UDP.",
+   "total_runs": 65,
+   "warmup": 15
+ },
+ "twisted_pb": {
+   "description": "Runs a Perspective Broker server with a no-op method and invokes that method over loopback TCP with some strings, dictionaries, and tuples as arguments.",
+   "total_runs": 65,
+   "warmup": 15
+ },
+ "twisted_tcp": {
+   "description": "Connects one Twised client to one Twisted server over TCP (on the loopback interface) and then writes bytes as fast as it can.",
+   "total_runs": 65,
+   "warmup": 15
+ },
+ "twisted_web": {
+   "description": "Runs twisted web server and connects through twisted HTTP client",
+   "total_runs": 25,
+   "warmup": 15
+ },
+ "pyxl_bench": {
+   "description": "Pyxl benchmark"
+ },
+ "regex_v8": {
+    "description": "This benchmark is generated by loading 50 of the most popular pages on the web and logging all regexp operations performed.  Each operation is given a weight that is calculated from an estimate of the popularity of the pages where it occurs and the number of times it is executed while loading each page.  Finally the literal letters in the data are encoded using ROT13 in a way that does not affect how the regexps match their input"
+ },
+ "slowspitfire2": {
+    "description": "This will have Spitfire generate a 1000x1000 table without using psyco"
+ },
+ "spitfire2": {
+    "description": "This will have Spitfire generate a 1000x1000 table"
+ },
+ "sqlalchemy_benchmark": {
+ },
+ "sqlalchemy_imperative": {
+   "total_runs": 100
+ },
+ "sqlalchemy_declarative": {
+   "total_runs": 30
+ },
+ "sqlitesynth": {
+ }
+}

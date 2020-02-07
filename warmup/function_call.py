@@ -35,5 +35,6 @@ for i in range(1000):
     f(i)
 """
     l.append(time.time() - t0)
+    #l.append(0)
 
 print l

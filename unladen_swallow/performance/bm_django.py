@@ -42,14 +42,11 @@ def test_django(count):
     table = [xrange(150) for _ in xrange(150)]
     context = Context({"table": table})
 
-    # Warm up Django.
-    DJANGO_TMPL.render(context)
-    DJANGO_TMPL.render(context)
-
     times = []
     for _ in xrange(count):
         t0 = time.time()
-        data = DJANGO_TMPL.render(context)
+        for k in range(10):
+            data = DJANGO_TMPL.render(context)
         t1 = time.time()
         times.append(t1 - t0)
     return times

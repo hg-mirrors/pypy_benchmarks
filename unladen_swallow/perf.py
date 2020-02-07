@@ -1325,13 +1325,7 @@ def main(argv, bench_funcs=BENCH_FUNCS, bench_groups=BENCH_GROUPS):
     parser.add_option("-m", "--track_memory", action="store_true",
                       help="Track memory usage. This only works on Linux.")
     parser.add_option("-a", "--args", default="",
-                      help=("Pass extra arguments to the python binaries."
-                            " If there is a comma in this option's value, the"
-                            " arguments before the comma (interpreted as a"
-                            " space-separated list) are passed to the baseline"
-                            " python, and the arguments after are passed to the"
-                            " changed python. If there's no comma, the same"
-                            " options are passed to both."))
+                      help=("Pass extra arguments to the python binary."))
     parser.add_option("-b", "--benchmarks", metavar="BM_LIST", default="",
                       help=("Comma-separated list of benchmarks to run.  Can" +
                             " contain both positive and negative arguments:" +

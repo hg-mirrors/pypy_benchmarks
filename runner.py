@@ -126,13 +126,7 @@ def main(argv):
               'result json and used for the upload. (default: None)'))
     benchmark_group.add_option(
         "-a", "--args", default="",
-        help=("Pass extra arguments to the python binaries."
-              " If there is a comma in this option's value, the"
-              " arguments before the comma (interpreted as a"
-              " space-separated list) are passed to the baseline"
-              " python, and the arguments after are passed to"
-              " the changed python. If there's no comma, the"
-              " same options are passed to both."))
+        help=("Pass extra arguments to the python binary"))
     benchmark_group.add_option(
         "--fast", default=False, action="store_true",
         help="Run shorter benchmark runs.")

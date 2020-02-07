@@ -389,12 +389,11 @@ class MemoryUsageResult(object):
 
 class SimpleResult(object):
     def __init__(self, time, jit_summary):
-        self.time = time
+        self.times = [time]
         self.jit_summary = jit_summary
 
     def string_representation(self):
-        return ("%(time)f"
-                % self.__dict__)
+        return "Simple result: %s" % (self.times[0],)
 
 class RawResult(object):
     def __init__(self, times, jit_summary):
@@ -590,18 +589,19 @@ def CompareMultipleRuns(times, options, bench_data, jit_summary):
     """Compare multiple control vs experiment runs of the same benchmark.
 
     Args:
-        base_times: iterable of float times (control).
-        changed_times: iterable of float times (experiment).
+        times: iterable of float times (control).
         options: optparse.Values instance.
+        bench_data: dict of benchmark info
+        jit_summary: currently unused
 
     Returns:
         A string summarizing the difference between the runs, suitable for
         human consumption.
     """
     if options.no_statistics or len(times) ==0:
-        return RawResult(times)
+        return RawResult(times, jit_summary)
     if options.no_statistics:
-        return RawResult(times)
+        return RawResult(times, jit_summary)
     if len(times) == 1:
         # With only one data point, we can't do any of the interesting stats
         # below.

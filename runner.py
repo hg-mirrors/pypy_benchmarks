@@ -27,11 +27,11 @@ class WrongBenchmark(Exception):
 
 def convert_results(result_list):
     r = []
-    for bench, cls, dict, t0 in result_list:
+    for bench, cls, dct, t0 in result_list:
         runs = []
-        for t in dict['times']:
+        for t in dct['times']:
             runs.append(t)
-        r.append({"name": bench, "runs": runs, "jit-summary": dict.get('jit_summary', '')})
+        r.append({"name": bench, "runs": runs, "jit-summary": dct.get('jit_summary', '')})
     return r
 
 def run_and_store(benchmark_set, result_filename, path, revision=0,

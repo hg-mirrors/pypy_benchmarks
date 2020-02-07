@@ -218,8 +218,11 @@ def BM_sphinx(python, options, bench_data):
     os.mkdir(docdir)
     htmldir = os.path.join(builddir, 'html')
     os.mkdir(htmldir)
+    env = os.environ.copy()
+    env['PYTHONPATH'] = os.pathsep.join([relative('lib'), relative('lib/jinja2')])
     args = python + [build, '-b', 'html', '-d', docdir, maindir, htmldir]
-    proc = subprocess.Popen(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc = subprocess.Popen(args, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
+                            env=env)
     out, err = proc.communicate()
     retcode = proc.poll()
     if retcode != 0:

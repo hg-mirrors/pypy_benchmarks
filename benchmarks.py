@@ -196,7 +196,7 @@ if sys.version_info[0] < 3:
 
         result = []
         for name, time in timings:
-            data = RawResult([time])
+            data = RawResult([time], None)
             result.append((name, data))
         return result
     BM_translate.benchmark_name = 'trans2'

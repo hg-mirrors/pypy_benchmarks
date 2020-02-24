@@ -1174,7 +1174,7 @@ def BM_nbody(*args, **kwargs):
     return SimpleBenchmark(MeasureNbody, *args, **kwargs)
 
 
-def MeasureSpamBayes(python, options):
+def MeasureSpamBayes(python, options, bench_data):
     """Test the performance of the SpamBayes spam filter and its tokenizer.
 
     Args:
